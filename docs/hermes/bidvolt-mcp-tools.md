@@ -1,23 +1,24 @@
 # bidvolt MCP 工具契约
 
 > 后端业务服务暴露给 Hermes 的能力接口。实现为 stdio MCP server（`bidvolt_mcp` 包），
-> 内部调用 BidVolt API。租户上下文（enterprise_id/project_id）由服务端按 Profile/Session 注入。
+> 内部调用 BidVolt API。租户与授权上下文由服务端按任务级授权注入（产品决策 D-B）。
 
 ## 工具分组总览
 
 | 组 | 工具 | 读写 | 说明 |
 |---|---|---|---|
-| 企业资料 | `search_assets` `list_assets` `get_asset` | 读 | 企业资料库查询（生成/匹配的事实来源） |
-| 招标要求 | `get_requirement` `list_requirements` | 读 | 招标解析结果（含坐标定位） |
+| 企业资料 | `search_assets` `list_assets` `get_asset` `classify_enterprise_asset` `upsert_enterprise_facts` | 读/写 | 企业资料查询 + 分类与事实写入（仅企业资料导入任务授权） |
+| 招标要求 | `get_requirement` `list_requirements` `get_project_material_blocks` `upsert_requirements` | 读/写 | 招标解析结果读写（含坐标定位） |
 | 项目材料 | `list_project_materials` | 读 | 当前招标材料列表 |
-| 成果读写 | `get_deliverable_content` `save_deliverable` | 读/写 | 成果结构化内容与版本保存（P3 可追溯） |
+| 资料匹配 | `save_material_match_results` | 写 | 资料匹配结果落库 |
+| 成果读写 | `get_deliverable_content` `save_deliverable` | 读/写 | 成果结构化内容与版本保存（CAS + 幂等 + source_task_id） |
 | 报价 | `calculate_quote` `get_history_price` | 读 | 确定性测算（P2：无 apply） |
-| 评标 | `get_latest_score` `submit_score_items` | 读/写 | 评分记录读写 |
-| 搜索 | `search_web` `save_source` `link_citation` | 读/写 | AnySearch 与引用追溯（P5） |
+| 评标 | `get_latest_score` `submit_score_items` | 读/写 | 评分记录读写（snapshot + EvidenceRef） |
+| 搜索 | `search_web` `save_source` `link_citation` | 读/写 | AnySearch 与引用追溯（P5，绑定版本） |
 
 **不暴露给 Hermes**：报价应用（apply）、导出、删除、编辑锁管理、权限管理。
 
-> 进度展示说明：不设进度类 MCP 工具。Hermes 流式输出本身包含思考过程与每次工具调用，后端经 SSE **原样透传**前端即为进度（P05 生成中页面 / 底部对话），前端折叠技术细节即可（见 P6，README）。
+> 进度展示说明：不设进度类 MCP 工具。Hermes 流式输出经后端**过滤为白名单事件**（phase/status/percent/当前工作/简短依据/操作提示）后 SSE 推送前端；**禁止透传思维链、工具参数、返回值、内部ID、凭据、错误栈**（产品决策 D-E）。
 
 ---
 
@@ -27,7 +28,7 @@
 - 描述：按关键词/类型搜索企业资料（资质、业绩、人员、产品参数、证照等）。**标书生成时企业事实的唯一来源。**
 - 参数：`query: string`（关键词）、`category?: string`（资质/业绩/人员/产品/财务/检测报告…）、`project_id?: string`
 - 返回：`[{asset_id, name, category, summary, fields:{…}, expires_at?, file_id}]`
-- 备注：结果必须带 `asset_id` 引用；过期证照带 `expires_at` 且标注。
+- 备注：结果必须带 `asset_id` 引用；过期证照带 `expires_at` 且标注。**不可搜索项目材料域**（产品决策 D-H）。
 
 ### list_assets
 - 描述：分页列出企业资料（按目录层级）。
@@ -36,61 +37,83 @@
 ### get_asset
 - 描述：读取单个资料详情（含关键字段提取结果）。
 - 参数：`asset_id: string`
-- 返回：详情 + 字段 + 原始文件定位（file_id/页码）。
+- 返回：详情 + 字段 + 原始文件定位（file_id/页码）+ revision。
+
+### classify_enterprise_asset
+- 描述：**企业资料导入任务专属**：识别资料类型、抽取结构化字段、建议归档目录。
+- 参数：`asset_id: string`、`task_id: string`
+- 约束：仅企业资料导入任务授权上下文可调用（产品决策 D-B）；结果写入等待用户确认。
+
+### upsert_enterprise_facts
+- 描述：**企业资料导入任务专属**：写入/更新企业事实（结构化字段 + 证据引用）。
+- 参数：`asset_id: string`、`facts: [{fact_key, value, evidence_ref}]`、`task_id: string`
+- 约束：事实必须携带来源文件版本 + 原文定位（EvidenceRef）；低置信字段标记待人工确认。
 
 ## 2. 招标要求
 
 ### get_requirement
 - 描述：读取项目招标解析结果（4.3 requirement），含定位坐标。
 - 参数：`project_id: string`、`req_type?: string`（qualification/score_rule/reject_clause/tech_requirement/quote_rule/material_checklist…）
-- 返回：`[{req_id, req_type, content, structured, coordinates:[{file_id,page_no,block_index}], confidence}]`
+- 返回：`[{req_id, req_type, content, structured, coordinates:[{file_id,page_no,block_index}], confidence, revision}]`
 
 ### list_requirements
 - 描述：列出项目全部招标要求（按类型分组），生成/评标前先调用。
 
-## 3. 项目材料
+### get_project_material_blocks
+- 描述：按项目读取 doc_block 文本块（解析产物，带坐标），招标解析 Skill 写 requirement 前读取。
+- 参数：`project_id: string`、`file_id?: string`、`page?`、`block_index?`
+- 返回：`[{block_id, file_id, page_no, block_index, block_type, text_content, extra}]`
 
-### list_project_materials
-- 描述：当前项目招标材料列表（必传项），含解析状态。
-- 参数：`project_id: string`
+### upsert_requirements
+- 描述：写入/更新招标要求（招标解析 Skill 产出），每条带坐标与置信度。
+- 参数：`project_id: string`、`requirements: [{req_type, content, structured?, coordinates:[{file_id,page_no,block_index}], confidence}]`、`task_id: string`
+- 约束：coordinates 为空视为失败；补遗/澄清优先覆盖，记录 supersedes 关系（revision）。
 
-## 4. 成果读写
+## 4. 资料匹配
+
+### save_material_match_results
+- 描述：保存资料匹配结果（material_match Skill 产出），含缺失项关联。
+- 参数：`project_id: string`、`results: [{requirement_ref, asset_id?, matched: yes|partial|no, gap_desc?, affected_score_item?, impact_score?, suggestion}]`
+- 约束：缺失项必须关联具体招标要求与评分项；不虚构匹配。
+
+## 5. 成果读写
 
 ### get_deliverable_content
 - 描述：读取成果指定版本的结构化内容（DocModel/SheetModel）。
 - 参数：`deliverable_id: string`、`version_no?: int`（缺省当前版本）
-- 返回：`{deliverable_id, deliverable_type, version_no, model}`
+- 返回：`{deliverable_id, deliverable_type, version_id, version_no, model}`
 
 ### save_deliverable
 - 描述：保存成果新版本（version_type=AI生成/AI校核）。**写操作，必须带来源说明。**
-- 参数：`deliverable_id: string`、`model: object`、`change_note: string`（本次改动摘要，写入版本记录）
-- 返回：`{version_no, milestone}`
-- 约束：调用前必须已通过 `get_deliverable_content` 读取过基准版本；后端校验 base_version_no。
+- 参数：`deliverable_id: string`、`model: object`、`expected_version_id: string`（CAS 基准版本，冲突 409）、`idempotency_key: string`（幂等）、`source_task_id: string`、`change_note: string`
+- 返回：`{version_no, version_id, milestone}`
+- 约束：调用前必须已通过 `get_deliverable_content` 读取基准版本；`expected_version_id` 与当前不符返回 409（产品决策 D-C）。
 
-## 5. 报价（只读建议）
+## 6. 报价（只读建议）
 
 ### calculate_quote
-- 描述：调用确定性算法服务计算建议价（三类策略），**只返回建议，不写入**。
+- 描述：调用确定性 QuoteEngine 计算建议价（三类策略），**只返回建议，不写入**。
 - 参数：`material_ref: string`、`cost: number`、`min_profit_rate: number`、`strategy?: win|balance|profit`
-- 返回：`{calc_id, suggested_price, score, gross_margin, risk_level, basis, sample_count}`
-- 备注：sample_count < 5 时提示数据不足。
+- 返回：`{calc_id, suggested_price, score, gross_margin, risk_level, basis, sample_count, engine_version}`
+- 备注：sample_count < 阈值（如 5）时提示数据不足，可建议 AI 参考价格；口径不一致样本不参与计算。
 
 ### get_history_price
-- 描述：查询历史中标记录（按物料/地区/年份）。
+- 描述：查询历史中标记录（外部 Provider 只读）。
 - 参数：`material_name?`、`region?`、`year?`、`limit?`
-- 返回：`[{material_name, spec, region, win_price, win_date, supplier}]`
+- 返回：`[{material_name, spec, region, win_price, win_date, source_hash}]`
 
-## 6. 评标
+## 7. 评标
 
 ### get_latest_score
 - 描述：读取项目最新评分结果。
 - 参数：`project_id: string`
 
 ### submit_score_items
-- 描述：提交评分项（模拟评标 Skill 产出），**evidence 必须非空**（P4）。
-- 参数：`project_id: string`、`items: [{name, got, full, improvable, suggestion, evidence, risk_level}]`
+- 描述：提交评分项（ReviewProvider 产出），**evidence 必须为服务端生成的 EvidenceRef**（P4，产品决策 D-G）。
+- 参数：`project_id: string`、`snapshot_id: string`、`ruleset_version: string`、`items: [{name, got, full, improvable, suggestion, evidence: EvidenceRef[], risk_level, confidence}]`
+- 约束：evidence 非空且服务端校验通过，否则丢弃并提示。
 
-## 7. 搜索与引用
+## 8. 搜索与引用
 
 ### search_web
 - 描述：AnySearch 网络搜索（默认开启），返回结果带 URL 与摘要。
@@ -103,12 +126,13 @@
 
 ### link_citation
 - 描述：记录成果节点对搜索来源的引用（citation），前端"查看出处"依赖此。
-- 参数：`deliverable_id`、`node_id`、`source_id`、`quote_text`
+- 参数：`deliverable_id`、`deliverable_version_id: string`（绑定版本，产品决策）、`node_id`、`source_id`、`quote_text`
+- 约束：citation 必须绑定 deliverable_version_id。
 
-## 8. MCP server 实现约定
+## 9. MCP server 实现约定
 
 - 传输：stdio（本地子进程），`supports_parallel_tool_calls: true`
 - 鉴权：server 启动时从环境读取 `BIDVOLT_INTERNAL_TOKEN`，调用后端 API 时带内部头
-- 租户注入：MCP server 按 Hermes Profile（企业）与 Session（项目）解析租户，工具参数不接收 enterprise_id
-- 错误语义：业务错误返回结构化 `{code, message}`；401 表示内部 token 失效
+- **授权注入（产品决策 D-B）**：MCP server 按当前任务的**授权上下文**（enterprise/project/task/工具白名单/对象范围）校验；企业资料写工具仅企业资料导入任务可用；工具参数不接收 enterprise_id
+- 错误语义：业务错误返回结构化 `{code, message}`；401 表示内部 token 失效；409 表示版本冲突
 - 过滤：`hermes mcp configure bidvolt` 安装时按本清单勾选，不暴露未列工具
