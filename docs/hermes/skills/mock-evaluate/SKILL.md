@@ -37,11 +37,15 @@ metadata:
 | `list_requirements` | 评分细则 score_rule（**优先**） |
 | `get_deliverable_content` | 读取三份成果当前版本 |
 | `get_latest_score` | 读取上一次评分（对比提升） |
+| `get_review_items` | 读取逐条评分项（含状态、材料关联） |
 | `submit_score_items` | 写入评分项（snapshot_id + ruleset_version，evidence 为 EvidenceRef） |
+| `confirm_review_items` | 批量确认 review_items（触发合并写入 + 受影响项重审） |
 | `search_assets` | 核对证明材料 |
 | `search_web` / `link_citation` | 外部标准/政策核对（带来源） |
 
 ## Procedure
+
+### 首次评标
 
 1. 确认评估对象：三份成果固定版本（`get_deliverable_content`，取 version_id）+ snapshot_id。
 2. Provider 与优先级：
@@ -49,13 +53,26 @@ metadata:
    - **Code/Rule Provider（补充）**：内置评审规则——否决风险、完整性、资料有效性、跨文件一致性、方案完整性、内容针对性、报价合理性、格式规范；沙箱隔离执行
    - 冲突时以招标要求为准，内置规则仅作补充；**内置检查默认只产生风险，不直接叠加到正式总分**
 3. 逐评分项评估，每项必须给出：
-   - `got` / `full` / `improvable`
+   - `category` / `problem_description`
+   - `got` / `full` / `improvable`（improvable 是"预计可提升分"，不是直接加分）
    - `evidence`：**EvidenceRef**（{source_version_id, content_hash, source_range, exact_quote, claim_id}，服务端生成校验）
    - `suggestion`：优化点与修改建议
+   - `action_type`：upload_material / edit_deliverable / manual_review
    - `risk_level` + `confidence`（LLM 无法判断时输出 unknown/abstain，不猜测）
-4. 汇总输出：综合分、商务分、技术分、报价分、否决风险数、缺失材料数、预计可提升分值。
-5. `submit_score_items` 写入（带 snapshot_id + ruleset_version；evidence 非空且服务端校验通过，否则丢弃并提示）。
-6. 若为"提升建议闭环"场景，输出每条建议的：当前得分、预计提升、关联文件/章节、风险等级、处理方式。
+   - `requirement_id` / `related_deliverable_node`（关联招标要求和成果节点）
+4. `submit_score_items` 写入（带 snapshot_id + ruleset_version；evidence 非空且服务端校验通过，否则丢弃并提示）。初始 status = pending_confirm。
+5. 汇总输出由逐条 items 计算（不直接存）。
+
+### 提升闭环（用户确认后触发，架构简化 D15）
+
+当用户通过 `confirm_review_items` 批量确认了若干 review_items 后：
+
+1. 后端自动合并同一成果的多条修改，生成**一个**新 deliverable_version（CAS 409 防静默覆盖）
+2. 后端自动触发受影响项重审（`re-evaluate`），只跑被确认的 review_items 关联的成果/章节
+3. 生成新 review_run + 新 review_item revisions（status = re_reviewed）
+4. 前端对比新旧得分
+
+**Agent 不直接参与确认/重审流程**——这些由后端服务编排，Agent 只在首次评标和后续说明/建议时介入。
 
 ## Pitfalls
 

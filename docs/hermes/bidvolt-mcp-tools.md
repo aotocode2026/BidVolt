@@ -13,7 +13,7 @@
 | 资料匹配 | `save_material_match_results` | 写 | 资料匹配结果落库 |
 | 成果读写 | `get_deliverable_content` `save_deliverable` | 读/写 | 成果结构化内容与版本保存（CAS + 幂等 + source_task_id） |
 | 报价 | `calculate_quote` `get_history_price` | 读 | 确定性测算（P2：无 apply） |
-| 评标 | `get_latest_score` `submit_score_items` | 读/写 | 评分记录读写（snapshot + EvidenceRef） |
+| 评标 | `get_latest_score` `get_review_items` `submit_score_items` `confirm_review_items` | 读/写 | 评分汇总 + 逐条 review_item 读写 + 批量确认（snapshot + EvidenceRef + CAS） |
 | 搜索 | `search_web` `save_source` `link_citation` | 读/写 | AnySearch 与引用追溯（P5，绑定版本） |
 
 **不暴露给 Hermes**：报价应用（apply）、导出、删除、编辑锁管理、权限管理。
@@ -102,16 +102,28 @@
 - 参数：`material_name?`、`region?`、`year?`、`limit?`
 - 返回：`[{material_name, spec, region, win_price, win_date, source_hash}]`
 
-## 7. 评标
+## 7. 评标（review_item 主模型，产品决策 D-J）
 
 ### get_latest_score
-- 描述：读取项目最新评分结果。
+- 描述：读取项目最新评分汇总（由逐条 review_items 计算）。
 - 参数：`project_id: string`
+- 返回：`{score_id, review_run_id, total_score, biz_score, tech_score, quote_score, reject_count, missing_count, improvable}`
+
+### get_review_items
+- 描述：逐条读取评分项（review_item），含状态、EvidenceRef、材料关联。
+- 参数：`score_id: string`、`status?: pending_confirm|confirmed|rejected|re_reviewed`
+- 返回：`[{item_id, category, problem_description, got, full, improvable, risk_level, suggestion, action_type, evidence:[EvidenceRef], missing_material_types, related_deliverable_node, status, confidence, material_links:[{material_id, match_basis, confidence}]}]`
 
 ### submit_score_items
-- 描述：提交评分项（ReviewProvider 产出），**evidence 必须为服务端生成的 EvidenceRef**（P4，产品决策 D-G）。
-- 参数：`project_id: string`、`snapshot_id: string`、`ruleset_version: string`、`items: [{name, got, full, improvable, suggestion, evidence: EvidenceRef[], risk_level, confidence}]`
-- 约束：evidence 非空且服务端校验通过，否则丢弃并提示。
+- 描述：提交评分项（ReviewProvider 产出），**evidence 必须为服务端生成的 EvidenceRef**（产品决策 D-G）。
+- 参数：`project_id: string`、`snapshot_id: string`、`ruleset_version: string`、`items: [{category, problem_description, got, full, improvable, suggestion, action_type, evidence: EvidenceRef[], risk_level, confidence, requirement_id?, related_deliverable_node?}]`
+- 约束：evidence 非空且服务端校验通过，否则丢弃并提示；初始 status = pending_confirm。
+
+### confirm_review_items
+- 描述：单条或批量确认 review_items（confirm/reject），会触发受影响成果的合并写入。（**批量接口**，body 传 item_ids 列表即可）
+- 参数：`score_id: string`、`item_ids: string[]`、`expected_version: string`、`idempotency_key: string`
+- 返回：`[{item_id, status: succeeded|conflict|skipped, reason?}]`
+- 约束：CAS 校验 expected_version，冲突返回 conflict；幂等防止重复副作用。
 
 ## 8. 搜索与引用
 
