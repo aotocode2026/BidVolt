@@ -21,10 +21,10 @@
 后端业务服务（BidVolt API）
    │  HTTP + SSE（任务提交、消息透传）
    ▼
-Hermes Agent（独立容器）
+Hermes Agent（同容器独立进程 / 独立容器，ADR D17）
    ├─ bidvolt MCP server（stdio，本仓库实现）→ 业务数据能力
    ├─ anysearch MCP server → 网络搜索
-   ├─ 模型：qwen-max（主推理）/ qwen-vl-max（vision_model）/ qwen-plus（轻量）
+   ├─ 模型：deepseek-v4-flash（主推理）/ qwen-vl-max（vision_model）/ deepseek-v4-flash（轻量）
    └─ Skills：5 个业务 SKILL.md（本目录）
 ```
 
@@ -62,7 +62,14 @@ skills:
     - bidvolt-targeted-edit
 ```
 
-> 说明：`BIDVOLT_API_BASE` 指向后端业务服务；内部 token 走 `.env`（`${VAR}` 在连接时替换）。所有 MCP 工具调用由后端按 Profile/Session 注入 `enterprise_id` / `project_id`，Hermes 不需要传租户参数。
+> 说明：`BIDVOLT_API_BASE` 指向后端业务服务；`${VAR}` 形式的占位符在连接时由部署环境注入的环境变量替换（见下方密钥约定）。所有 MCP 工具调用由后端按 Profile/Session 注入 `enterprise_id` / `project_id`，Hermes 不需要传租户参数。
+>
+> 密钥约定（P1）：`BIDVOLT_INTERNAL_TOKEN`、`ANYSEARCH_KEY`、`DASHSCOPE_API_KEY` 均由 Secret Manager 在部署时注入 Hermes 进程环境变量，仓库内不保存 `.env` 明文，Agent 不读取源码目录中的 `.env` 文件。
+
+## 2.1 MCP IDL 与契约测试（P0-3）
+
+- 所有 bidvolt MCP 工具的**参数与返回 Schema 由同一 IDL/JSON Schema 生成**（见 [bidvolt-mcp-tools.md](./bidvolt-mcp-tools.md) 第 10 节），客户端、服务端与测试共用同一份 Schema，禁止手写两端各自维护
+- 为五条 Skill 路径建立端到端契约测试（Mock 后端 + 真实 Hermes + 合成材料），测试清单见 `docs/威胁模型与测试清单.md` 第 4 节
 
 ## 3. 能力边界原则（写入 MCP 与 Skill 的共同约束）
 

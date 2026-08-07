@@ -12,7 +12,7 @@
 | 项目材料 | `list_project_materials` | 读 | 当前招标材料列表 |
 | 资料匹配 | `save_material_match_results` | 写 | 资料匹配结果落库 |
 | 成果读写 | `get_deliverable_content` `save_deliverable` | 读/写 | 成果结构化内容与版本保存（CAS + 幂等 + source_task_id） |
-| 报价 | `calculate_quote` `get_history_price` | 读 | 确定性测算（P2：无 apply） |
+| 报价 | `calculate_quote` `get_history_price` `get_material_samples` `get_source_metadata` | 读 | 确定性测算 + 外部只读样本/来源元数据（P2：无 apply） |
 | 评标 | `get_latest_score` `get_review_items` `submit_score_items` `confirm_review_items` | 读/写 | 评分汇总 + 逐条 review_item 读写 + 批量确认（snapshot + EvidenceRef + CAS） |
 | 搜索 | `search_web` `save_source` `link_citation` | 读/写 | AnySearch 与引用追溯（P5，绑定版本） |
 
@@ -102,6 +102,16 @@
 - 参数：`material_name?`、`region?`、`year?`、`limit?`
 - 返回：`[{material_name, spec, region, win_price, win_date, source_hash}]`
 
+### get_material_samples
+- 描述：读取某物料的样本明细（`HistoryPriceProvider.get_material_samples`），用于报价依据解释与审计复算。
+- 参数：`material_ref: string`
+- 返回：`[{material_name, spec, region, win_price, win_date, source_hash, normalized_params}]`
+
+### get_source_metadata
+- 描述：读取外部报价数据来源元数据（`HistoryPriceProvider.get_source_metadata`）：源标识、抓取时间、覆盖范围、更新策略。
+- 参数：`provider_id?: string`
+- 返回：`[{provider_id, source_name, fetched_at, coverage, update_policy, readonly_verified}]`
+
 ## 7. 评标（review_item 主模型，产品决策 D-J）
 
 ### get_latest_score
@@ -148,3 +158,23 @@
 - **授权注入（产品决策 D-B）**：MCP server 按当前任务的**授权上下文**（enterprise/project/task/工具白名单/对象范围）校验；企业资料写工具仅企业资料导入任务可用；工具参数不接收 enterprise_id
 - 错误语义：业务错误返回结构化 `{code, message}`；401 表示内部 token 失效；409 表示版本冲突
 - 过滤：`hermes mcp configure bidvolt` 安装时按本清单勾选，不暴露未列工具
+
+## 10. MCP IDL 与契约测试（P0-3）
+
+### 10.1 IDL/JSON Schema 约定
+
+- 本清单中每个工具的**参数 Schema 与返回 Schema**由单一 IDL 定义（建议 **OpenRPC + JSON Schema**，存放于 `bidvolt_mcp/schema/`，如 `tools/quote.yaml`、`tools/review.yaml`），服务端实现与客户端类型由同一 Schema 生成，**禁止手写两端各自维护**
+- 每个工具 Schema 包含：`name`、`description`、`params`（JSON Schema，含必填与约束）、`returns`、`auth_scope`（该工具所需任务级授权范围）、`idempotent`（是否幂等，写工具必须带 `idempotency_key`）
+- Schema 生成物与后端 REST 契约（模块细化设计各节接口表）做一致性校验，纳入 CI
+
+### 10.2 五条 Skill 路径端到端契约测试
+
+| Skill 路径 | 测试场景（Mock 后端 + 合成材料） | 断言 |
+|---|---|---|
+| 招标解析（tender-parse） | 上传合成招标文件 → 解析 → `upsert_requirements` 写入 | 每条 requirement 有 coordinates；查重不重复写；补遗 supersedes 记录 |
+| 资料匹配（material-match） | `search_assets` 检索 → `save_material_match_results` | 缺失项关联 requirement/评分项；asset_id 真实存在 |
+| 标书生成/校核（bid-generate） | 生成三份成果 → `save_deliverable` | expected_version_id CAS；幂等；企业事实可溯源；无公式报价带 is_ai_suggest 标注 |
+| 模拟评标（mock-evaluate） | `submit_score_items` → `confirm_review_items` | evidence 服务端校验通过；批量返回逐条结果；重审只跑受影响项 |
+| 针对性修改（targeted-edit） | 选区 diff → 应用 | diff 节点存在于基准版本；AI 不调 `save_deliverable`；应用后与 diff 一致 |
+
+> 完整测试清单（含跨租户 IDOR、Prompt Injection、任务幂等、文件安全、SSE 白名单）见 `docs/威胁模型与测试清单.md`。
