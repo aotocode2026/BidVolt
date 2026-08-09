@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# 单容器初始化（草案）：空数据卷时初始化 PG 集群 → 建库/用户 → alembic 迁移 → 启动 supervisor
+# 初始化（容器内直接运行）：空数据卷时初始化 PG 集群 → 建库/用户 → alembic 迁移 → 启动 supervisor
 set -euo pipefail
 
-PGBIN=/usr/lib/postgresql/16/bin
+PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1)
+if [ -z "$PGBIN" ]; then
+  echo "未找到 PostgreSQL 安装目录（/usr/lib/postgresql/*/bin）" >&2
+  exit 1
+fi
 PGDATA=/var/lib/bidvolt/pgdata
 DATA=/var/lib/bidvolt/data
 BACKUPS=/var/lib/bidvolt/backups

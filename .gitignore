@@ -1,0 +1,21 @@
+# 环境与密钥（禁止上传）
+.env
+.env.*
+!.env.example
+local/
+secrets/
+*.secret
+
+# 日志与运行时
+logs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
