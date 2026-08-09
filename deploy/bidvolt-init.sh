@@ -7,15 +7,15 @@ if [ -z "$PGBIN" ]; then
   echo "未找到 PostgreSQL 安装目录（/usr/lib/postgresql/*/bin）" >&2
   exit 1
 fi
-PGDATA=/var/lib/bidvolt/pgdata
-DATA=/var/lib/bidvolt/data
-BACKUPS=/var/lib/bidvolt/backups
+PGDATA=/data/pgdata
+DATA=/data/appdata
+BACKUPS=/data/backups
 PGUSER=postgres
 APP_DB=bidvolt
 APP_USER=bidvolt
 
-mkdir -p "$PGDATA" "$DATA" "$BACKUPS" /var/lib/bidvolt/backups/wal /var/log/bidvolt /etc/bidvolt
-chown -R postgres:postgres "$PGDATA" /var/lib/bidvolt/backups
+mkdir -p "$PGDATA" "$DATA" "$BACKUPS" "$BACKUPS/wal" /var/log/bidvolt /etc/bidvolt
+chown -R postgres:postgres "$PGDATA" "$BACKUPS"
 
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
   echo "[init] initdb: $PGDATA"
@@ -26,7 +26,7 @@ listen_addresses = '127.0.0.1'
 port = 5432
 unix_socket_directories = '/var/run/postgresql'
 archive_mode = on
-archive_command = 'cp %p /var/lib/bidvolt/backups/wal/%f'
+archive_command = 'cp %p /data/backups/wal/%f'
 max_wal_size = 1GB
 EOF
   echo "[init] bootstrap PG (create user/db)"

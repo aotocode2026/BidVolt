@@ -8,4 +8,4 @@ if [ -z "$PGBIN" ]; then
   exit 1
 fi
 
-exec "$PGBIN/postgres" -D /var/lib/bidvolt/pgdata -c config_file=/etc/bidvolt/postgresql.conf
+exec "$PGBIN/postgres" -D /data/pgdata -c config_file=/etc/bidvolt/postgresql.conf

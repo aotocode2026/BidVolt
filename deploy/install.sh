@@ -18,8 +18,8 @@ python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
-echo "==> 3/5 创建数据/配置/日志目录"
-mkdir -p /var/lib/bidvolt/{pgdata,data,backups,backups/wal} /etc/bidvolt /var/log/bidvolt
+echo "==> 3/5 准备 /data 持久卷内子目录（卷由平台外挂，脚本不建卷）"
+mkdir -p /data/{pgdata,appdata,backups,backups/wal} /etc/bidvolt /var/log/bidvolt
 
 echo "==> 4/5 安装 supervisor 配置与运维脚本"
 cp deploy/supervisord.conf /etc/supervisor/conf.d/bidvolt.conf
