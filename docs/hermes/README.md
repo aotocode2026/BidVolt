@@ -44,7 +44,7 @@ mcp_servers:
     command: python
     args: ["-m", "bidvolt_mcp"]          # 本仓库实现的 stdio MCP server
     env:
-      BIDVOLT_API_BASE: "http://bidvolt-api:8000"
+      BIDVOLT_API_BASE: "http://127.0.0.1:8123"
       BIDVOLT_INTERNAL_TOKEN: "${BIDVOLT_INTERNAL_TOKEN}"
     supports_parallel_tool_calls: true   # 三份成果可并行生成
   anysearch:
