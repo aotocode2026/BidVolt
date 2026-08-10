@@ -26,6 +26,7 @@ from app.models.project_material import (
     ProjectMaterialRevision,
     ProjectSnapshot,
 )
+from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.models.quota import TenantQuota
 from app.models.task import Task
 
@@ -47,6 +48,7 @@ __all__ = [
     "DeliverableContent",
     "DeliverableVersion",
     "FileObject",
+    "HistoryPriceSnapshot",
     "MaterialMatchResult",
     "Project",
     "ProjectEditLock",
@@ -54,6 +56,7 @@ __all__ = [
     "ProjectMaterial",
     "ProjectMaterialRevision",
     "ProjectSnapshot",
+    "QuoteCalc",
     "RefreshToken",
     "Task",
     "TenantQuota",

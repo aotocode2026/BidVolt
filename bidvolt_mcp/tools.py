@@ -72,6 +72,23 @@ def _save_deliverable(args: dict) -> Any:
         return resp.json()
 
 
+def _calculate_quote(args: dict) -> Any:
+    body = {
+        "material_ref": args["material_ref"],
+        "cost": args["cost"],
+        "min_profit_rate": args.get("min_profit_rate", 0.05),
+        "strategy": args.get("strategy"),
+    }
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post("/api/v1/quotes/calculate", json=body, headers=_headers())
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _get_history_price(args: dict) -> Any:
+    return _get("/api/v1/quotes/history", {"material_ref": args.get("material_ref")})
+
+
 TOOL_DEFS: list[dict] = [
     {
         "name": "health",
@@ -147,6 +164,32 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _save_deliverable,
+    },
+    {
+        "name": "calculate_quote",
+        "description": "调用确定性 QuoteEngine 计算建议价（只建议不写入）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "material_ref": {"type": "string"},
+                "cost": {"type": "number"},
+                "min_profit_rate": {"type": "number"},
+                "strategy": {"type": "string", "enum": ["win", "balance", "profit"]},
+            },
+            "required": ["material_ref", "cost"],
+            "additionalProperties": False,
+        },
+        "handler": _calculate_quote,
+    },
+    {
+        "name": "get_history_price",
+        "description": "查询历史中标记录（外部 Provider 只读）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"material_ref": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "handler": _get_history_price,
     },
 ]
 

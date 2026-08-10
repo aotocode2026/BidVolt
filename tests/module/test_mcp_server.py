@@ -28,6 +28,9 @@ class _MockBackend(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/v1/deliverables/9/content"):
             body = json.dumps({"deliverable_id": 9, "version_no": 1, "model": {"nodes": []}}).encode()
             self.send_response(200)
+        elif self.path.startswith("/api/v1/quotes/history"):
+            body = json.dumps({"sample_count": 8, "samples": [], "readonly": True}).encode()
+            self.send_response(200)
         else:
             self.send_response(404)
             body = b"{}"
@@ -43,6 +46,9 @@ class _MockBackend(BaseHTTPRequestHandler):
         if self.path.startswith("/api/v1/deliverables/9/versions"):
             body = json.dumps({"version_no": 2, "version_id": 20, "milestone": False}).encode()
             self.send_response(201)
+        elif self.path.startswith("/api/v1/quotes/calculate"):
+            body = json.dumps({"calc_id": 7, "result": {"suggested": 120.0, "sample_count": 8}}).encode()
+            self.send_response(200)
         else:
             self.send_response(404)
             body = b"{}"
@@ -158,3 +164,27 @@ def test_mcp_deliverable_tools():
     assert content["version_no"] == 1
     saved = json.loads(lines[1]["result"]["content"][0]["text"])
     assert saved["version_no"] == 2
+
+
+def test_mcp_quote_tools():
+    with ThreadingHTTPServer(("127.0.0.1", 0), _MockBackend) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_mcp(
+                port,
+                "quote-token",
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_history_price", "arguments": {"material_ref": "CABLE"}}},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "calculate_quote", "arguments": {"material_ref": "CABLE", "cost": 100}}},
+                ],
+            )
+        finally:
+            httpd.shutdown()
+
+    lines = [json.loads(l) for l in out.strip().splitlines()]
+    history = json.loads(lines[0]["result"]["content"][0]["text"])
+    assert history["readonly"] is True
+    calc = json.loads(lines[1]["result"]["content"][0]["text"])
+    assert calc["result"]["suggested"] == 120.0
