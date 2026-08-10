@@ -50,6 +50,28 @@ def _list_project_materials(args: dict) -> Any:
     return _get(f"/api/v1/files/projects/{args['project_id']}/materials")
 
 
+def _get_deliverable_content(args: dict) -> Any:
+    return _get(f"/api/v1/deliverables/{args['deliverable_id']}/content")
+
+
+def _save_deliverable(args: dict) -> Any:
+    body = {
+        "content": args["model"],
+        "expected_version_no": args.get("expected_version_no"),
+        "idempotency_key": args["idempotency_key"],
+        "source_task_id": args.get("source_task_id"),
+        "version_type": 2,  # AI 生成
+    }
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/deliverables/{args['deliverable_id']}/versions",
+            json=body,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 TOOL_DEFS: list[dict] = [
     {
         "name": "health",
@@ -97,6 +119,34 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _list_project_materials,
+    },
+    {
+        "name": "get_deliverable_content",
+        "description": "读取成果指定/当前版本的结构化内容（DocModel/SheetModel）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"deliverable_id": {"type": "integer"}},
+            "required": ["deliverable_id"],
+            "additionalProperties": False,
+        },
+        "handler": _get_deliverable_content,
+    },
+    {
+        "name": "save_deliverable",
+        "description": "保存成果新版本（expected_version_id CAS + idempotency_key + source_task_id）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deliverable_id": {"type": "integer"},
+                "model": {"type": "object"},
+                "expected_version_no": {"type": "integer"},
+                "idempotency_key": {"type": "string"},
+                "source_task_id": {"type": "integer"},
+            },
+            "required": ["deliverable_id", "model", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": _save_deliverable,
     },
 ]
 

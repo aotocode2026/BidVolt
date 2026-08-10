@@ -3,6 +3,12 @@
 from app.models.audit import AuditLog
 from app.models.auth import AppUser, Enterprise, EnterprisePermission, ProjectEditLock, RefreshToken
 from app.models.doc import DocBlock
+from app.models.deliverable import (
+    AIEditDiff,
+    Deliverable,
+    DeliverableContent,
+    DeliverableVersion,
+)
 from app.models.enterprise_domain import (
     EnterpriseAsset,
     EnterpriseAssetCategory,
@@ -25,6 +31,7 @@ from app.models.task import Task
 
 __all__ = [
     "AppUser",
+    "AIEditDiff",
     "ArchiveJob",
     "AuditLog",
     "DocBlock",
@@ -36,6 +43,9 @@ __all__ = [
     "EnterpriseFactEvidence",
     "EnterpriseIngestionTask",
     "EnterprisePermission",
+    "Deliverable",
+    "DeliverableContent",
+    "DeliverableVersion",
     "FileObject",
     "MaterialMatchResult",
     "Project",

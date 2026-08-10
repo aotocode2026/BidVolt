@@ -25,6 +25,24 @@ class _MockBackend(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/v1/files/123/blocks"):
             body = json.dumps({"items": [{"block_id": 1, "text": "招标要求"}], "total": 1}).encode()
             self.send_response(200)
+        elif self.path.startswith("/api/v1/deliverables/9/content"):
+            body = json.dumps({"deliverable_id": 9, "version_no": 1, "model": {"nodes": []}}).encode()
+            self.send_response(200)
+        else:
+            self.send_response(404)
+            body = b"{}"
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):  # noqa: N802
+        type(self).captured_auth = self.headers.get("Authorization")
+        length = int(self.headers.get("Content-Length", 0))
+        _ = self.rfile.read(length)
+        if self.path.startswith("/api/v1/deliverables/9/versions"):
+            body = json.dumps({"version_no": 2, "version_id": 20, "milestone": False}).encode()
+            self.send_response(201)
         else:
             self.send_response(404)
             body = b"{}"
@@ -80,7 +98,14 @@ def test_mcp_initialize_and_tools():
     by_id = {r["id"]: r for r in lines}
     assert by_id[1]["result"]["serverInfo"]["name"] == "bidvolt"
     names = [t["name"] for t in by_id[2]["result"]["tools"]]
-    assert {"health", "search_assets", "get_project_material_blocks", "list_project_materials"} <= set(names)
+    assert {
+        "health",
+        "search_assets",
+        "get_project_material_blocks",
+        "list_project_materials",
+        "get_deliverable_content",
+        "save_deliverable",
+    } <= set(names)
     assert json.loads(by_id[3]["result"]["content"][0]["text"])["status"] == "ok"
     assert by_id[4]["error"]["code"] == -32602
 
@@ -108,3 +133,28 @@ def test_mcp_tools_call_backend_with_auth_header():
     assert assets["total"] == 1
     blocks = json.loads(lines[1]["result"]["content"][0]["text"])
     assert blocks["items"][0]["text"] == "招标要求"
+
+
+def test_mcp_deliverable_tools():
+    with ThreadingHTTPServer(("127.0.0.1", 0), _MockBackend) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_mcp(
+                port,
+                "deliverable-token",
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_deliverable_content", "arguments": {"deliverable_id": 9}}},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "save_deliverable", "arguments": {"deliverable_id": 9, "model": {"nodes": []}, "idempotency_key": "k", "expected_version_no": 1, "source_task_id": 5}}},
+                ],
+            )
+        finally:
+            httpd.shutdown()
+
+    assert _MockBackend.captured_auth == "Bearer deliverable-token"
+    lines = [json.loads(l) for l in out.strip().splitlines()]
+    content = json.loads(lines[0]["result"]["content"][0]["text"])
+    assert content["version_no"] == 1
+    saved = json.loads(lines[1]["result"]["content"][0]["text"])
+    assert saved["version_no"] == 2
