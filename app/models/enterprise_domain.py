@@ -54,6 +54,7 @@ class EnterpriseAssetRevision(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("asset_id", "revision_no", name="uq_ear_rev"),)
 
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     asset_id: Mapped[int] = mapped_column(
         BigInt, ForeignKey("enterprise_asset.id"), nullable=False
     )
@@ -86,6 +87,7 @@ class EnterpriseFactEvidence(Base, TimestampMixin):
     __tablename__ = "enterprise_fact_evidence"
 
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     fact_id: Mapped[int] = mapped_column(
         BigInt, ForeignKey("enterprise_fact.id"), nullable=False
     )

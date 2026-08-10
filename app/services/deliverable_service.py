@@ -96,6 +96,7 @@ async def save_version(
     content_row = await _get_or_create_content(session, content)
     version_no = deliverable.current_version_no + 1
     version = DeliverableVersion(
+        enterprise_id=deliverable.enterprise_id,
         deliverable_id=deliverable.id,
         version_no=version_no,
         version_type=version_type,

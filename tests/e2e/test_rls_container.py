@@ -18,18 +18,18 @@ def test_rls_tenant_isolation():
         rows = conn.execute(
             text(
                 "SELECT relname FROM pg_class "
-                "WHERE relname IN ('app_user','project','task') AND relrowsecurity = true "
+                "WHERE relname IN ('project','task','file_object') AND relrowsecurity = true "
                 "ORDER BY relname"
             )
         ).fetchall()
-        assert {r[0] for r in rows} == {"app_user", "project", "task"}, "RLS 未启用"
+        assert {r[0] for r in rows} == {"project", "task", "file_object"}, "RLS 未启用"
 
         conn.execute(text("SET LOCAL app.enterprise_id = '1'"))
-        conn.execute(text("INSERT INTO project (enterprise_id, name, status) VALUES (1, 'RLS测试', 1)"))
+        conn.execute(text("INSERT INTO project (enterprise_id, name, status) VALUES (1, 'RLS-TEST', 1)"))
         conn.execute(text("SET LOCAL app.enterprise_id = '1'"))
-        own = conn.execute(text("SELECT count(*) FROM project WHERE name='RLS测试'")).scalar()
+        own = conn.execute(text("SELECT count(*) FROM project WHERE name='RLS-TEST'")).scalar()
         assert own == 1
         conn.execute(text("SET LOCAL app.enterprise_id = '2'"))
-        visible = conn.execute(text("SELECT count(*) FROM project WHERE name='RLS测试'")).scalar()
+        visible = conn.execute(text("SELECT count(*) FROM project WHERE name='RLS-TEST'")).scalar()
         assert visible == 0, "跨租户数据被 RLS 泄露"
     engine.dispose()

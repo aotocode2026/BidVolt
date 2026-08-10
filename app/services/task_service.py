@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import TaskStatus, TaskType
@@ -73,12 +73,18 @@ def public_event(task: Task) -> dict:
 
 async def run_task(session: AsyncSession, task: Task) -> Task:
     """执行单个任务（handler 由 HANDLERS 注册）。"""
+    is_pg = session.bind is not None and session.bind.dialect.name == "postgresql"
+    if is_pg:
+        # RLS：worker 无用户上下文，按任务租户显式设置（会话级，跨提交生效）
+        await session.execute(
+            text("SELECT set_config('app.enterprise_id', :eid, false)"),
+            {"eid": str(task.enterprise_id)},
+        )
     task.status = int(TaskStatus.RUNNING)
     task.progress = {"phase": task.task_type, "status": "running", "percent": 10, "current_work": f"开始执行 {task.task_type}"}
-    await session.commit()
-
-    handler = HANDLERS.get(task.task_type)
     try:
+        await session.commit()
+        handler = HANDLERS.get(task.task_type)
         if handler is None:
             raise NotImplementedError(f"任务类型未实现：{task.task_type}")
         await handler(session, task)
@@ -95,7 +101,13 @@ async def run_task(session: AsyncSession, task: Task) -> Task:
         else:
             task.status = int(TaskStatus.QUEUED)
             task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
-    await session.commit()
+    finally:
+        if is_pg:
+            # 复位租户上下文，避免连接池复用泄漏
+            await session.execute(
+                text("SELECT set_config('app.enterprise_id', '', false)")
+            )
+        await session.commit()
     return task
 
 

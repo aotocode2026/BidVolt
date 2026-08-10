@@ -7,8 +7,10 @@ import shutil
 import tempfile
 from pathlib import Path
 
-# 必须在导入 app 之前设置（env var 优先级高于 .env 文件）
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./.test_bidvolt.db"
+# 必须在导入 app 之前设置（env var 优先级高于 .env 文件）。
+# BIDVOLT_KEEP_DATABASE_URL=1 时保留外部 DATABASE_URL（容器 RLS 测试用真实 PG）。
+if os.environ.get("BIDVOLT_KEEP_DATABASE_URL") != "1":
+    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./.test_bidvolt.db"
 os.environ["STORAGE_ROOT"] = os.path.join(tempfile.gettempdir(), "bidvolt_test_storage")
 
 import pytest

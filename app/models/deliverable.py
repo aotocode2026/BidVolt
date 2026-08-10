@@ -50,6 +50,7 @@ class DeliverableVersion(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("deliverable_id", "version_no", name="uq_dv_no"),)
 
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     deliverable_id: Mapped[int] = mapped_column(
         BigInt, ForeignKey("deliverable.id"), nullable=False, index=True
     )

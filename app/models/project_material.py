@@ -30,6 +30,7 @@ class ProjectMaterialRevision(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("material_id", "revision_no", name="uq_pmr_rev"),)
 
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     material_id: Mapped[int] = mapped_column(
         BigInt, ForeignKey("project_material.id"), nullable=False
     )

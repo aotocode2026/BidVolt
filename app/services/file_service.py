@@ -137,6 +137,7 @@ async def process_upload(
         await session.flush()
         session.add(
             EnterpriseAssetRevision(
+                enterprise_id=user.enterprise_id,
                 asset_id=asset.id,
                 revision_no=1,
                 file_id=fobj.id,
@@ -155,6 +156,7 @@ async def process_upload(
         await session.flush()
         session.add(
             ProjectMaterialRevision(
+                enterprise_id=user.enterprise_id,
                 material_id=material.id,
                 revision_no=1,
                 source_file_id=fobj.id,
