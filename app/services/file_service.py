@@ -74,6 +74,20 @@ async def _parse_file(session: AsyncSession, fobj: FileObject) -> None:
         fobj.parse_status = {"error_code": type(exc).__name__, "message": str(exc)}
 
 
+async def reparse_file(session: AsyncSession, file_id: int) -> FileObject:
+    """任务 handler 用：按 file_id 重新解析并更新项目材料状态。"""
+    fobj = await session.get(FileObject, file_id)
+    if fobj is None:
+        raise ValueError(f"文件不存在：{file_id}")
+    await _parse_file(session, fobj)
+    material = await session.scalar(
+        select(ProjectMaterial).where(ProjectMaterial.file_id == file_id)
+    )
+    if material is not None:
+        material.status = 2 if fobj.status == 3 else 4
+    return fobj
+
+
 async def process_upload(
     session: AsyncSession,
     user: UserContext,
