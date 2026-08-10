@@ -17,6 +17,7 @@ from app.models.enterprise_domain import (
     EnterpriseFactEvidence,
     EnterpriseIngestionTask,
 )
+from app.models.export import ExportJob, FinalCheck
 from app.models.file import ArchiveJob, FileObject
 from app.models.project import Project
 from app.models.project_material import (
@@ -51,10 +52,12 @@ __all__ = [
     "EnterpriseFactEvidence",
     "EnterpriseIngestionTask",
     "EnterprisePermission",
+    "ExportJob",
     "Deliverable",
     "DeliverableContent",
     "DeliverableVersion",
     "FileObject",
+    "FinalCheck",
     "HistoryPriceSnapshot",
     "MaterialMatchResult",
     "Project",
