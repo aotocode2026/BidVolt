@@ -28,6 +28,13 @@ from app.models.project_material import (
 )
 from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.models.quota import TenantQuota
+from app.models.review import (
+    ReviewItem,
+    ReviewMaterialLink,
+    ReviewProvider,
+    ReviewRun,
+    ScoreRecord,
+)
 from app.models.task import Task
 
 __all__ = [
@@ -57,6 +64,11 @@ __all__ = [
     "ProjectMaterialRevision",
     "ProjectSnapshot",
     "QuoteCalc",
+    "ReviewItem",
+    "ReviewMaterialLink",
+    "ReviewProvider",
+    "ReviewRun",
+    "ScoreRecord",
     "RefreshToken",
     "Task",
     "TenantQuota",

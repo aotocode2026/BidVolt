@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from app.api import auth, deliverables, enterprise, files, health, locks, projects, quotes, tasks
+from app.api import auth, deliverables, enterprise, files, health, locks, projects, quotes, review, tasks
 
 app = FastAPI(title="BidVolt API", version="0.1.0")
 
@@ -17,6 +17,8 @@ app.include_router(enterprise.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(deliverables.router, prefix="/api/v1")
 app.include_router(quotes.router, prefix="/api/v1")
+app.include_router(review.router, prefix="/api/v1")
+app.include_router(review.providers_router, prefix="/api/v1")
 
 
 @app.get("/")
