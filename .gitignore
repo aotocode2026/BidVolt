@@ -8,11 +8,13 @@ secrets/
 
 # 日志与运行时
 logs/
+*.log
 __pycache__/
 *.pyc
 .venv/
 venv/
 .pytest_cache/
+.test_bidvolt.db
 
 # 系统与编辑器
 .DS_Store
