@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     data_classification_confirmed: int = 0
     cloud_llm_enabled: int = 0
     search_enabled: int = 0
+    minimax_api_key: str = ""
+    minimax_base_url: str = "https://api.minimax.chat/v1"
+    minimax_model: str = "MiniMax-Text-01"
 
     # 业务端口（容器内 8123，公网 28123）
     bind_host: str = "0.0.0.0"

@@ -31,6 +31,9 @@ class _MockBackend(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/v1/quotes/history"):
             body = json.dumps({"sample_count": 8, "samples": [], "readonly": True}).encode()
             self.send_response(200)
+        elif self.path.startswith("/api/v1/requirements"):
+            body = json.dumps([{"req_id": 1, "req_type": "qualification", "content": "三级资质"}]).encode()
+            self.send_response(200)
         else:
             self.send_response(404)
             body = b"{}"
@@ -49,6 +52,9 @@ class _MockBackend(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/v1/quotes/calculate"):
             body = json.dumps({"calc_id": 7, "result": {"suggested": 120.0, "sample_count": 8}}).encode()
             self.send_response(200)
+        elif self.path.startswith("/api/v1/projects/5/requirements/upsert"):
+            body = json.dumps({"created": [1], "count": 1}).encode()
+            self.send_response(201)
         else:
             self.send_response(404)
             body = b"{}"
@@ -111,6 +117,9 @@ def test_mcp_initialize_and_tools():
         "list_project_materials",
         "get_deliverable_content",
         "save_deliverable",
+        "list_requirements",
+        "get_requirement",
+        "upsert_requirements",
     } <= set(names)
     assert json.loads(by_id[3]["result"]["content"][0]["text"])["status"] == "ok"
     assert by_id[4]["error"]["code"] == -32602
@@ -188,3 +197,28 @@ def test_mcp_quote_tools():
     assert history["readonly"] is True
     calc = json.loads(lines[1]["result"]["content"][0]["text"])
     assert calc["result"]["suggested"] == 120.0
+
+
+def test_mcp_requirement_tools():
+    with ThreadingHTTPServer(("127.0.0.1", 0), _MockBackend) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_mcp(
+                port,
+                "req-token",
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_requirements", "arguments": {"project_id": 5}}},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "upsert_requirements", "arguments": {"project_id": 5, "requirements": [{"req_type": "qualification", "content": "三级资质", "coordinates": [{"file_id": 1}]}]}}},
+                ],
+            )
+        finally:
+            httpd.shutdown()
+
+    assert _MockBackend.captured_auth == "Bearer req-token"
+    lines = [json.loads(l) for l in out.strip().splitlines()]
+    reqs = json.loads(lines[0]["result"]["content"][0]["text"])
+    assert reqs[0]["req_type"] == "qualification"
+    created = json.loads(lines[1]["result"]["content"][0]["text"])
+    assert created["count"] == 1

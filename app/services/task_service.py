@@ -119,7 +119,7 @@ async def run_next_task(session: AsyncSession) -> Task | None:
 
 
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
-    """解析项目材料：把 payload.file_ids 逐文件解析为 doc_block。"""
+    """解析项目材料：doc_block + （门禁内）LLM 语义抽取 requirement。"""
     from app.services.file_service import reparse_file
 
     file_ids = task.payload.get("file_ids") or []
@@ -130,7 +130,44 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         fobj = await reparse_file(session, int(file_id))
         if fobj.status != 3:
             raise ValueError(f"文件解析失败：{fobj.original_name}")
-    task.result = {"parsed_file_ids": [int(i) for i in file_ids]}
+    result: dict = {"parsed_file_ids": [int(i) for i in file_ids], "requirements_extracted": 0}
+
+    from sqlalchemy import select as sa_select
+
+    from app.models.doc import DocBlock
+    from app.services.llm import LLMClient, extract_json, llm_enabled
+    from app.services import requirement_service
+
+    if llm_enabled():
+        blocks = (
+            await session.scalars(
+                sa_select(DocBlock).where(DocBlock.file_id.in_([int(i) for i in file_ids]))
+            )
+        ).all()
+        text = "\n".join(b.text_content or "" for b in blocks)[:30000]
+        system = (
+            "你是投标文件解析助手。从招标材料中抽取资格要求、评分细则、否决条款、技术要求、报价规则、材料清单，"
+            "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
+            "只依据给定材料，禁止编造。"
+        )
+        reply = await LLMClient().chat(system, f"招标材料：\n{text}")
+        items = extract_json(reply).get("requirements", [])
+        for item in items:
+            await requirement_service.upsert_requirement(
+                session,
+                enterprise_id=task.enterprise_id,
+                project_id=task.project_id,
+                req_type=item["req_type"],
+                content=item["content"],
+                structured=item.get("structured"),
+                coordinates=item.get("coordinates") or [],
+                confidence=item.get("confidence"),
+                source_task_id=task.id,
+            )
+        result["requirements_extracted"] = len(items)
+    else:
+        result["note"] = "云模型门禁关闭，未做语义抽取（仅完成文本解析）"
+    task.result = result
 
 
 HANDLERS: dict[str, object] = {

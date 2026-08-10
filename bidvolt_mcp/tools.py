@@ -89,6 +89,26 @@ def _get_history_price(args: dict) -> Any:
     return _get("/api/v1/quotes/history", {"material_ref": args.get("material_ref")})
 
 
+def _list_requirements(args: dict) -> Any:
+    return _get("/api/v1/requirements", {"project_id": args["project_id"]})
+
+
+def _get_requirement(args: dict) -> Any:
+    return _get(f"/api/v1/requirements/{args['req_id']}")
+
+
+def _upsert_requirements(args: dict) -> Any:
+    body = {"requirements": args["requirements"]}
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/projects/{args['project_id']}/requirements/upsert",
+            json=body,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 TOOL_DEFS: list[dict] = [
     {
         "name": "health",
@@ -190,6 +210,55 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _get_history_price,
+    },
+    {
+        "name": "list_requirements",
+        "description": "列出项目当前生效的招标要求（含坐标与 revision）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "integer"}},
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+        "handler": _list_requirements,
+    },
+    {
+        "name": "get_requirement",
+        "description": "读取单条招标要求详情",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"req_id": {"type": "integer"}},
+            "required": ["req_id"],
+            "additionalProperties": False,
+        },
+        "handler": _get_requirement,
+    },
+    {
+        "name": "upsert_requirements",
+        "description": "写入/更新招标要求（招标解析 Skill 产出；coordinates 必填）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "requirements": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "req_type": {"type": "string"},
+                            "content": {"type": "string"},
+                            "structured": {"type": "object"},
+                            "coordinates": {"type": "array"},
+                            "confidence": {"type": "number"},
+                        },
+                        "required": ["req_type", "content"],
+                    },
+                },
+            },
+            "required": ["project_id", "requirements"],
+            "additionalProperties": False,
+        },
+        "handler": _upsert_requirements,
     },
 ]
 

@@ -29,6 +29,7 @@ from app.models.project_material import (
 )
 from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.models.quota import TenantQuota
+from app.models.requirement import Requirement, RequirementRevision
 from app.models.review import (
     ReviewItem,
     ReviewMaterialLink,
@@ -73,6 +74,8 @@ __all__ = [
     "ReviewRun",
     "ScoreRecord",
     "RefreshToken",
+    "Requirement",
+    "RequirementRevision",
     "Task",
     "TenantQuota",
 ]
