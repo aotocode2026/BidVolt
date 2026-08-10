@@ -13,6 +13,7 @@ from app.constants import Permission
 from app.db import get_session
 from app.models.audit import AuditLog
 from app.models.auth import AppUser, Enterprise, EnterprisePermission, RefreshToken
+from app.models.enterprise_domain import EnterpriseAssetCategory
 from app.models.quota import TenantQuota
 from app.schemas.auth import (
     LoginRequest,
@@ -67,6 +68,13 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
             enterprise_id=enterprise.id,
         )
     )
+    for category_name in ("证照", "资质", "业绩", "人员", "产品参数", "检测报告", "其他"):
+        session.add(
+            EnterpriseAssetCategory(
+                enterprise_id=enterprise.id,
+                name=category_name,
+            )
+        )
 
     user = AppUser(
         enterprise_id=enterprise.id,

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 # 必须在导入 app 之前设置（env var 优先级高于 .env 文件）
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./.test_bidvolt.db"
+os.environ["STORAGE_ROOT"] = os.path.join(tempfile.gettempdir(), "bidvolt_test_storage")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,4 +59,5 @@ def clean_db():
         for table in reversed(Base.metadata.sorted_tables):
             conn.execute(table.delete())
     engine.dispose()
+    shutil.rmtree(os.environ["STORAGE_ROOT"], ignore_errors=True)
     yield

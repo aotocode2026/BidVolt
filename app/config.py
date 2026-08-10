@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     bind_host: str = "0.0.0.0"
     bind_port: int = 8123
 
+    # 文件安全（M2，P1）
+    max_upload_bytes: int = 200 * 1024 * 1024
+    virus_scan_required: bool = False  # 生产置 True：ClamAV 不可用则 fail-closed
+
     @property
     def cloud_features_locked(self) -> bool:
         """数据分级未确认时，云模型/搜索强制关闭（fail-closed）。"""
