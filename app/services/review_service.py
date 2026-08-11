@@ -312,14 +312,44 @@ async def re_evaluate(
             )
         new_items.append(item)
 
+    # 总分 = 原评审已确认项（未被本次重审替换的部分） + 重审新项
+    original_score_ids = {o.score_id for o in originals if o.score_id is not None}
+    carried: list[ReviewItem] = []
+    replaced_ids = {o.id for o in originals}
+    for score_id in original_score_ids:
+        score_row = await session.scalar(
+            select(ScoreRecord).where(
+                ScoreRecord.id == score_id,
+                ScoreRecord.enterprise_id == enterprise_id,
+                ScoreRecord.project_id == project_id,
+            )
+        )
+        if score_row is None:
+            continue
+        run_rows = (
+            await session.scalars(
+                select(ReviewItem).where(
+                    ReviewItem.review_run_id == score_row.review_run_id,
+                    ReviewItem.enterprise_id == enterprise_id,
+                    ReviewItem.project_id == project_id,
+                )
+            )
+        ).all()
+        for row in run_rows:
+            if row.id in replaced_ids:
+                continue  # 本次重审已生成新项
+            carried.append(row)  # 未被替换的原项全部保留（含已给分未确认项）
+    all_items = carried + new_items
+    total_got = sum(float(i.got or 0) for i in all_items)
+    total_full = sum(float(i.full or 0) for i in all_items)
     score = ScoreRecord(
         enterprise_id=enterprise_id,
         project_id=project_id,
         review_run_id=run.id,
-        total_score=round(sum(float(i.got or 0) for i in new_items) / sum(float(i.full or 0) for i in new_items) * 100, 2),
-        missing_count=sum(1 for i in new_items if i.got == 0),
-        improvable=round(sum(float(i.improvable or 0) for i in new_items), 2),
-        detail={"re_evaluated": len(new_items)},
+        total_score=round(total_got / total_full * 100, 2) if total_full else 0.0,
+        missing_count=sum(1 for i in all_items if i.got == 0),
+        improvable=round(sum(float(i.improvable or 0) for i in all_items), 2),
+        detail={"re_evaluated": len(new_items), "carried": len(carried)},
     )
     session.add(score)
     await session.flush()

@@ -105,7 +105,41 @@ def test_re_evaluate_improves_score_after_material(client):
     )
     assert re.status_code == 200
     assert re.json()["improved_count"] == 1
-    assert re.json()["total_score"] == 100.0
+    # 只建了 1 份成果：商务标提升到满分，技术与报价仍缺失 → 10/30
+    assert re.json()["total_score"] == round(10 / 30 * 100, 2)
+
+
+def test_unconfirmed_material_does_not_change_score(client):
+    """A-12：未确认的材料关联不改变成果版本与实际得分。"""
+    h, pid = _setup(client)
+    body = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h).json()
+    missing_item = body["item_ids"][0]
+    score_id = body["score_id"]
+
+    # 上传补充材料但【不确认】评审项
+    client.post(
+        "/api/v1/files/upload",
+        data={"target": "project", "project_id": str(pid)},
+        files=[("files", ("补充材料.txt", io.BytesIO("资质证书".encode("utf-8")), "text/plain"))],
+        headers=h,
+    )
+    re = client.post(
+        f"/api/v1/projects/{pid}/re-evaluate",
+        json={"item_ids": [missing_item]},
+        headers=h,
+    )
+    assert re.status_code == 200
+    assert re.json()["improved_count"] == 0
+    # 未确认材料不改变实际得分：三份成果均缺失 → 0
+    assert re.json()["total_score"] == 0.0
+
+    # 评审项状态仍为待确认，未进入 confirmed
+    items = client.get(
+        f"/api/v1/projects/{pid}/scores/{score_id}/items",
+        headers=h,
+    ).json()
+    original = next(i for i in items if i["item_id"] == missing_item)
+    assert original["status"] == 1
 
 
 def test_provider_list_after_evaluate(client):
