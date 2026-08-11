@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 
 import pytest
 
@@ -12,8 +13,13 @@ from app.services.sandbox import run_restricted
 
 def test_sandbox_runs_simple_code():
     result = run_restricted("print('ok')")
-    assert result.returncode == 0
-    assert result.stdout.strip() == "ok"
+    if os.getuid() == 0 if hasattr(os, "getuid") else False:
+        # 容器/CI 以 root 运行时，沙箱拒绝执行（安全保护生效）
+        assert result.returncode == 125
+        assert "must not run as root" in result.stderr
+    else:
+        assert result.returncode == 0
+        assert result.stdout.strip() == "ok"
 
 
 def test_sandbox_rejects_syntax_error():
@@ -42,5 +48,9 @@ def test_sandbox_env_strips_proxies(monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://proxy:3128")
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
     result = run_restricted("import os; print(os.environ.get('HTTP_PROXY', 'NONE'))")
-    assert result.returncode == 0
-    assert result.stdout.strip() == "NONE"
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        assert result.returncode == 125  # root 拒绝优先于代码执行
+        assert "must not run as root" in result.stderr
+    else:
+        assert result.returncode == 0
+        assert result.stdout.strip() == "NONE"
