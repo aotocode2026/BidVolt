@@ -100,3 +100,55 @@ def test_capability_tampered_rejected(client):
         headers={"X-Bidvolt-Cap": task["capability_token"] + "x"},
     )
     assert r.status_code in (401, 403)
+
+
+def test_capability_invalid_after_task_terminal(client):
+    """任务结束后授权上下文失效：DONE 状态 token 被拒（A-2）。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.services.task_service import run_next_task
+
+    h = _register(client)
+    pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]
+    task = client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "chat", "payload": {"messages": []}, "idempotency_key": "cap-chat"},
+        headers=h,
+    ).json()
+    cap = task["capability_token"]
+    # 任务仍排队时可用
+    r0 = client.get(
+        "/api/v1/files/projects/%d/materials" % pid,
+        headers={"X-Bidvolt-Cap": cap},
+    )
+    assert r0.status_code == 200
+    # worker 执行到终态
+    engine = create_async_engine("sqlite+aiosqlite:///./.test_bidvolt.db")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def drain():
+        async with factory() as session:
+            processed = await run_next_task(session)
+            assert processed is not None
+
+    async def fetch_status():
+        from sqlalchemy import select
+
+        from app.models.task import Task
+
+        async with factory() as session:
+            t = await session.scalar(select(Task).where(Task.id == task["task_id"]))
+            return t.status if t else None
+
+    import asyncio
+
+    asyncio.run(drain())
+    assert asyncio.run(fetch_status()) == 3
+    engine.sync_engine.dispose()
+    # 终态后 token 失效
+    r1 = client.get(
+        "/api/v1/files/projects/%d/materials" % pid,
+        headers={"X-Bidvolt-Cap": cap},
+    )
+    assert r1.status_code == 403
+    assert "已结束" in r1.json()["detail"]

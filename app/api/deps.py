@@ -11,7 +11,9 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.constants import TaskStatus
 from app.models.auth import AppUser, EnterprisePermission
+from app.models.task import Task
 from app.services.capability import CapabilityError, verify_capability
 from app.services.permissions import effective_permissions
 from app.services.security import decode_token
@@ -103,6 +105,17 @@ def require_capability(tool: str):
                 payload = verify_capability(cap, tool=tool)
             except CapabilityError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            # 任务终态后授权上下文失效（A-2）：DONE/CANCELLED/FAILED_TERMINAL 拒绝
+            task = await session.scalar(
+                select(Task).where(
+                    Task.id == int(payload["tid"]),
+                    Task.enterprise_id == int(payload["eid"]),
+                )
+            )
+            if task is None:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务不存在，授权上下文失效")
+            if task.status in (int(TaskStatus.DONE), int(TaskStatus.CANCELLED), int(TaskStatus.FAILED_TERMINAL)):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务已结束，授权上下文失效")
             await _set_rls_context(session, int(payload["eid"]))
             return UserContext(
                 user_id=0,
