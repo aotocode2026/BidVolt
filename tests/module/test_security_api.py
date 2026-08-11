@@ -75,3 +75,33 @@ def test_tender_parse_with_injection_gate_closed_is_inert(client):
     # 门禁关闭：注入内容只做文本解析，不产生 requirement / 企业资料写入
     assert task.result["requirements_extracted"] == 0
     assert client.get(f"/api/v1/requirements?project_id={pid}", headers=h).json() == []
+
+
+def test_scan_image_injection_does_not_change_authorization(client):
+    """A-3 扫描件/图片内嵌指令：视觉门禁关闭时不执行任何指令，且不改变权限。"""
+    h, pid = _setup(client)
+    r = client.post(
+        "/api/v1/files/upload",
+        data={"target": "project", "project_id": str(pid)},
+        files=[
+            (
+                "files",
+                (
+                    "扫描件.png",
+                    b"\x89PNG\r\n\x1a\n" + b"fake-image-with-instructions",
+                    "image/png",
+                ),
+            )
+        ],
+        headers=h,
+    )
+    assert r.status_code == 200
+    entry = r.json()["files"][0]
+    # 视觉门禁关闭：不调用 VL，解析失败为可理解的错误，而非执行"指令"
+    assert entry["status"] == 4
+    st = client.get(f"/api/v1/files/{entry['file_id']}/parse-status", headers=h).json()
+    assert "视觉模型门禁关闭" in st["parse_status"]["message"]
+
+    # 权限未被提升
+    me = client.get("/api/v1/auth/me", headers=h).json()
+    assert "review_provider.config" not in me["permissions"]

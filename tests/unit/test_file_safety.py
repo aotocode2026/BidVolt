@@ -39,6 +39,16 @@ def test_virus_scan_required_fail_closed(monkeypatch):
         file_safety.virus_scan(b"x")
 
 
+def test_clamav_eicar_detected():
+    """EICAR 测试样本被 ClamAV 拦截（A-5）；无 clamd 环境跳过。"""
+    EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    try:
+        clean = file_safety.scan_clamav(EICAR)
+    except Exception:  # noqa: BLE001 - 本地无 clamd
+        pytest.skip("ClamAV 不可用")
+    assert clean is False
+
+
 def test_sniff_mime():
     assert file_safety.sniff_mime(b"%PDF-1.7 ...") == "application/pdf"
     assert file_safety.sniff_mime(b"PK\x03\x04...") == "application/zip"
