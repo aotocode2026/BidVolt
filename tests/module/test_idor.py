@@ -107,3 +107,27 @@ def test_cross_tenant_all_object_interfaces(client):
     assert client.get(f"/api/v1/tasks/{task_id}", headers=ha).status_code == 200
     assert client.get(f"/api/v1/requirements/{req_id}", headers=ha).status_code == 200
     assert client.get(f"/api/v1/search-sources/{src_id}", headers=ha).status_code == 200
+
+
+def test_same_enterprise_cross_project_isolated(client):
+    """同企业不同 project 的对象互不可见（项目级隔离）。"""
+    h = _register(client, "same@idor.com")
+    pid1 = client.post("/api/v1/projects", json={"name": "项目1"}, headers=h).json()["project_id"]
+    pid2 = client.post("/api/v1/projects", json={"name": "项目2"}, headers=h).json()["project_id"]
+
+    did1 = client.post(
+        "/api/v1/deliverables",
+        json={"project_id": pid1, "deliverable_type": 1, "title": "商务标1"},
+        headers=h,
+    ).json()["deliverable_id"]
+    req1 = client.post(
+        f"/api/v1/projects/{pid1}/requirements/upsert",
+        json={"requirements": [{"req_type": "qualification", "content": "一级资质", "coordinates": [{"file_id": 1}]}]},
+        headers=h,
+    ).json()["created"][0]
+
+    # 项目 2 的上下文访问项目 1 的对象：列表为空/详情 404
+    assert client.get(f"/api/v1/requirements?project_id={pid2}", headers=h).json() == []
+    assert client.get(f"/api/v1/deliverables?project_id={pid2}", headers=h).json() == []
+    assert client.get(f"/api/v1/deliverables/{did1}", headers=h).json().get("project_id") == pid1
+    assert client.get(f"/api/v1/files/projects/{pid2}/materials", headers=h).json() == []
