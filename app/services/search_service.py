@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+import httpx
+
 from app.config import settings
 
 TRUST_DOMAIN_L1 = {"gov.cn", "cebpubservice.com", "ndrc.gov.cn"}
@@ -63,4 +65,30 @@ class MockSearchProvider:
                 "snippet": "低可信来源，需人工核实",
                 "trust_level": 3,
             },
+        ]
+
+
+class AnySearchProvider:
+    """AnySearch HTTP 适配器（出网前 DLP 脱敏；门禁未开拒绝调用）。"""
+
+    def query(self, query: str, scope: str | None = None) -> list[dict]:
+        if not search_gate_open():
+            raise ValueError("搜索门禁关闭（P1）：数据分级未确认或未启用")
+        sanitized = sanitize_query(query)
+        with httpx.Client(base_url=settings.anysearch_base_url, timeout=30) as client:
+            resp = client.post(
+                "/search",
+                json={"query": sanitized, "scope": scope},
+                headers={"Authorization": f"Bearer {settings.anysearch_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return [
+            {
+                "url": item["url"],
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "trust_level": trust_level(item["url"]),
+            }
+            for item in data.get("results", [])
         ]

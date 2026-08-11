@@ -30,11 +30,8 @@ async def search_web(
     if settings.search_mode == "anysearch":
         if not search_service.search_gate_open():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="搜索门禁关闭（P1）")
-        sanitized = search_service.sanitize_query(query)
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=f"AnySearch 适配器待接入（脱敏后查询：{sanitized[:50]}）",
-        )
+        results = search_service.AnySearchProvider().query(query, body.get("scope"))
+        return {"provider": "anysearch", "results": results}
     results = search_service.MockSearchProvider().query(query, body.get("scope"))
     return {"provider": "mock", "results": results}
 

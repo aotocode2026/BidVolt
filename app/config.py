@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_vl_model: str = "qwen-vl-max"
     anysearch_key: str = ""
+    anysearch_base_url: str = "http://127.0.0.1:8123/anysearch"
     search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（需门禁解锁）
 
     # 业务端口（容器内 8123，公网 28123）

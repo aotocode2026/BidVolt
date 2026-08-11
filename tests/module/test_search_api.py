@@ -48,6 +48,25 @@ def test_search_anysearch_gate_closed(client, monkeypatch):
     assert r.status_code == 403
 
 
+def test_search_anysearch_gate_open_returns_results(client, monkeypatch):
+    monkeypatch.setattr(settings, "search_mode", "anysearch")
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "search_enabled", 1)
+    monkeypatch.setattr(settings, "anysearch_key", "as-key")
+
+    def fake_query(self, query, scope=None):
+        return [{"url": "https://www.gov.cn/bid/1", "title": "公告", "trust_level": 1}]
+
+    from app.services import search_service
+
+    monkeypatch.setattr(search_service.AnySearchProvider, "query", fake_query)
+    h, _, _ = _setup(client)
+    r = client.post("/api/v1/searches", json={"query": "电缆"}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["provider"] == "anysearch"
+    assert r.json()["results"][0]["trust_level"] == 1
+
+
 def test_save_source_and_citation(client):
     h, _, did = _setup(client)
     src = client.post(
