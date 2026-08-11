@@ -125,6 +125,40 @@ def _list_material_matches(args: dict) -> Any:
     return _get(f"/api/v1/projects/{args['project_id']}/material-matches")
 
 
+def _search_web(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            "/api/v1/searches",
+            json={"query": args["query"], "scope": args.get("scope")},
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _save_source(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post("/api/v1/search-sources", json=args, headers=_headers())
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _link_citation(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/deliverables/{args['deliverable_id']}/citations",
+            json={
+                "version_no": args["version_no"],
+                "node_id": args.get("node_id"),
+                "source_id": args["source_id"],
+                "quote_text": args.get("quote_text"),
+            },
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 TOOL_DEFS: list[dict] = [
     {
         "name": "health",
@@ -315,6 +349,54 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _list_material_matches,
+    },
+    {
+        "name": "search_web",
+        "description": "AnySearch 网络搜索（出网前经后端 DLP 脱敏 + 域名白名单；门禁关闭时拒绝）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "scope": {"type": "string", "enum": ["market", "competitor", "policy", "standard"]},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "handler": _search_web,
+    },
+    {
+        "name": "save_source",
+        "description": "将搜索结果入库并判定 trust_level",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "url": {"type": "string"},
+                "title": {"type": "string"},
+                "snippet": {"type": "string"},
+                "project_id": {"type": "integer"},
+            },
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+        "handler": _save_source,
+    },
+    {
+        "name": "link_citation",
+        "description": "记录成果节点对搜索来源的引用（绑定版本）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deliverable_id": {"type": "integer"},
+                "version_no": {"type": "integer"},
+                "node_id": {"type": "string"},
+                "source_id": {"type": "integer"},
+                "quote_text": {"type": "string"},
+            },
+            "required": ["deliverable_id", "version_no", "source_id"],
+            "additionalProperties": False,
+        },
+        "handler": _link_citation,
     },
 ]
 

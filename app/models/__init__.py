@@ -37,6 +37,7 @@ from app.models.review import (
     ReviewRun,
     ScoreRecord,
 )
+from app.models.search import Citation, SearchSource
 from app.models.task import Task
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "AIEditDiff",
     "ArchiveJob",
     "AuditLog",
+    "Citation",
     "DocBlock",
     "Enterprise",
     "EnterpriseAsset",
@@ -73,6 +75,7 @@ __all__ = [
     "ReviewProvider",
     "ReviewRun",
     "ScoreRecord",
+    "SearchSource",
     "RefreshToken",
     "Requirement",
     "RequirementRevision",

@@ -350,8 +350,24 @@ async def _material_match_handler(session: AsyncSession, task: Task) -> None:
     task.result = {"matched_count": len(results), "results": results}
 
 
+async def _chat_handler(session: AsyncSession, task: Task) -> None:
+    """对话问答：门禁内走 LLM，门禁外返回规则化可用操作。"""
+    from app.services.llm import LLMClient, llm_enabled
+
+    message = task.payload.get("message", "")
+    if llm_enabled():
+        reply = await LLMClient().chat("你是 BidVolt 投标助手，用简洁中文回答。", message)
+        task.result = {"reply": reply, "mode": "llm"}
+    else:
+        task.result = {
+            "reply": "云模型门禁关闭。当前可执行任务：招标解析、资料匹配、标书生成、模拟评标、针对性修改。",
+            "mode": "rule",
+        }
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
     TaskType.BID_GENERATE: _bid_generate_handler,
     TaskType.MATERIAL_MATCH: _material_match_handler,
+    TaskType.CHAT: _chat_handler,
 }

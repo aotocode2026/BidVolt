@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimax.chat/v1"
     minimax_model: str = "MiniMax-Text-01"
+    anysearch_key: str = ""
+    search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（需门禁解锁）
 
     # 业务端口（容器内 8123，公网 28123）
     bind_host: str = "0.0.0.0"

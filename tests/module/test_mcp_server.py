@@ -37,6 +37,9 @@ class _MockBackend(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/v1/projects/5/material-matches"):
             body = json.dumps([{"result_id": 1, "matched": 1}]).encode()
             self.send_response(200)
+        elif self.path.startswith("/api/v1/search-sources/7"):
+            body = json.dumps({"source_id": 7, "trust_level": 1}).encode()
+            self.send_response(200)
         else:
             self.send_response(404)
             body = b"{}"
@@ -60,6 +63,15 @@ class _MockBackend(BaseHTTPRequestHandler):
             self.send_response(201)
         elif self.path.startswith("/api/v1/projects/5/material-matches"):
             body = json.dumps({"saved": [1], "count": 1}).encode()
+            self.send_response(201)
+        elif self.path.startswith("/api/v1/searches"):
+            body = json.dumps({"provider": "mock", "results": [{"url": "https://www.gov.cn/x", "trust_level": 1}]}).encode()
+            self.send_response(200)
+        elif self.path.startswith("/api/v1/search-sources"):
+            body = json.dumps({"source_id": 7, "trust_level": 1}).encode()
+            self.send_response(201)
+        elif self.path.startswith("/api/v1/deliverables/9/citations"):
+            body = json.dumps({"citation_id": 3, "version_no": 2}).encode()
             self.send_response(201)
         else:
             self.send_response(404)
@@ -128,6 +140,9 @@ def test_mcp_initialize_and_tools():
         "upsert_requirements",
         "save_material_match_results",
         "list_material_matches",
+        "search_web",
+        "save_source",
+        "link_citation",
     } <= set(names)
     assert json.loads(by_id[3]["result"]["content"][0]["text"])["status"] == "ok"
     assert by_id[4]["error"]["code"] == -32602
@@ -253,3 +268,28 @@ def test_mcp_material_match_tools():
     lines = [json.loads(l) for l in out.strip().splitlines()]
     assert json.loads(lines[0]["result"]["content"][0]["text"])[0]["matched"] == 1
     assert json.loads(lines[1]["result"]["content"][0]["text"])["count"] == 1
+
+
+def test_mcp_search_tools():
+    with ThreadingHTTPServer(("127.0.0.1", 0), _MockBackend) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_mcp(
+                port,
+                "search-token",
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_web", "arguments": {"query": "电缆"}}},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "save_source", "arguments": {"url": "https://www.gov.cn/x", "title": "公告"}}},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "link_citation", "arguments": {"deliverable_id": 9, "version_no": 2, "source_id": 7}}},
+                ],
+            )
+        finally:
+            httpd.shutdown()
+
+    lines = [json.loads(l) for l in out.strip().splitlines()]
+    search = json.loads(lines[0]["result"]["content"][0]["text"])
+    assert search["results"][0]["trust_level"] == 1
+    assert json.loads(lines[1]["result"]["content"][0]["text"])["source_id"] == 7
+    assert json.loads(lines[2]["result"]["content"][0]["text"])["citation_id"] == 3
