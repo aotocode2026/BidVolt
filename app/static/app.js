@@ -223,6 +223,7 @@ function panelDeliverable() {
 }
 
 async function refreshDeliverables() {
+  if (!$("d-rows")) return;  // 非成果页时跳过渲染
   if (!projectId) { $("d-rows").innerHTML = "<tr><td colspan=5>先选用项目</td></tr>"; return; }
   try {
     deliverables = await api(`/deliverables?project_id=${projectId}`);
@@ -304,7 +305,7 @@ function panelTask() {
       <button onclick="submitTask('material_match')">资料匹配</button>
       <button onclick="submitTask('bid_generate')">生成标书</button>
       <button onclick="submitTask('bid_review')">校核</button>
-      <button onclick="evaluate()">模拟评标</button>
+      <button onclick="doEvaluate()">模拟评标</button>
     </div>
     <div class="row"><span class="muted">任务结果与评分会显示在下方日志；评标项：</span></div>
     <table><thead><tr><th>item_id</th><th>分类</th><th>问题</th><th>得分/满分</th><th>可提升</th><th>状态</th></tr></thead><tbody id="t-items"></tbody></table>
@@ -321,7 +322,7 @@ async function submitTask(taskType) {
 }
 
 let scoreCtx = null;
-async function evaluate() {
+async function doEvaluate() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const ev = await api(`/projects/${projectId}/evaluate`, { method: "POST", body: {} });
@@ -410,7 +411,9 @@ async function aiSuggest() {
 
 async function applyQuote() {
   if (!calcId) return log("先测算", "err");
-  const quote = deliverables.find((d) => d.deliverable_type === 3);
+  const list = await api(`/deliverables?project_id=${projectId}`);
+  deliverables = list;
+  const quote = list.find((d) => d.deliverable_type === 3);
   if (!quote) return log("没有报价单成果", "err");
   try {
     const data = await api("/quotes/apply", { method: "POST", body: { calc_id: calcId, deliverable_id: quote.deliverable_id, expected_version_no: quote.current_version_no } });

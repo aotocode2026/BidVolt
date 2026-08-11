@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,13 +45,13 @@ async def check_storage(session: AsyncSession, enterprise_id: int, add_bytes: in
 
 async def check_export_daily(session: AsyncSession, enterprise_id: int) -> int:
     quota = await get_quota(session, enterprise_id)
-    today = datetime.now(timezone.utc).date()
+    day_start = datetime.combine(datetime.now(timezone.utc).date(), time.min, tzinfo=timezone.utc)
     count = await session.scalar(
         select(func.count())
         .select_from(ExportJob)
         .where(
             ExportJob.enterprise_id == enterprise_id,
-            func.date(ExportJob.created_at) == today.isoformat(),
+            ExportJob.created_at >= day_start,
         )
     )
     count = int(count or 0)
