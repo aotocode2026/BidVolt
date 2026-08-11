@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     auth,
@@ -39,6 +40,8 @@ app.include_router(requirements.router, prefix="/api/v1")
 app.include_router(requirements.projects_router, prefix="/api/v1")
 app.include_router(matches.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
+
+app.mount("/demo", StaticFiles(directory="app/static", html=True), name="demo")
 
 
 @app.get("/")
