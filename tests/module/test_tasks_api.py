@@ -89,10 +89,21 @@ def test_stream_whitelist_event(client):
         headers=h,
     ).json()["task_id"]
 
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    import asyncio
+
+    async def drain():
+        async with session_factory() as session:
+            await run_next_task(session)
+
+    asyncio.run(drain())
+    engine.sync_engine.dispose()
+
     resp = client.get(f"/api/v1/tasks/{task_id}/stream", headers=h)
     assert "text/event-stream" in resp.headers["content-type"]
     assert "event: progress" in resp.text
-    assert '"status": "queued"' in resp.text
     assert "internal_id" not in resp.text
 
 
@@ -108,3 +119,30 @@ def test_interrupt_bumps_generation(client):
     r = client.post(f"/api/v1/projects/{pid}/tasks/{task_id}/interrupt", headers=h)
     assert r.status_code == 200
     assert r.json()["generation"] == 2
+
+
+def test_stream_terminal_task_emits_progress_and_done(client):
+    h = _headers(client)
+    pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]
+    task_id = client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "chat", "payload": {}, "idempotency_key": "stream-1"},
+        headers=h,
+    ).json()["task_id"]
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    import asyncio
+
+    async def drain():
+        async with session_factory() as session:
+            await run_next_task(session)
+
+    asyncio.run(drain())
+    engine.sync_engine.dispose()
+
+    resp = client.get(f"/api/v1/tasks/{task_id}/stream", headers=h)
+    assert "event: progress" in resp.text
+    assert "event: done" in resp.text
+    assert "internal_id" not in resp.text

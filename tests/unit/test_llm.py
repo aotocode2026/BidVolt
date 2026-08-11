@@ -6,7 +6,7 @@ import pytest
 
 from app.config import settings
 from app.services import llm as llm_module
-from app.services.llm import LLMGateClosed, extract_json
+from app.services.llm import DashScopeVLClient, LLMGateClosed, extract_json
 
 
 def test_gate_closed_by_default():
@@ -64,3 +64,49 @@ def test_extract_json():
     assert extract_json('说明：\n{"a": 1}\n结束') == {"a": 1}
     with pytest.raises(ValueError):
         extract_json("没有 JSON")
+
+
+def test_vl_gate_closed(monkeypatch):
+    monkeypatch.setattr(settings, "data_classification_confirmed", 0)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "dashscope_api_key", "k")
+    with pytest.raises(LLMGateClosed):
+        asyncio.run(DashScopeVLClient().describe(b"fake-image-bytes"))
+
+
+def test_vl_sends_base64_image(monkeypatch):
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "dashscope_api_key", "dash-key")
+    captured: dict = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "营业执照"}}]}
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return _FakeResponse()
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _FakeClient)
+    reply = asyncio.run(DashScopeVLClient().describe(b"\x89PNG-fake"))
+    assert reply == "营业执照"
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["headers"]["Authorization"] == "Bearer dash-key"
+    content = captured["json"]["messages"][0]["content"]
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")

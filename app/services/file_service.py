@@ -56,6 +56,26 @@ async def _parse_file(session: AsyncSession, fobj: FileObject) -> None:
     """解析并写 doc_block；失败只记录 parse_status，不阻塞入库。"""
     try:
         path = storage.open(fobj.bucket, fobj.object_key)
+        image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
+        if fobj.ext in image_exts:
+            from app.services.llm import DashScopeVLClient, vl_enabled
+
+            if vl_enabled():
+                text = await DashScopeVLClient().describe(path.read_bytes(), mime=fobj.mime_type or "image/png")
+                session.add(
+                    DocBlock(
+                        file_id=fobj.id,
+                        block_type="paragraph",
+                        page_no=None,
+                        block_index=0,
+                        text_content=text,
+                        extra={"source": "qwen-vl"},
+                    )
+                )
+                fobj.status = 3
+                fobj.category = fobj.category or _category_heuristic(fobj.original_name)
+                return
+            raise ValueError("视觉模型门禁关闭（P1），图片解析不可用")
         blocks = parser.parse_to_blocks(path, fobj.ext or "")
         for block in blocks:
             session.add(

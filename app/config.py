@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimax.chat/v1"
     minimax_model: str = "MiniMax-Text-01"
+    dashscope_api_key: str = ""
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    dashscope_vl_model: str = "qwen-vl-max"
     anysearch_key: str = ""
     search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（需门禁解锁）
 

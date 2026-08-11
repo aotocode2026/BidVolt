@@ -5,6 +5,8 @@ import io
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.config import settings
+from app.services import llm as llm_module
 from app.services.task_service import run_next_task
 
 TEST_DB = "./.test_bidvolt.db"
@@ -181,3 +183,33 @@ def test_bid_review_detects_coverage_and_name(client):
     # 生成的技术标覆盖了"电压等级"，未覆盖"抗短路能力"
     assert any("抗短路能力" in m for m in messages)
     assert not any("电压等级 10kV" in m for m in messages)
+
+
+def test_bid_generate_llm_enhances_business(client, monkeypatch):
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+
+    async def fake_chat(self, system, user):
+        return "润色后的正式商务标正文。"
+
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={
+            "task_type": "bid_generate",
+            "payload": {"material_ref": "CABLE-YJV-3x95", "cost": 100},
+            "idempotency_key": "bg-llm-1",
+        },
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert "LLM 润色" in task.result["note"]
+
+    deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
+    biz = next(d for d in deliverables if d["deliverable_type"] == 1)
+    content = client.get(f"/api/v1/deliverables/{biz['deliverable_id']}/content", headers=h).json()
+    assert "润色后的正式商务标正文" in content["model"]["nodes"][1]["text"]

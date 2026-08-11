@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -105,10 +106,18 @@ async def task_stream(
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
-    def generate():
-        # V1：返回当前白名单快照；后续接入 worker 事件总线做实时推送
-        yield f"event: progress\ndata: {json.dumps(public_event(task), ensure_ascii=False)}\n\n"
-        yield f"event: done\ndata: {json.dumps({'task_id': task.id}, ensure_ascii=False)}\n\n"
+    async def generate():
+        last_event: dict | None = None
+        while True:
+            await session.refresh(task)
+            event = public_event(task)
+            if event != last_event:
+                yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                last_event = event
+            if task.status in (3, 6):  # done / 终态失败
+                yield f"event: done\ndata: {json.dumps({'task_id': task.id}, ensure_ascii=False)}\n\n"
+                break
+            await asyncio.sleep(1)
 
     return StreamingResponse(
         generate(),

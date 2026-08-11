@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 
@@ -19,6 +20,15 @@ def llm_enabled() -> bool:
         settings.data_classification_confirmed == 1
         and settings.cloud_llm_enabled == 1
         and bool(settings.minimax_api_key)
+    )
+
+
+def vl_enabled() -> bool:
+    """视觉模型（qwen-vl / DashScope）门禁。"""
+    return (
+        settings.data_classification_confirmed == 1
+        and settings.cloud_llm_enabled == 1
+        and bool(settings.dashscope_api_key)
     )
 
 
@@ -49,6 +59,48 @@ class LLMClient:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 f"{self.base_url}/text/chatcompletion_v2",
+                json=payload,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+
+class DashScopeVLClient:
+    """百炼 qwen-vl 视觉理解（OpenAI 兼容模式）。"""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.api_key = api_key or settings.dashscope_api_key
+        self.base_url = (base_url or settings.dashscope_base_url).rstrip("/")
+        self.model = model or settings.dashscope_vl_model
+
+    async def describe(
+        self, image_bytes: bytes, mime: str = "image/png", prompt: str = "识别图中全部文字与关键内容。"
+    ) -> str:
+        if not vl_enabled():
+            raise LLMGateClosed("数据分级/客户授权未确认，视觉模型关闭（P1 门禁）")
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    ],
+                }
+            ],
+        }
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
                 json=payload,
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )

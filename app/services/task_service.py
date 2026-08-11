@@ -265,6 +265,20 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
 
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
+    if llm_enabled():
+        client = LLMClient()
+        business_text = "\n".join(n.get("text", "") for n in models[1]["nodes"])
+        reply = await client.chat(
+            "你是标书撰写助手。基于给定草稿改写为正式投标语言，只调整措辞与结构，禁止新增企业事实。直接输出正文。",
+            f"商务标草稿：\n{business_text[:8000]}",
+        )
+        if reply.strip():
+            models[1] = {
+                "nodes": [
+                    {"id": "llm1", "type": "heading", "text": "商务标"},
+                    {"id": "llm2", "type": "paragraph", "text": reply.strip()},
+                ]
+            }
     versions: dict[int, int] = {}
     for dtype, model in models.items():
         deliverable = await session.scalar(
@@ -292,7 +306,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         versions[dtype] = version.version_no
 
     if llm_enabled():
-        task.result = {**versions, "note": "确定性草稿 + LLM 增强（门禁已开）"}
+        task.result = {**versions, "note": "确定性草稿 + LLM 润色（门禁已开）"}
     else:
         task.result = {**versions, "note": "确定性草稿（云模型门禁关闭）"}
 
