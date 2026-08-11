@@ -108,6 +108,11 @@ def test_capability_invalid_after_task_terminal(client):
 
     from app.services.task_service import run_next_task
 
+    import os
+
+    database_url = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./.test_bidvolt.db")
+    if "postgresql" in database_url and "+asyncpg" not in database_url:
+        database_url = database_url.replace("+psycopg2", "+asyncpg")
     h = _register(client)
     pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]
     task = client.post(
@@ -123,7 +128,7 @@ def test_capability_invalid_after_task_terminal(client):
     )
     assert r0.status_code == 200
     # worker 执行到终态
-    engine = create_async_engine("sqlite+aiosqlite:///./.test_bidvolt.db")
+    engine = create_async_engine(database_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def drain():
