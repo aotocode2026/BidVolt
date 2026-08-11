@@ -17,6 +17,7 @@ from app.models.project_material import ProjectMaterial
 from app.schemas.project import Page
 from app.services import file_service
 from app.services.audit import write_audit
+from app.services.quota_service import QuotaExceeded
 from app.services.storage import StorageProvider
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -63,6 +64,8 @@ async def upload_files(
             results.append({"file_id": fobj.id, "name": fobj.original_name, "size": fobj.size_bytes, "mime": fobj.mime_type, "status": fobj.status})
         except ValueError as exc:
             results.append({"name": upload.filename, "error": str(exc)})
+        except QuotaExceeded as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     await session.commit()
     return {"files": results}
 

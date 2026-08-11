@@ -122,3 +122,62 @@ def test_material_match_task(client):
             assert by_req[req["req_id"]] == 1
         else:
             assert by_req[req["req_id"]] == 3
+
+
+def test_bid_review_reports_missing_deliverables(client):
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_review", "payload": {}, "idempotency_key": "review-1"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    messages = [i["message"] for i in task.result["issues"]]
+    assert any("缺少商务标" in m for m in messages)
+    assert any("缺少技术标" in m for m in messages)
+    assert any("缺少报价单" in m for m in messages)
+
+
+def test_bid_review_detects_coverage_and_name(client):
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={
+            "requirements": [
+                {"req_type": "tech_requirement", "content": "电压等级 10kV", "coordinates": [{"file_id": 1}]},
+            ]
+        },
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={
+            "task_type": "bid_generate",
+            "payload": {"material_ref": "CABLE-YJV-3x95", "cost": 100},
+            "idempotency_key": "bg-r1",
+        },
+        headers=h,
+    )
+    _drain_one_task()
+    # 生成后补一条新要求：校核应能发现技术标未响应
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={
+            "requirements": [
+                {"req_type": "tech_requirement", "content": "抗短路能力 30kA", "coordinates": [{"file_id": 2}]}
+            ]
+        },
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_review", "payload": {}, "idempotency_key": "review-2"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    messages = [i["message"] for i in task.result["issues"]]
+    # 生成的技术标覆盖了"电压等级"，未覆盖"抗短路能力"
+    assert any("抗短路能力" in m for m in messages)
+    assert not any("电压等级 10kV" in m for m in messages)

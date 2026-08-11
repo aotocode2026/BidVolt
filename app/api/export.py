@@ -18,6 +18,7 @@ from app.db import get_session
 from app.models.deliverable import Deliverable
 from app.models.export import ExportJob, FinalCheck
 from app.services import deliverable_service, export_service
+from app.services.quota_service import QuotaExceeded, check_export_daily
 from app.services.storage import StorageProvider
 
 router = APIRouter(prefix="/projects", tags=["export"])
@@ -78,6 +79,10 @@ async def export_project(
     user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EXPORT)),
 ) -> dict:
     formats = body.get("formats") or ["docx", "xlsx"]
+    try:
+        await check_export_daily(session, user.enterprise_id)
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     deliverables = (
         await session.scalars(
             select(Deliverable).where(

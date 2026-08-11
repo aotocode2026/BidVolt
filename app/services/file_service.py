@@ -15,6 +15,7 @@ from app.models.file import ArchiveJob, FileObject
 from app.models.project import Project
 from app.models.project_material import ProjectEvent, ProjectMaterial, ProjectMaterialRevision
 from app.services import file_safety, parser
+from app.services.quota_service import QuotaExceeded, check_storage
 from app.services.storage import StorageProvider
 
 storage = StorageProvider()
@@ -105,6 +106,7 @@ async def process_upload(
 
     mime, ext = file_safety.validate_upload(filename, data)
     file_safety.virus_scan(data)
+    await check_storage(session, user.enterprise_id, len(data))
     saved = storage.save(data, user.enterprise_id, filename)
 
     fobj = FileObject(

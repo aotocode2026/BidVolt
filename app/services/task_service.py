@@ -365,9 +365,82 @@ async def _chat_handler(session: AsyncSession, task: Task) -> None:
         }
 
 
+async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
+    """校核模式：完整性、项目名称一致性、资格/技术要求覆盖（确定性）。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.deliverable import Deliverable
+    from app.models.project import Project
+    from app.models.requirement import Requirement
+    from app.services import deliverable_service
+
+    project = await session.scalar(
+        sa_select(Project).where(
+            Project.id == task.project_id,
+            Project.enterprise_id == task.enterprise_id,
+        )
+    )
+    if project is None:
+        raise ValueError("项目不存在")
+    deliverables = (
+        await session.scalars(
+            sa_select(Deliverable).where(
+                Deliverable.project_id == task.project_id,
+                Deliverable.enterprise_id == task.enterprise_id,
+            )
+        )
+    ).all()
+
+    issues: list[dict] = []
+    texts: dict[int, str] = {}
+    existing = {d.deliverable_type: d for d in deliverables}
+    for dtype, name in ((1, "商务标"), (2, "技术标"), (3, "报价单")):
+        d = existing.get(dtype)
+        if d is None or d.current_version_no == 0:
+            issues.append({"severity": "error", "message": f"缺少{name}", "locate": None})
+            continue
+        _, model = await deliverable_service.get_version_content(
+            session, d.id, d.current_version_no
+        )
+        if d.deliverable_type == 3:
+            text = " ".join(str(c) for sheet in model.get("sheets", []) for row in sheet.get("rows", []) for c in row)
+        else:
+            text = "\n".join(n.get("text", "") for n in model.get("nodes", []))
+        texts[dtype] = text
+        if project.name not in text:
+            issues.append({"severity": "warning", "message": f"{name}未包含项目名称：{project.name}", "locate": d.id})
+
+    requirements = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == task.enterprise_id,
+                Requirement.project_id == task.project_id,
+                Requirement.current.is_(True),
+            )
+        )
+    ).all()
+    for req in requirements:
+        target = "技术标" if req.req_type == "tech_requirement" else ("商务标" if req.req_type == "qualification" else None)
+        if target is None:
+            continue
+        dtype = 2 if target == "技术标" else 1
+        text = texts.get(dtype, "")
+        if not text or req.content[:10] not in text:
+            issues.append(
+                {
+                    "severity": "error",
+                    "message": f"{target}未响应要求：{req.content[:40]}",
+                    "locate": req.id,
+                }
+            )
+
+    task.result = {"issues": issues, "issue_count": len(issues)}
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
     TaskType.BID_GENERATE: _bid_generate_handler,
     TaskType.MATERIAL_MATCH: _material_match_handler,
     TaskType.CHAT: _chat_handler,
+    TaskType.BID_REVIEW: _bid_review_handler,
 }
