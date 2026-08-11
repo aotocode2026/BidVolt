@@ -110,3 +110,44 @@ def test_run_task_success_and_retry_terminal(monkeypatch):
     assert task.status == int(TaskStatus.FAILED_TERMINAL)
     assert task.retry_count == 3
     assert task.error == {"message": "boom"}
+
+
+def test_handler_partial_write_rolls_back_with_failure(monkeypatch):
+    """A-4 单事务：handler 的写入与任务终态同事务提交；失败时部分写入不落库。"""
+    from sqlalchemy import select
+
+    from app.models.project import Project
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def partial_then_fail(session, task):
+        session.add(Project(enterprise_id=task.enterprise_id, name="不应存在", status=1))
+        raise RuntimeError("boom-after-write")
+
+    monkeypatch.setitem(task_service.HANDLERS, TaskType.MATERIAL_MATCH, partial_then_fail)
+
+    async def scenario():
+        async with factory() as session:
+            task, _ = await task_service.create_task(
+                session,
+                enterprise_id=1,
+                project_id=1,
+                task_type=TaskType.MATERIAL_MATCH,
+                payload={},
+                idempotency_key="atomic-fail",
+            )
+            await session.commit()
+            await task_service.run_task(session, task)
+            return task.status
+
+    status = asyncio.run(scenario())
+
+    async def check_persisted():
+        async with factory() as session:
+            return await session.scalar(select(Project).where(Project.name == "不应存在"))
+
+    persisted = asyncio.run(check_persisted())
+    engine.sync_engine.dispose()
+    assert persisted is None, "handler 失败后部分写入未被回滚"
+    assert status == int(TaskStatus.QUEUED)  # 失败后进入重试队列

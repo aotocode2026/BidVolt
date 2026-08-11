@@ -92,6 +92,9 @@ async def run_task(session: AsyncSession, task: Task) -> Task:
         task.progress = {"phase": task.task_type, "status": "done", "percent": 100, "summary": "完成"}
         task.finished_at = datetime.now(timezone.utc)
     except Exception as exc:  # noqa: BLE001
+        # 回滚 handler 的部分写入，避免失败任务产生副作用（A-4 单事务原子性）
+        await session.rollback()
+        await session.refresh(task)
         task.retry_count += 1
         if task.retry_count >= MAX_RETRIES:
             task.status = int(TaskStatus.FAILED_TERMINAL)
