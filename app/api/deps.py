@@ -55,11 +55,7 @@ async def _auth_user(
     base_perms = ent_perm.permissions if ent_perm else []
     perms = effective_permissions(user.permissions, base_perms)
 
-    # RLS：PG 下事务内注入租户上下文（SQLite 测试环境跳过）
-    if session.bind is not None and session.bind.dialect.name == "postgresql":
-        await session.execute(
-            text("SELECT set_config('app.enterprise_id', :eid, true)"), {"eid": str(user.enterprise_id)}
-        )
+    await _set_rls_context(session, user.enterprise_id)
 
     return UserContext(
         user_id=user.id,
@@ -67,6 +63,15 @@ async def _auth_user(
         email=user.email,
         permissions=perms,
     )
+
+
+async def _set_rls_context(session: AsyncSession, enterprise_id: int) -> None:
+    """RLS：PG 下事务内注入租户上下文（SQLite 测试环境跳过）。"""
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        await session.execute(
+            text("SELECT set_config('app.enterprise_id', :eid, true)"),
+            {"eid": str(enterprise_id)},
+        )
 
 
 def require_permission(permission: str):
@@ -98,6 +103,7 @@ def require_capability(tool: str):
                 payload = verify_capability(cap, tool=tool)
             except CapabilityError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            await _set_rls_context(session, int(payload["eid"]))
             return UserContext(
                 user_id=0,
                 enterprise_id=int(payload["eid"]),
