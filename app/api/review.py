@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.constants import Permission
 from app.db import get_session
 from app.models.review import ReviewItem, ReviewProvider, ScoreRecord
@@ -43,7 +43,7 @@ async def evaluate(
 async def latest_score(
     project_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.SCORE_VIEW)),
+    user: UserContext = Depends(require_capability("get_latest_score")),
 ) -> dict:
     score = await session.scalar(
         select(ScoreRecord)
@@ -71,7 +71,7 @@ async def review_items(
     project_id: int,
     score_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.SCORE_VIEW)),
+    user: UserContext = Depends(require_capability("get_review_items")),
 ) -> list[dict]:
     rows = await session.scalars(
         select(ReviewItem).where(
@@ -105,7 +105,7 @@ async def confirm_one(
     item_id: int,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.SCORE_CONFIRM)),
+    user: UserContext = Depends(require_capability("confirm_review_items")),
 ) -> dict:
     results = await review_service.confirm_items(
         session,
@@ -126,7 +126,7 @@ async def confirm_batch(
     score_id: int,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.SCORE_CONFIRM)),
+    user: UserContext = Depends(require_capability("confirm_review_items")),
 ) -> dict:
     results = await review_service.confirm_items(
         session,

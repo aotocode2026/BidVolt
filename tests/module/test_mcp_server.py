@@ -15,10 +15,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class _MockBackend(BaseHTTPRequestHandler):
     captured_auth: str | None = None
+    captured_cap: str | None = None
     assets_payload = {"items": [{"asset_id": 1, "name": "营业执照.txt"}], "total": 1}
 
     def do_GET(self):  # noqa: N802
         type(self).captured_auth = self.headers.get("Authorization")
+        type(self).captured_cap = self.headers.get("X-Bidvolt-Cap")
         if self.path.startswith("/api/v1/enterprise/assets"):
             body = json.dumps(type(self).assets_payload).encode()
             self.send_response(200)
@@ -50,6 +52,7 @@ class _MockBackend(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         type(self).captured_auth = self.headers.get("Authorization")
+        type(self).captured_cap = self.headers.get("X-Bidvolt-Cap")
         length = int(self.headers.get("Content-Length", 0))
         _ = self.rfile.read(length)
         if self.path.startswith("/api/v1/deliverables/9/versions"):
@@ -90,6 +93,27 @@ def _run_mcp(server_port: int, token: str, requests: list[dict]) -> str:
         **os.environ,
         "BIDVOLT_API_BASE": f"http://127.0.0.1:{server_port}",
         "BIDVOLT_INTERNAL_TOKEN": token,
+    }
+    payload = "\n".join(json.dumps(r, ensure_ascii=False) for r in requests) + "\n"
+    proc = subprocess.run(
+        [sys.executable, "-m", "bidvolt_mcp"],
+        cwd=REPO_ROOT,
+        env=env,
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def _run_mcp_with_cap(server_port: int, token: str, cap: str, requests: list[dict]) -> str:
+    env = {
+        **os.environ,
+        "BIDVOLT_API_BASE": f"http://127.0.0.1:{server_port}",
+        "BIDVOLT_INTERNAL_TOKEN": token,
+        "BIDVOLT_CAPABILITY_TOKEN": cap,
     }
     payload = "\n".join(json.dumps(r, ensure_ascii=False) for r in requests) + "\n"
     proc = subprocess.run(
@@ -220,6 +244,31 @@ def test_mcp_quote_tools():
     assert history["readonly"] is True
     calc = json.loads(lines[1]["result"]["content"][0]["text"])
     assert calc["result"]["suggested"] == 120.0
+
+
+def test_mcp_forwards_capability_token():
+    with ThreadingHTTPServer(("127.0.0.1", 0), _MockBackend) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            _MockBackend.captured_cap = None
+            _run_mcp_with_cap(
+                port,
+                "internal-token",
+                "bidvolt-cap.v1.abc.sig",
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "get_history_price", "arguments": {"material_ref": "CABLE"}},
+                    }
+                ],
+            )
+            assert _MockBackend.captured_cap == "bidvolt-cap.v1.abc.sig"
+        finally:
+            httpd.shutdown()
 
 
 def test_mcp_requirement_tools():

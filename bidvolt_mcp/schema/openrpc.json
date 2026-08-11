@@ -77,6 +77,169 @@
       }
     },
     {
+      "name": "list_assets",
+      "summary": "浏览企业资料库目录",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_asset",
+      "summary": "读取单个企业资料详情（含关键字段提取结果与来源定位）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "asset_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "classify_enterprise_asset",
+      "summary": "企业资料导入任务专属：识别资料类型、抽取结构化字段、建议归档目录",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "type": "integer"
+              },
+              "task_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "asset_id",
+              "task_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "upsert_enterprise_facts",
+      "summary": "企业资料导入任务专属：写入/更新企业事实（结构化字段 + 证据引用）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "type": "integer"
+              },
+              "task_id": {
+                "type": "integer"
+              },
+              "facts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "fact_key": {
+                      "type": "string"
+                    },
+                    "value": {},
+                    "confidence": {
+                      "type": "number"
+                    },
+                    "evidence_ref": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "fact_key"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "asset_id",
+              "task_id",
+              "facts"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "get_project_material_blocks",
       "summary": "读取项目材料解析出的 doc_block 文本块（带坐标）",
       "params": [
@@ -299,6 +462,170 @@
                 "type": "string"
               }
             },
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_latest_score",
+      "summary": "读取项目最新评分汇总",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_review_items",
+      "summary": "读取逐条评审项（含分类/得分/建议/证据/状态）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "score_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id",
+              "score_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "submit_score_items",
+      "summary": "提交模拟评标（snapshot + EvidenceRef 服务端校验）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "payload": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "confirm_review_items",
+      "summary": "批量确认/拒绝评审项（expected_version CAS）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "score_id": {
+                "type": "integer"
+              },
+              "item_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "action": {
+                "type": "string"
+              },
+              "expected_version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id",
+              "score_id",
+              "item_ids"
+            ],
             "additionalProperties": false
           },
           "required": true

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.constants import Permission, TaskStatus, TaskType
 from app.db import get_session
 from app.models.enterprise_domain import (
@@ -79,7 +79,7 @@ async def create_category(
 @router.get("/assets")
 async def list_assets(
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("search_assets")),
 ) -> list[dict]:
     rows = await session.scalars(
         select(EnterpriseAsset).where(
@@ -104,7 +104,7 @@ async def list_assets(
 async def get_asset(
     asset_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("get_asset")),
 ) -> dict:
     asset = await session.scalar(
         select(EnterpriseAsset).where(
@@ -220,6 +220,129 @@ async def trigger_ingest(
     )
     await session.commit()
     return {"task_id": task.id, "ingest_id": ingest.id, "classified": classified}
+
+
+@router.post("/assets/{asset_id}/classify", status_code=status.HTTP_202_ACCEPTED)
+async def classify_enterprise_asset(
+    asset_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("classify_enterprise_asset")),
+) -> dict:
+    """企业资料导入任务专属：识别资料类型、抽取结构化字段、建议归档目录。"""
+    asset = await session.scalar(
+        select(EnterpriseAsset).where(
+            EnterpriseAsset.id == asset_id,
+            EnterpriseAsset.enterprise_id == user.enterprise_id,
+            EnterpriseAsset.is_deleted.is_(False),
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
+    task_id = body.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 task_id")
+    task = await session.scalar(
+        select(Task).where(
+            Task.id == int(task_id),
+            Task.enterprise_id == user.enterprise_id,
+            Task.task_type == TaskType.ENTERPRISE_INGESTION,
+        )
+    )
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非企业资料导入任务，拒绝分类")
+
+    category, facts = _classify(asset.name)
+    categories = await _ensure_categories(session, user.enterprise_id)
+    asset.category_id = categories.get(category)
+    asset.asset_type = category
+    asset.status = 2  # 待确认
+    for fact_key, value, confidence in facts:
+        session.add(
+            EnterpriseFact(
+                enterprise_id=user.enterprise_id,
+                asset_id=asset.id,
+                fact_key=fact_key,
+                fact_value={"value": value},
+                confidence=confidence,
+                status=1,
+            )
+        )
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        action="enterprise.classify_asset",
+        object_type="enterprise_asset",
+        object_id=asset.id,
+        payload={"task_id": task.id, "category": category},
+    )
+    await session.commit()
+    return {"asset_id": asset.id, "category": category, "confidence": 0.8, "status": 2}
+
+
+@router.post("/assets/{asset_id}/facts", status_code=status.HTTP_201_CREATED)
+async def upsert_enterprise_facts(
+    asset_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("upsert_enterprise_facts")),
+) -> dict:
+    """企业资料导入任务专属：写入/更新企业事实（结构化字段 + 证据引用）。"""
+    asset = await session.scalar(
+        select(EnterpriseAsset).where(
+            EnterpriseAsset.id == asset_id,
+            EnterpriseAsset.enterprise_id == user.enterprise_id,
+            EnterpriseAsset.is_deleted.is_(False),
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
+    task_id = body.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 task_id")
+    task = await session.scalar(
+        select(Task).where(
+            Task.id == int(task_id),
+            Task.enterprise_id == user.enterprise_id,
+            Task.task_type == TaskType.ENTERPRISE_INGESTION,
+        )
+    )
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非企业资料导入任务，拒绝写入")
+
+    facts = body.get("facts") or []
+    if not facts:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="facts 为空")
+    created = []
+    for f in facts:
+        fact_value = f.get("value")
+        if not isinstance(fact_value, dict):
+            fact_value = {"value": fact_value}
+        if f.get("evidence_ref"):
+            fact_value["evidence_ref"] = f["evidence_ref"]  # 来源文件版本 + 原文定位
+        fact = EnterpriseFact(
+            enterprise_id=user.enterprise_id,
+            asset_id=asset.id,
+            fact_key=f["fact_key"],
+            fact_value=fact_value,
+            confidence=float(f.get("confidence", 0.6)),
+            status=2 if float(f.get("confidence", 0.6)) < 0.7 else 3,  # 低置信待人工确认
+        )
+        session.add(fact)
+        await session.flush()
+        created.append(fact.id)
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        action="enterprise.upsert_facts",
+        object_type="enterprise_asset",
+        object_id=asset.id,
+        payload={"task_id": task.id, "fact_ids": created},
+    )
+    await session.commit()
+    return {"asset_id": asset.id, "fact_ids": created, "count": len(created)}
 
 
 @router.get("/ingest/{task_id}")

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import Deliverable
@@ -45,7 +45,7 @@ def _quote_params(body: dict) -> QuoteParams:
 async def history_query(
     material_ref: str | None = None,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
+    user: UserContext = Depends(require_capability("get_history_price")),
 ) -> dict:
     samples = await provider.query_history({"material_ref": material_ref})
     snapshot_ids = await snapshot_samples(session, user.enterprise_id, samples)
@@ -79,7 +79,7 @@ async def source_metadata(
 async def calculate_quote(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
+    user: UserContext = Depends(require_capability("calculate_quote")),
 ) -> dict:
     params = _quote_params(body)
     samples = await provider.get_material_samples(params.material_ref)

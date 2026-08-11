@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.config import settings
 from app.constants import Permission
 from app.db import get_session
@@ -24,7 +24,7 @@ router = APIRouter(tags=["search"])
 async def search_web(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("search_web")),
 ) -> dict:
     query = body.get("query", "")
     if settings.search_mode == "anysearch":
@@ -40,7 +40,7 @@ async def search_web(
 async def save_source(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("save_source")),
 ) -> dict:
     domain = (urlparse(body["url"]).hostname or "").lower()
     row = SearchSource(
@@ -87,7 +87,7 @@ async def link_citation(
     deliverable_id: int,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EDIT)),
+    user: UserContext = Depends(require_capability("link_citation")),
 ) -> dict:
     deliverable = await session.scalar(
         select(Deliverable).where(

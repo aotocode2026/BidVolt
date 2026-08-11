@@ -14,6 +14,7 @@ from app.api.deps import get_current_user, require_permission, UserContext
 from app.constants import Permission, TaskType
 from app.db import get_session
 from app.models.task import Task
+from app.services.capability import issue_capability
 from app.services.task_service import create_task, public_event
 
 router = APIRouter(tags=["tasks"])
@@ -46,6 +47,12 @@ async def submit_task(
         "status": task.status,
         "created": created,
         "progress": public_event(task),
+        "capability_token": issue_capability(
+            enterprise_id=user.enterprise_id,
+            project_id=project_id,
+            task_id=task.id,
+            task_type=task_type,
+        ),
     }
 
 

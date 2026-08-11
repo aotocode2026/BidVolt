@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import AIEditDiff, Deliverable, DeliverableVersion
@@ -147,7 +147,7 @@ async def save_version(
     deliverable_id: int,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EDIT)),
+    user: UserContext = Depends(require_capability("save_deliverable")),
 ) -> dict:
     d = await _get_deliverable(session, user, deliverable_id)
     try:
@@ -211,7 +211,7 @@ async def restore(
 async def current_content(
     deliverable_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("get_deliverable_content")),
 ) -> dict:
     d = await _get_deliverable(session, user, deliverable_id)
     if d.current_version_no == 0:

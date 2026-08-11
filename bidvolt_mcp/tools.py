@@ -10,6 +10,7 @@ import httpx
 
 BIDVOLT_API_BASE = os.environ.get("BIDVOLT_API_BASE", "http://127.0.0.1:8123")
 INTERNAL_TOKEN = os.environ.get("BIDVOLT_INTERNAL_TOKEN", "")
+CAPABILITY_TOKEN = os.environ.get("BIDVOLT_CAPABILITY_TOKEN", "")
 
 
 def _headers() -> dict[str, str]:
@@ -18,6 +19,9 @@ def _headers() -> dict[str, str]:
         # 任务级授权上下文由后端校验；内部 token 仅用于传输层认证
         headers["Authorization"] = f"Bearer {INTERNAL_TOKEN}"
         headers["X-Bidvolt-Internal"] = INTERNAL_TOKEN
+    if CAPABILITY_TOKEN:
+        # 任务级 capability token：绑定 enterprise/project/task/工具白名单
+        headers["X-Bidvolt-Cap"] = CAPABILITY_TOKEN
     return headers
 
 
@@ -37,6 +41,39 @@ def _search_assets(args: dict) -> Any:
         "/api/v1/enterprise/assets",
         {"query": args.get("query"), "page": args.get("page", 1), "size": args.get("size", 20)},
     )
+
+
+def _list_assets(args: dict) -> Any:
+    return _get("/api/v1/enterprise/assets")
+
+
+def _get_asset(args: dict) -> Any:
+    return _get(f"/api/v1/enterprise/assets/{args['asset_id']}")
+
+
+def _classify_enterprise_asset(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/enterprise/assets/{args['asset_id']}/classify",
+            json={"task_id": args.get("task_id")},
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _upsert_enterprise_facts(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/enterprise/assets/{args['asset_id']}/facts",
+            json={
+                "task_id": args.get("task_id"),
+                "facts": args["facts"],
+            },
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 def _get_project_material_blocks(args: dict) -> Any:
@@ -87,6 +124,40 @@ def _calculate_quote(args: dict) -> Any:
 
 def _get_history_price(args: dict) -> Any:
     return _get("/api/v1/quotes/history", {"material_ref": args.get("material_ref")})
+
+
+def _get_latest_score(args: dict) -> Any:
+    return _get(f"/api/v1/projects/{args['project_id']}/scores")
+
+
+def _get_review_items(args: dict) -> Any:
+    return _get(f"/api/v1/projects/{args['project_id']}/scores/{args['score_id']}/items")
+
+
+def _submit_score_items(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/projects/{args['project_id']}/evaluate",
+            json=args.get("payload") or {},
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _confirm_review_items(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/projects/{args['project_id']}/scores/{args['score_id']}/items/confirm",
+            json={
+                "item_ids": args.get("item_ids") or [],
+                "action": args.get("action", "confirm"),
+                "expected_version": args.get("expected_version"),
+            },
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 def _list_requirements(args: dict) -> Any:
@@ -182,6 +253,68 @@ TOOL_DEFS: list[dict] = [
         "handler": _search_assets,
     },
     {
+        "name": "list_assets",
+        "description": "浏览企业资料库目录",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": _list_assets,
+    },
+    {
+        "name": "get_asset",
+        "description": "读取单个企业资料详情（含关键字段提取结果与来源定位）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"asset_id": {"type": "integer"}},
+            "required": ["asset_id"],
+            "additionalProperties": False,
+        },
+        "handler": _get_asset,
+    },
+    {
+        "name": "classify_enterprise_asset",
+        "description": "企业资料导入任务专属：识别资料类型、抽取结构化字段、建议归档目录",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_id": {"type": "integer"},
+                "task_id": {"type": "integer"},
+            },
+            "required": ["asset_id", "task_id"],
+            "additionalProperties": False,
+        },
+        "handler": _classify_enterprise_asset,
+    },
+    {
+        "name": "upsert_enterprise_facts",
+        "description": "企业资料导入任务专属：写入/更新企业事实（结构化字段 + 证据引用）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_id": {"type": "integer"},
+                "task_id": {"type": "integer"},
+                "facts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "fact_key": {"type": "string"},
+                            "value": {},
+                            "confidence": {"type": "number"},
+                            "evidence_ref": {"type": "object"},
+                        },
+                        "required": ["fact_key"],
+                    },
+                },
+            },
+            "required": ["asset_id", "task_id", "facts"],
+            "additionalProperties": False,
+        },
+        "handler": _upsert_enterprise_facts,
+    },
+    {
         "name": "get_project_material_blocks",
         "description": "读取项目材料解析出的 doc_block 文本块（带坐标）",
         "inputSchema": {
@@ -260,6 +393,62 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _get_history_price,
+    },
+    {
+        "name": "get_latest_score",
+        "description": "读取项目最新评分汇总",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "integer"}},
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+        "handler": _get_latest_score,
+    },
+    {
+        "name": "get_review_items",
+        "description": "读取逐条评审项（含分类/得分/建议/证据/状态）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "score_id": {"type": "integer"},
+            },
+            "required": ["project_id", "score_id"],
+            "additionalProperties": False,
+        },
+        "handler": _get_review_items,
+    },
+    {
+        "name": "submit_score_items",
+        "description": "提交模拟评标（snapshot + EvidenceRef 服务端校验）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "payload": {"type": "object"},
+            },
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+        "handler": _submit_score_items,
+    },
+    {
+        "name": "confirm_review_items",
+        "description": "批量确认/拒绝评审项（expected_version CAS）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "score_id": {"type": "integer"},
+                "item_ids": {"type": "array", "items": {"type": "integer"}},
+                "action": {"type": "string"},
+                "expected_version": {"type": "integer"},
+            },
+            "required": ["project_id", "score_id", "item_ids"],
+            "additionalProperties": False,
+        },
+        "handler": _confirm_review_items,
     },
     {
         "name": "list_requirements",

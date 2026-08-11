@@ -84,7 +84,7 @@
 ### M3 Hermes 接入
 
 - [ ] Hermes 进程部署（同容器 supervisor 编排；`bidvolt_mcp` stdio server 已实现并有契约测试，待 Hermes Agent 进程接入）
-- [x] 任务级授权上下文（enterprise/project/task/工具白名单/对象范围）+ enterprise_ingestion 任务类型
+- [x] 任务级授权上下文（capability token 落地：签名/有效期/工具白名单/租户绑定）+ enterprise_ingestion 任务类型
 - [x] 任务编排：队列 = PG 任务表（SKIP LOCKED，不引入 Redis）；idempotency_key 唯一约束、generation 校验、重试耗尽终态失败、单事务提交
 - [x] SSE 白名单事件过滤（禁止思维链/工具参数/内部 ID/凭据/错误栈）
 - [x] MCP IDL（OpenRPC + JSON Schema）生成 + 服务端实现（`bidvolt_mcp/schema/openrpc.json` + `test_mcp_idl.py` 一致性校验）

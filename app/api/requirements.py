@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.constants import Permission
 from app.db import get_session
 from app.models.requirement import Requirement
@@ -33,7 +33,7 @@ def _to_dict(req: Requirement) -> dict:
 async def list_requirements(
     project_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("list_requirements")),
 ) -> list[dict]:
     rows = await requirement_service.list_requirements(session, user.enterprise_id, project_id)
     return [_to_dict(r) for r in rows]
@@ -43,7 +43,7 @@ async def list_requirements(
 async def get_requirement(
     req_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("get_requirement")),
 ) -> dict:
     req = await session.scalar(
         select(Requirement).where(
@@ -61,7 +61,7 @@ async def upsert_requirements(
     project_id: int,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.PROJECT_EDIT)),
+    user: UserContext = Depends(require_capability("upsert_requirements")),
 ) -> dict:
     created: list[int] = []
     for item in body.get("requirements", []):

@@ -3,6 +3,18 @@
 > 后端业务服务暴露给 Hermes 的能力接口。实现为 stdio MCP server（`bidvolt_mcp` 包），
 > 内部调用 BidVolt API。租户与授权上下文由服务端按任务级授权注入（产品决策 D-B）。
 
+## 0. 任务级授权上下文（P0-2，已落地）
+
+- 每个任务创建时由后端签发 **capability token**（`X-Bidvolt-Cap`，HMAC 签名，默认 1h 有效期），
+  绑定 `enterprise_id / project_id / task_id / 允许工具白名单`；任务接口返回 `capability_token`。
+- Hermes 进程启动时经环境变量 `BIDVOLT_CAPABILITY_TOKEN` 注入该 token，MCP server 随每次
+  后端调用携带；后端按工具名强制校验白名单与租户（`app/services/capability.py` +
+  `require_capability` 依赖），**无 token = 无工具权限**。
+- 任务类型→工具白名单见 `app/services/capability.py::TASK_TOOL_WHITELIST`；企业资料写工具
+  （classify/upsert_facts）仅 `enterprise_ingestion` 任务可调用，且后端校验任务归属。
+- 相关测试：`tests/unit/test_capability.py`（签名/有效期/白名单/租户）、
+  `tests/module/test_capability_api.py`（API 集成）、`test_mcp_server.py`（token 转发）。
+
 ## 工具分组总览
 
 | 组 | 工具 | 读写 | 说明 |

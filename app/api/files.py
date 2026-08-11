@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.config import settings
 from app.constants import Permission
 from app.db import get_session
@@ -194,7 +194,7 @@ async def file_blocks(
     page: int = 1,
     size: int = 100,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("get_project_material_blocks")),
 ) -> Page:
     await _get_file(session, user, file_id)
     query = select(DocBlock).where(DocBlock.file_id == file_id)
@@ -207,7 +207,7 @@ async def file_blocks(
 async def project_materials(
     project_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("list_project_materials")),
 ) -> list[dict]:
     rows = await session.scalars(
         select(ProjectMaterial).where(
