@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -46,3 +48,27 @@ class StorageProvider:
             self.open(bucket, object_key).unlink()
         except FileNotFoundError:
             pass
+
+    @staticmethod
+    def sign_download(file_id: int, tenant_id: int, expires_in: int = 300) -> str:
+        """应用层签名下载 URL（V1，D16）：HMAC 签名 + 短时有效期。"""
+        exp = int(time.time()) + expires_in
+        payload = f"{file_id}:{tenant_id}:{exp}"
+        sig = hmac.new(
+            settings.jwt_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"/api/v1/files/{file_id}/signed?exp={exp}&sig={sig}"
+
+    @staticmethod
+    def verify_signed(file_id: int, tenant_id: int, exp: int, sig: str) -> bool:
+        """校验签名与有效期。"""
+        if int(time.time()) > int(exp):
+            return False
+        expected = hmac.new(
+            settings.jwt_secret.encode("utf-8"),
+            f"{file_id}:{tenant_id}:{exp}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(expected, sig)

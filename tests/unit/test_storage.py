@@ -39,3 +39,22 @@ def test_open_rejects_traversal(tmp_path):
     provider = StorageProvider(root=tmp_path)
     with pytest.raises(ValueError):
         provider.open("enterprise_1", "../../secret.txt")
+
+
+def test_signed_download_roundtrip_and_expiry(monkeypatch):
+    import time
+
+    from urllib.parse import parse_qs, urlparse
+
+    url = StorageProvider.sign_download(file_id=7, tenant_id=3, expires_in=300)
+    assert url.startswith("/api/v1/files/7/signed?exp=")
+    assert "sig=" in url
+
+    qs = parse_qs(urlparse(url).query)
+    exp, sig = int(qs["exp"][0]), qs["sig"][0]
+    assert StorageProvider.verify_signed(7, 3, exp, sig) is True
+    assert StorageProvider.verify_signed(7, 4, exp, sig) is False  # 租户不符
+    assert StorageProvider.verify_signed(8, 3, exp, sig) is False  # 文件不符
+
+    monkeypatch.setattr("app.services.storage.time.time", lambda: exp + 301)
+    assert StorageProvider.verify_signed(7, 3, exp, sig) is False  # 过期

@@ -115,11 +115,10 @@ async def file_info(
     return _file_dict(await _get_file(session, user, file_id))
 
 
-@router.get("/{file_id}/download")
-async def download_file(
+async def _serve_download(
     file_id: int,
-    session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
+    session: AsyncSession,
+    user: UserContext,
 ) -> FileResponse:
     f = await _get_file(session, user, file_id)
     try:
@@ -137,6 +136,29 @@ async def download_file(
     )
     await session.commit()
     return FileResponse(path, filename=f.original_name, media_type=f.mime_type)
+
+
+@router.get("/{file_id}/download")
+async def download_file(
+    file_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
+) -> FileResponse:
+    return await _serve_download(file_id, session, user)
+
+
+@router.get("/{file_id}/signed")
+async def signed_download(
+    file_id: int,
+    exp: int,
+    sig: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
+) -> FileResponse:
+    """签名 URL 下载：HMAC 校验 + 过期 401 + 租户/权限校验。"""
+    if not storage.verify_signed(file_id, user.enterprise_id, exp, sig):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="签名无效或已过期")
+    return await _serve_download(file_id, session, user)
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

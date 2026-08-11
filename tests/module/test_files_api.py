@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import time
 import zipfile
 
 
@@ -94,3 +95,38 @@ def test_archive_normal_zip_imports_files(client):
     ar = client.post("/api/v1/files/archive", json={"archive_file_id": file_id, "target": "enterprise"}, headers=h)
     assert ar.status_code == 200
     assert len(ar.json()["result"]["imported"]) == 2
+
+
+def test_signed_download_url(client):
+    from app.services.storage import StorageProvider
+
+    h = _headers(client)
+    r = _upload(client, h, content=b"signature-content", name="签名.txt")
+    file_id = r.json()["files"][0]["file_id"]
+
+    signed = StorageProvider.sign_download(file_id, 1)
+    resp = client.get(signed, headers=h)
+    assert resp.status_code == 200
+    assert resp.content == b"signature-content"
+
+    # 篡改签名 → 401
+    assert client.get(signed + "x", headers=h).status_code == 401
+
+    # 过期 → 401（真实短有效期 + 等待）
+    expired = StorageProvider.sign_download(file_id, 1, expires_in=1)
+    time.sleep(2)
+    assert client.get(expired, headers=h).status_code == 401
+
+    # 无下载权限 → 403
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("sqlite:///./.test_bidvolt.db")
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE app_user SET permissions = '[]' WHERE email = 'f@test.com'"))
+    engine.dispose()
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "f@test.com", "password": "Abc12345"},
+    )
+    h_no_perm = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get(signed, headers=h_no_perm).status_code == 403
