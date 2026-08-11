@@ -65,6 +65,10 @@ fi
 # 备份 cron（每日 02:00，保留 30 天，见 backup.sh）
 echo "0 2 * * * /usr/local/bin/bidvolt-backup >> /var/log/bidvolt/backup.log 2>&1" > /etc/cron.d/bidvolt-backup
 
+# ClamAV 运行环境：socket 目录
+mkdir -p /var/run/clamav
+chown -R clamav:clamav /var/run/clamav 2>/dev/null || true
+
 echo "[init] alembic migrations"
 export DATABASE_URL="${DATABASE_URL:-postgresql://${APP_USER}:${APP_DB_PASSWORD}@127.0.0.1:5432/${APP_DB}}"
 /opt/bidvolt/.venv/bin/alembic upgrade head

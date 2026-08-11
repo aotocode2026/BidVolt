@@ -8,6 +8,37 @@ import pytest
 from app.services import file_safety
 
 
+def test_virus_scan_disabled_skips(monkeypatch):
+    monkeypatch.setattr(file_safety.settings, "virus_scan_required", False)
+    called = {"n": 0}
+
+    def fake_scan(data):
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(file_safety, "scan_clamav", fake_scan)
+    file_safety.virus_scan(b"x")
+    assert called["n"] == 0
+
+
+def test_virus_scan_required_fail_closed(monkeypatch):
+    monkeypatch.setattr(file_safety.settings, "virus_scan_required", True)
+
+    def infected(data):
+        return False
+
+    def unavailable(data):
+        raise RuntimeError("clamd down")
+
+    monkeypatch.setattr(file_safety, "scan_clamav", infected)
+    with pytest.raises(ValueError, match="拦截"):
+        file_safety.virus_scan(b"x")
+
+    monkeypatch.setattr(file_safety, "scan_clamav", unavailable)
+    with pytest.raises(ValueError, match="fail-closed"):
+        file_safety.virus_scan(b"x")
+
+
 def test_sniff_mime():
     assert file_safety.sniff_mime(b"%PDF-1.7 ...") == "application/pdf"
     assert file_safety.sniff_mime(b"PK\x03\x04...") == "application/zip"

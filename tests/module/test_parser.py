@@ -38,3 +38,20 @@ def test_parse_xlsx(tmp_path):
     wb.save(str(p))
     blocks = parser.parse_to_blocks(p, ".xlsx")
     assert any("电缆" in (b.get("text_content") or "") for b in blocks)
+
+
+def test_parse_pdf(tmp_path):
+    try:
+        import fitz  # pymupdf
+    except ImportError:
+        import pytest
+
+        pytest.skip("pymupdf 未安装")
+    p = tmp_path / "a.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "招标技术要求：电压等级 10kV")
+    doc.save(str(p))
+    doc.close()
+    blocks = parser.parse_to_blocks(p, ".pdf")
+    assert any("10kV" in (b.get("text_content") or "") for b in blocks)

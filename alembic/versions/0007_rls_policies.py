@@ -5,6 +5,7 @@
   这些表由应用层 enterprise_id 过滤 + 复合键防护，不纳入 FORCE RLS；
 - 业务数据表全部启用 FORCE RLS，策略统一为 enterprise_id = current_setting('app.enterprise_id')::bigint；
 - deliverable_content 为跨租户内容去重共享表，不启用 RLS。
+- task 为跨租户任务队列（worker 需跨租户消费），不做 RLS；任务数据按应用层 enterprise_id 过滤（见 0009）。
 
 Revision ID: 0007
 Revises: 0006
@@ -23,7 +24,6 @@ depends_on = None
 # 仅在这些业务表启用 RLS（均在已认证会话内写入，携带 enterprise_id）
 RLS_TABLES = [
     "project",
-    "task",
     "file_object",
     "deliverable",
     "deliverable_version",
