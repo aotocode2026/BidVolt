@@ -12,7 +12,7 @@ from app.api.deps import get_current_user, require_capability, require_permissio
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import Deliverable
-from app.models.quote import QuoteCalc
+from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.services import deliverable_service
 from app.services.audit import write_audit
 from app.services.deliverable_service import VersionConflict
@@ -99,6 +99,57 @@ async def calculate_quote(
     session.add(calc)
     await session.commit()
     return {"calc_id": calc.id, "result": result}
+
+
+@router.post("/recalc")
+async def recalc_quote(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("calculate_quote")),
+) -> dict:
+    """按冻结样本 + 原始参数 + 算法版本复算建议价（A-8 复算可验证）。"""
+    calc = await session.scalar(
+        select(QuoteCalc).where(
+            QuoteCalc.id == body["calc_id"],
+            QuoteCalc.enterprise_id == user.enterprise_id,
+        )
+    )
+    if calc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="测算记录不存在")
+    params = _quote_params(calc.params)
+    snapshot_ids = calc.snapshot_refs or []
+    rows = (
+        await session.scalars(
+            select(HistoryPriceSnapshot).where(
+                HistoryPriceSnapshot.id.in_(snapshot_ids),
+                HistoryPriceSnapshot.enterprise_id == user.enterprise_id,
+            )
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="无冻结样本，无法复算")
+    samples = [
+        {
+            "material_ref": params.material_ref,
+            "material_name": r.material_name,
+            "material_code": r.material_code,
+            "spec": r.spec,
+            "region": r.region,
+            "win_price": float(r.win_price),
+            "win_date": r.win_date,
+            "unit": "元",
+            "currency": "CNY",
+            "tax_included": True,
+        }
+        for r in rows
+    ]
+    result = calculate(params, samples)
+    return {
+        "calc_id": calc.id,
+        "recalc": result,
+        "matches_original": result["suggested"] == calc.result.get("suggested"),
+        "engine_version": result["engine_version"],
+    }
 
 
 @router.post("/strategies")

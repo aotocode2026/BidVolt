@@ -112,3 +112,22 @@ def test_apply_requires_quote_apply_permission(client):
         headers=h,
     )
     assert r.status_code == 403
+
+
+def test_recalc_from_frozen_snapshot(client):
+    """A-8：任一建议价可按冻结样本 + 参数 + 算法版本复算，结果一致。"""
+    h, pid, did = _setup(client)
+    calc = client.post(
+        "/api/v1/quotes/calculate",
+        json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1, "project_id": pid},
+        headers=h,
+    ).json()
+    calc_id = calc["calc_id"]
+    original = calc["result"]["suggested"]
+
+    recalc = client.post("/api/v1/quotes/recalc", json={"calc_id": calc_id}, headers=h)
+    assert recalc.status_code == 200
+    body = recalc.json()
+    assert body["matches_original"] is True
+    assert body["recalc"]["suggested"] == original
+    assert body["engine_version"]
