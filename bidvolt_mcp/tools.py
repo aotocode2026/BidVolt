@@ -109,6 +109,22 @@ def _upsert_requirements(args: dict) -> Any:
         return resp.json()
 
 
+def _save_material_match_results(args: dict) -> Any:
+    body = {"results": args["results"]}
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            f"/api/v1/projects/{args['project_id']}/material-matches",
+            json=body,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _list_material_matches(args: dict) -> Any:
+    return _get(f"/api/v1/projects/{args['project_id']}/material-matches")
+
+
 TOOL_DEFS: list[dict] = [
     {
         "name": "health",
@@ -259,6 +275,46 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _upsert_requirements,
+    },
+    {
+        "name": "save_material_match_results",
+        "description": "保存资料匹配结果（material_match Skill 产出，缺失项关联要求与评分项）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "requirement_id": {"type": "integer"},
+                            "asset_id": {"type": "integer"},
+                            "matched": {"type": "integer", "enum": [1, 2, 3]},
+                            "gap_desc": {"type": "string"},
+                            "affected_score_item": {"type": "string"},
+                            "impact_score": {"type": "number"},
+                            "suggestion": {"type": "string"},
+                        },
+                        "required": ["matched"],
+                    },
+                },
+            },
+            "required": ["project_id", "results"],
+            "additionalProperties": False,
+        },
+        "handler": _save_material_match_results,
+    },
+    {
+        "name": "list_material_matches",
+        "description": "列出项目资料匹配结果",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "integer"}},
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+        "handler": _list_material_matches,
     },
 ]
 

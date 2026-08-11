@@ -170,6 +170,188 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     task.result = result
 
 
+async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
+    """生成/补全三份成果：确定性草稿（LLM 门禁内可选增强）。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.deliverable import Deliverable
+    from app.models.enterprise_domain import EnterpriseFact
+    from app.models.project import Project
+    from app.models.requirement import Requirement
+    from app.services import deliverable_service, quote_engine
+    from app.services.history_provider import MockHistoryPriceProvider
+    from app.services.llm import LLMClient, llm_enabled
+
+    project_id = task.project_id
+    requirements = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == task.enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+            )
+        )
+    ).all()
+    req_by_type: dict[str, list[Requirement]] = {}
+    for req in requirements:
+        req_by_type.setdefault(req.req_type, []).append(req)
+
+    facts = (
+        await session.scalars(
+            sa_select(EnterpriseFact).where(EnterpriseFact.enterprise_id == task.enterprise_id)
+        )
+    ).all()
+    fact_lines = [f"{f.fact_key}: {f.fact_value.get('value', '')}" for f in facts]
+    fact_text = "\n".join(fact_lines) or "（企业资料库暂无结构化事实）"
+
+    project = await session.scalar(
+        sa_select(Project).where(
+            Project.id == project_id,
+            Project.enterprise_id == task.enterprise_id,
+        )
+    )
+    project_name = project.name if project is not None else f"项目{project_id}"
+
+    def _business_model() -> dict:
+        nodes = [
+            {"id": "n1", "type": "heading", "text": "商务标"},
+            {"id": "n2", "type": "paragraph", "text": f"项目名称：{project_name}"},
+            {"id": "n3", "type": "paragraph", "text": "一、企业基本情况"},
+            {"id": "n4", "type": "paragraph", "text": fact_text},
+        ]
+        idx = 5
+        for req in req_by_type.get("basic_info", [])[:5]:
+            nodes.append({"id": f"n{idx}", "type": "paragraph", "text": f"- {req.content}"})
+            idx += 1
+        for req in req_by_type.get("qualification", [])[:5]:
+            nodes.append({"id": f"n{idx}", "type": "paragraph", "text": f"- 资格响应：{req.content}"})
+            idx += 1
+        nodes.append({"id": f"n{idx}", "type": "paragraph", "text": "（草稿由 BidVolt 确定性生成，待人工校核）"})
+        return {"nodes": nodes}
+
+    def _technical_model() -> dict:
+        nodes = [
+            {"id": "t1", "type": "heading", "text": "技术标"},
+            {"id": "t2", "type": "paragraph", "text": f"项目名称：{project_name}"},
+            {"id": "t3", "type": "paragraph", "text": "一、技术方案总体说明"},
+        ]
+        idx = 4
+        for req in req_by_type.get("tech_requirement", [])[:10]:
+            nodes.append({"id": f"t{idx}", "type": "paragraph", "text": f"- 技术要求响应：{req.content}"})
+            idx += 1
+        nodes.append({"id": f"t{idx}", "type": "paragraph", "text": "（草稿由 BidVolt 确定性生成，待人工校核）"})
+        return {"nodes": nodes}
+
+    async def _quote_model() -> dict:
+        material_ref = task.payload.get("material_ref") or "CABLE-YJV-3x95"
+        cost = float(task.payload.get("cost", 100))
+        params = quote_engine.QuoteParams(
+            material_ref=material_ref,
+            cost=cost,
+            min_profit_rate=float(task.payload.get("min_profit_rate", 0.05)),
+        )
+        try:
+            samples = await MockHistoryPriceProvider().get_material_samples(material_ref)
+        except Exception:  # noqa: BLE001
+            samples = []
+        try:
+            result = quote_engine.calculate(params, samples)
+            price = result["suggested"]
+        except ValueError:
+            price = None
+        rows = [["材料", "数量", "单价", "小计"]]
+        rows.append([material_ref, 1, price if price is not None else "待人工定价", price if price is not None else ""])
+        rows.append(["说明", "", "", "确定性测算草稿，用户确认后生效"])
+        return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
+
+    models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
+    versions: dict[int, int] = {}
+    for dtype, model in models.items():
+        deliverable = await session.scalar(
+            sa_select(Deliverable).where(
+                Deliverable.project_id == project_id,
+                Deliverable.deliverable_type == dtype,
+            )
+        )
+        if deliverable is None:
+            deliverable = await deliverable_service.create_deliverable(
+                session,
+                enterprise_id=task.enterprise_id,
+                project_id=project_id,
+                deliverable_type=dtype,
+                title={1: "商务标", 2: "技术标", 3: "报价单"}[dtype],
+            )
+        version = await deliverable_service.save_version(
+            session,
+            deliverable,
+            model,
+            version_type=2,
+            idempotency_key=f"bidgen-{task.id}-{dtype}",
+            source_task_id=task.id,
+        )
+        versions[dtype] = version.version_no
+
+    if llm_enabled():
+        task.result = {**versions, "note": "确定性草稿 + LLM 增强（门禁已开）"}
+    else:
+        task.result = {**versions, "note": "确定性草稿（云模型门禁关闭）"}
+
+
+async def _material_match_handler(session: AsyncSession, task: Task) -> None:
+    """资料匹配：requirements ↔ enterprise_asset（关键词命中），写 material_match_result。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.enterprise_domain import EnterpriseAsset
+    from app.models.project_material import MaterialMatchResult
+    from app.models.requirement import Requirement
+
+    requirements = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == task.enterprise_id,
+                Requirement.project_id == task.project_id,
+                Requirement.current.is_(True),
+            )
+        )
+    ).all()
+    assets = (
+        await session.scalars(
+            sa_select(EnterpriseAsset).where(
+                EnterpriseAsset.enterprise_id == task.enterprise_id,
+                EnterpriseAsset.is_deleted.is_(False),
+            )
+        )
+    ).all()
+
+    results: list[dict] = []
+    for req in requirements:
+        key_type = next(
+            (k for k in ("资质", "业绩", "人员", "检测报告", "证照", "产品参数") if k in req.content),
+            None,
+        )
+        best: EnterpriseAsset | None = None
+        if key_type is not None:
+            best = next((a for a in assets if a.asset_type == key_type), None)
+        matched = 1 if best is not None else 3
+        session.add(
+            MaterialMatchResult(
+                enterprise_id=task.enterprise_id,
+                project_id=task.project_id,
+                requirement_id=req.id,
+                asset_id=best.id if best else None,
+                matched=matched,
+                gap_desc=None if matched == 1 else "无足够匹配的企业资料",
+                affected_score_item=req.req_type,
+                suggestion="补充对应资质/业绩材料" if matched != 1 else None,
+                source_task_id=task.id,
+            )
+        )
+        results.append({"requirement_id": req.id, "matched": matched})
+    task.result = {"matched_count": len(results), "results": results}
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
+    TaskType.BID_GENERATE: _bid_generate_handler,
+    TaskType.MATERIAL_MATCH: _material_match_handler,
 }

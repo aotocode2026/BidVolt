@@ -34,6 +34,9 @@ class _MockBackend(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/v1/requirements"):
             body = json.dumps([{"req_id": 1, "req_type": "qualification", "content": "三级资质"}]).encode()
             self.send_response(200)
+        elif self.path.startswith("/api/v1/projects/5/material-matches"):
+            body = json.dumps([{"result_id": 1, "matched": 1}]).encode()
+            self.send_response(200)
         else:
             self.send_response(404)
             body = b"{}"
@@ -54,6 +57,9 @@ class _MockBackend(BaseHTTPRequestHandler):
             self.send_response(200)
         elif self.path.startswith("/api/v1/projects/5/requirements/upsert"):
             body = json.dumps({"created": [1], "count": 1}).encode()
+            self.send_response(201)
+        elif self.path.startswith("/api/v1/projects/5/material-matches"):
+            body = json.dumps({"saved": [1], "count": 1}).encode()
             self.send_response(201)
         else:
             self.send_response(404)
@@ -120,6 +126,8 @@ def test_mcp_initialize_and_tools():
         "list_requirements",
         "get_requirement",
         "upsert_requirements",
+        "save_material_match_results",
+        "list_material_matches",
     } <= set(names)
     assert json.loads(by_id[3]["result"]["content"][0]["text"])["status"] == "ok"
     assert by_id[4]["error"]["code"] == -32602
@@ -222,3 +230,26 @@ def test_mcp_requirement_tools():
     assert reqs[0]["req_type"] == "qualification"
     created = json.loads(lines[1]["result"]["content"][0]["text"])
     assert created["count"] == 1
+
+
+def test_mcp_material_match_tools():
+    with ThreadingHTTPServer(("127.0.0.1", 0), _MockBackend) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_mcp(
+                port,
+                "mm-token",
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_material_matches", "arguments": {"project_id": 5}}},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "save_material_match_results", "arguments": {"project_id": 5, "results": [{"matched": 1, "requirement_id": 1}]}}},
+                ],
+            )
+        finally:
+            httpd.shutdown()
+
+    assert _MockBackend.captured_auth == "Bearer mm-token"
+    lines = [json.loads(l) for l in out.strip().splitlines()]
+    assert json.loads(lines[0]["result"]["content"][0]["text"])[0]["matched"] == 1
+    assert json.loads(lines[1]["result"]["content"][0]["text"])["count"] == 1

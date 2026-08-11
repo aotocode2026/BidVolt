@@ -12,6 +12,7 @@ from app.api import (
     files,
     health,
     locks,
+    matches,
     projects,
     quotes,
     requirements,
@@ -35,6 +36,7 @@ app.include_router(review.providers_router, prefix="/api/v1")
 app.include_router(export.router, prefix="/api/v1")
 app.include_router(requirements.router, prefix="/api/v1")
 app.include_router(requirements.projects_router, prefix="/api/v1")
+app.include_router(matches.router, prefix="/api/v1")
 
 
 @app.get("/")
