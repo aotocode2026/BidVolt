@@ -41,7 +41,7 @@ _EXT_MAGIC: dict[str, str] = {
     ".rar": "application/vnd.rar",
     ".7z": "application/x-7z-compressed",
 }
-_ZIP_EXTS = {".zip", ".docx", ".xlsx", ".pptx"}
+_ZIP_EXTS = {".zip", ".docx", ".xlsx", ".pptx", ".ofd"}
 _OLE_EXTS = {".doc", ".xls", ".ppt"}
 
 

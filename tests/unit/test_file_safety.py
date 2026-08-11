@@ -62,6 +62,15 @@ def test_validate_upload_accepts_txt():
     assert ext == ".txt"
 
 
+def test_validate_upload_ofd_zip_container():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("OFD.xml", "<ofd:OFD/>")
+    mime, ext = file_safety.validate_upload("招标文件.ofd", buf.getvalue())
+    assert mime == "application/zip"
+    assert ext == ".ofd"
+
+
 def test_extract_zip_rejects_path_traversal():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

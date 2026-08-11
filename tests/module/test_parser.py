@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import zipfile
 
 from app.services import parser
 
@@ -55,3 +56,101 @@ def test_parse_pdf(tmp_path):
     doc.close()
     blocks = parser.parse_to_blocks(p, ".pdf")
     assert any("10kV" in (b.get("text_content") or "") for b in blocks)
+
+
+def _write_ofd(tmp_path: Path, text: str, size_attr: str = "Size") -> Path:
+    """构造最小 OFD（zip+XML），按 TextObject 属性大小写区分标准/easyofd 风格。"""
+    p = tmp_path / "a.ofd"
+    ns = "http://www.ofdspec.org/2016"
+    ofd_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<ofd:OFD xmlns:ofd="{ns}">
+  <ofd:DocBody>
+    <ofd:DocInfo><ofd:DocID>12345678901234567890123456789012</ofd:DocID></ofd:DocInfo>
+    <ofd:DocRoot><ofd:BaseLoc>Doc_0/Document.xml</ofd:BaseLoc></ofd:DocRoot>
+  </ofd:DocBody>
+</ofd:OFD>
+'''
+    document_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Document xmlns:ofd="{ns}">
+  <ofd:CommonData>
+    <ofd:PageArea><ofd:PhysicalBox>0 0 595.0 842.0</ofd:PhysicalBox></ofd:PageArea>
+    <ofd:PublicRes>Doc_0/PublicRes.xml</ofd:PublicRes>
+    <ofd:DocumentRes>Doc_0/DocumentRes.xml</ofd:DocumentRes>
+  </ofd:CommonData>
+  <ofd:Pages>
+    <ofd:Page ID="1"><ofd:BaseLoc>Doc_0/Pages/Page_1/Content.xml</ofd:BaseLoc></ofd:Page>
+  </ofd:Pages>
+</ofd:Document>
+'''
+    content_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="{ns}">
+  <ofd:Content>
+    <ofd:Layer ID="4" Type="Foreground">
+      <ofd:TextObject ID="5" Font="3" {size_attr}="12" Boundary="0 0 100 20">
+        <ofd:TextCode X="0" Y="12">{text}</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>
+'''
+    publicres_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Res xmlns:ofd="{ns}">
+  <ofd:Fonts><ofd:Font ID="3" FontName="SimSun" FamilyName="SimSun"/></ofd:Fonts>
+</ofd:Res>
+'''
+    documentres_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Res xmlns:ofd="{ns}"><ofd:MultiMedias/></ofd:Res>
+'''
+    files = {
+        "OFD.xml": ofd_xml,
+        "Doc_0/Document.xml": document_xml,
+        "Doc_0/Pages/Page_1/Content.xml": content_xml,
+        "Doc_0/PublicRes.xml": publicres_xml,
+        "Doc_0/DocumentRes.xml": documentres_xml,
+    }
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return p
+
+
+def test_parse_ofd_standard(tmp_path):
+    p = _write_ofd(tmp_path, "招标技术要求：电压等级 10kV", size_attr="Size")
+    blocks = parser.parse_to_blocks(p, ".ofd")
+    assert len(blocks) == 1
+    assert blocks[0]["page_no"] == 1
+    assert "10kV" in blocks[0]["text_content"]
+
+
+def test_parse_ofd_easyofd_lowercase_size(tmp_path):
+    """easyofd 生成的文件用小写 size 属性，解析端需兼容。"""
+    p = _write_ofd(tmp_path, "商务响应：交付周期 30 天", size_attr="size")
+    blocks = parser.parse_to_blocks(p, ".ofd")
+    assert any("交付周期" in b.get("text_content") for b in blocks)
+
+
+def test_parse_ofd_no_text_layer(tmp_path):
+    import pytest
+
+    p = tmp_path / "scan.ofd"
+    ns = "http://www.ofdspec.org/2016"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr(
+            "OFD.xml",
+            f'<?xml version="1.0" encoding="UTF-8"?><ofd:OFD xmlns:ofd="{ns}"><ofd:DocBody>'
+            f'<ofd:DocRoot><ofd:BaseLoc>Doc_0/Document.xml</ofd:BaseLoc></ofd:DocRoot>'
+            f"</ofd:DocBody></ofd:OFD>",
+        )
+        zf.writestr(
+            "Doc_0/Document.xml",
+            f'<?xml version="1.0" encoding="UTF-8"?><ofd:Document xmlns:ofd="{ns}"><ofd:Pages>'
+            f'<ofd:Page ID="1"><ofd:BaseLoc>Doc_0/Pages/Page_0/Content.xml</ofd:BaseLoc></ofd:Page>'
+            f"</ofd:Pages></ofd:Document>",
+        )
+        zf.writestr(
+            "Doc_0/Pages/Page_0/Content.xml",
+            f'<?xml version="1.0" encoding="UTF-8"?><ofd:Page xmlns:ofd="{ns}"><ofd:Content><ofd:Layer ID="4"/>'
+            f"</ofd:Content></ofd:Page>",
+        )
+    with pytest.raises(ValueError, match="无文本层"):
+        parser.parse_to_blocks(p, ".ofd")
