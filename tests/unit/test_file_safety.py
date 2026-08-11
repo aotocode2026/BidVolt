@@ -104,3 +104,39 @@ def test_extract_zip_normal_entries():
         zf.writestr("sub/b.txt", "world")
     entries = file_safety.extract_zip(buf.getvalue())
     assert {e["name"] for e in entries} == {"a.txt", "b.txt"}
+
+
+def test_extract_zip_rejects_oversize_total():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("big.txt", b"x" * 1000)
+    with pytest.raises(ValueError, match="解压总量超限"):
+        file_safety.extract_zip(buf.getvalue(), max_total=100)
+
+
+def test_extract_zip_rejects_too_many_entries():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(5):
+            zf.writestr(f"f{i}.txt", b"x")
+    with pytest.raises(ValueError, match="文件数超限"):
+        file_safety.extract_zip(buf.getvalue(), max_entries=3)
+
+
+def test_extract_zip_rejects_deep_nesting():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a/b/c/d/e.txt", b"deep")
+    with pytest.raises(ValueError, match="拒绝不安全的压缩条目"):
+        file_safety.extract_zip(buf.getvalue(), max_depth=3)
+
+
+def test_extract_zip_rejects_symlink_entry():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3
+        info.external_attr = 0o120777 << 16  # symlink
+        zf.writestr(info, "/etc/passwd")
+    with pytest.raises(ValueError, match="符号链接"):
+        file_safety.extract_zip(buf.getvalue())

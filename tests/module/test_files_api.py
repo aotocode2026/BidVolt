@@ -57,6 +57,17 @@ def test_upload_magic_mismatch_fails(client):
     assert "error" in r.json()["files"][0]
 
 
+def test_corrupted_zip_enters_manual_processing(client):
+    h = _headers(client)
+    r = _upload(client, h, content=b"PK\x03\x04 not-a-real-zip", name="bad.zip")
+    assert r.status_code == 200
+    entry = r.json()["files"][0]
+    # 损坏压缩包不静默丢弃：解析失败进入"需人工处理"（status=4）
+    assert entry["status"] == 4
+    st = client.get(f"/api/v1/files/{entry['file_id']}/parse-status", headers=h).json()
+    assert st["parse_status"]["error_code"]
+
+
 def test_upload_to_project_sets_processing(client):
     h = _headers(client)
     pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]
