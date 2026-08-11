@@ -73,6 +73,15 @@ async def review_items(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_review_items")),
 ) -> list[dict]:
+    score = await session.scalar(
+        select(ScoreRecord).where(
+            ScoreRecord.id == score_id,
+            ScoreRecord.enterprise_id == user.enterprise_id,
+            ScoreRecord.project_id == project_id,
+        )
+    )
+    if score is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="评分记录不存在")
     rows = await session.scalars(
         select(ReviewItem).where(
             ReviewItem.enterprise_id == user.enterprise_id,

@@ -125,6 +125,14 @@ async def deliverable_references(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.FILE_READ)),
 ) -> list[dict]:
+    deliverable = await session.scalar(
+        select(Deliverable).where(
+            Deliverable.id == deliverable_id,
+            Deliverable.enterprise_id == user.enterprise_id,
+        )
+    )
+    if deliverable is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成果不存在")
     rows = await session.scalars(
         select(Citation)
         .where(
