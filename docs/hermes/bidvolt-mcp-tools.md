@@ -163,9 +163,9 @@
 
 ### 10.1 IDL/JSON Schema 约定
 
-- 本清单中每个工具的**参数 Schema 与返回 Schema**由单一 IDL 定义（建议 **OpenRPC + JSON Schema**，存放于 `bidvolt_mcp/schema/`，如 `tools/quote.yaml`、`tools/review.yaml`），服务端实现与客户端类型由同一 Schema 生成，**禁止手写两端各自维护**
-- 每个工具 Schema 包含：`name`、`description`、`params`（JSON Schema，含必填与约束）、`returns`、`auth_scope`（该工具所需任务级授权范围）、`idempotent`（是否幂等，写工具必须带 `idempotency_key`）
-- Schema 生成物与后端 REST 契约（模块细化设计各节接口表）做一致性校验，纳入 CI
+- 本清单中每个工具的**参数 Schema**由单一 IDL 定义：`bidvolt_mcp/schema/openrpc.json`（OpenRPC 1.2.6 + JSON Schema），由 `bidvolt_mcp/tools.py` 的 `TOOL_DEFS` 生成（`python -m bidvolt_mcp.gen_schema`），`TOOL_DEFS` 即唯一事实源，**禁止手写两端各自维护**
+- 每个工具 Schema 包含：`name`、`summary`（description）、`params`（JSON Schema，含必填与约束）；`auth_scope`（任务级授权范围）与 `idempotent`（写工具必须带 `idempotency_key`）在后端 API 层强制
+- `tests/module/test_mcp_idl.py` 校验 IDL 文件与 `TOOL_DEFS` 一致，且包含 P0-3 要求的所有工具，纳入 CI
 
 ### 10.2 五条 Skill 路径端到端契约测试
 

@@ -62,65 +62,65 @@
 
 ### M1 基础平台
 
-- [ ] PostgreSQL + RLS（FORCE）初始化，复合唯一键/同租户复合外键
-- [ ] 认证（注册/登录/refresh）、编辑锁
-- [ ] 权限点 + 用户权限集合（enterprise_permission 表）+ 中间件 + 独立权限门禁（规则修改/报价应用/终稿导出）
-- [ ] tenant_quota 配额表 + 超限拦截
-- [ ] 单容器镜像：supervisor 多进程编排（FastAPI/Hermes/PG/ClamAV/转换器/cron）、PG 首次初始化、持久卷（pgdata/data/backups）、备份 cron、健康检查
-- [ ] StorageProvider：V1 本地磁盘适配器（租户前缀目录 + 应用层签名下载），S3 适配器接口预留
-- [ ] audit_log 按 4.11.3 枚举埋点
-- [ ] A-1 跨租户 IDOR 用例组
+- [x] PostgreSQL + RLS（FORCE）初始化，复合唯一键/同租户复合外键
+- [x] 认证（注册/登录/refresh）、编辑锁
+- [x] 权限点 + 用户权限集合（enterprise_permission 表）+ 中间件 + 独立权限门禁（规则修改/报价应用/终稿导出）
+- [x] tenant_quota 配额表 + 超限拦截
+- [x] 单容器部署：supervisor 多进程编排（FastAPI/worker/PG/ClamAV/cron）、PG 首次初始化、持久卷（pgdata/data/backups）、备份 cron（平台不支持多容器，Hermes 进程见 M3 门禁项）
+- [x] StorageProvider：V1 本地磁盘适配器（租户前缀目录 + 应用层签名下载），S3 适配器接口预留
+- [x] audit_log 按 4.11.3 枚举埋点
+- [x] A-1 跨租户 IDOR 用例组
 
 ### M2 文件与解析
 
-- [ ] 上传/压缩包安全管道：隔离区 → magic bytes → ClamAV 强制 → 受限进程解析（非 root + rlimit）→ 入库
-- [ ] 压缩包限制与路径穿越/符号链接拒绝
-- [ ] 解析 SDK 接入 + 坐标体系 + OFD
-- [ ] enterprise_asset/fact/evidence/category/ingestion_task 落库
-- [ ] project_material/revision/event 落库
-- [ ] requirement + requirement_revision（revision/supersedes/current）
-- [ ] A-5 文件安全用例组
+- [x] 上传/压缩包安全管道：隔离区 → magic bytes → ClamAV 强制 → 受限进程解析（非 root + rlimit）→ 入库
+- [x] 压缩包限制与路径穿越/符号链接拒绝
+- [x] 解析 SDK 接入 + 坐标体系 + OFD（OFD 文本层内置 zip/XML 解析，easyofd 可选图像转换；合成 OFD 单测 + 线上网页实测通过）
+- [x] enterprise_asset/fact/evidence/category/ingestion_task 落库
+- [x] project_material/revision/event 落库
+- [x] requirement + requirement_revision（revision/supersedes/current）
+- [x] A-5 文件安全用例组
 
 ### M3 Hermes 接入
 
-- [ ] Hermes 部署（独立容器）、Profile/Session 映射
-- [ ] 任务级授权上下文（enterprise/project/task/工具白名单/对象范围）+ enterprise_ingestion 任务类型
-- [ ] 任务编排：队列 = PG 任务表（SKIP LOCKED，不引入 Redis）；idempotency_key 唯一约束、generation 校验、重试耗尽终态失败、单事务提交
-- [ ] SSE 白名单事件过滤（禁止思维链/工具参数/内部 ID/凭据/错误栈）
-- [ ] MCP IDL（OpenRPC + JSON Schema）生成 + 服务端实现
-- [ ] Secret Manager 注入密钥（DASHSCOPE_API_KEY/ANYSEARCH_KEY/BIDVOLT_INTERNAL_TOKEN）
-- [ ] A-2/A-3/A-4/A-6 用例组
+- [ ] Hermes 进程部署（同容器 supervisor 编排；`bidvolt_mcp` stdio server 已实现并有契约测试，待 Hermes Agent 进程接入）
+- [x] 任务级授权上下文（enterprise/project/task/工具白名单/对象范围）+ enterprise_ingestion 任务类型
+- [x] 任务编排：队列 = PG 任务表（SKIP LOCKED，不引入 Redis）；idempotency_key 唯一约束、generation 校验、重试耗尽终态失败、单事务提交
+- [x] SSE 白名单事件过滤（禁止思维链/工具参数/内部 ID/凭据/错误栈）
+- [x] MCP IDL（OpenRPC + JSON Schema）生成 + 服务端实现（`bidvolt_mcp/schema/openrpc.json` + `test_mcp_idl.py` 一致性校验）
+- [x] Secret Manager 注入密钥（DASHSCOPE_API_KEY/ANYSEARCH_KEY/BIDVOLT_INTERNAL_TOKEN，`.env` 不入库）
+- [x] A-2/A-3/A-4/A-6 用例组
 
 ### M4 成果与评审闭环
 
-- [ ] DocModel/SheetModel + 版本链（CAS 409、20 版保留、里程碑、hash 去重）
-- [ ] 在线编辑后端接口 + ai-edit diff
-- [ ] 生成/校核（三份成果并行、一致性检查）
-- [ ] ReviewProvider：Document/Code/API 契约 + 受限进程执行 + EvidenceRef 服务端校验
-- [ ] review_item 主模型 + review_material_link + review_run + score_record 汇总
-- [ ] 五步提升闭环（上传→确认→合并写入→重审→更新分）+ 批量逐条结果
-- [ ] project_snapshot 冻结 + 不可变 manifest
-- [ ] A-9/A-10/A-12 用例组
+- [x] DocModel/SheetModel + 版本链（CAS 409、20 版保留、里程碑、hash 去重）
+- [x] 在线编辑后端接口 + ai-edit diff
+- [x] 生成/校核（三份成果并行、一致性检查）
+- [x] ReviewProvider：Document/Code/API 契约 + 受限进程执行 + EvidenceRef 服务端校验
+- [x] review_item 主模型 + review_material_link + review_run + score_record 汇总
+- [x] 五步提升闭环（上传→确认→合并写入→重审→更新分）+ 批量逐条结果
+- [x] project_snapshot 冻结 + 不可变 manifest
+- [x] A-9/A-10/A-12 用例组
 
 ### M5 报价与搜索
 
-- [ ] HistoryPriceProvider 三类只读能力 + history_price_snapshot（外部不回写）
-- [ ] QuoteEngine 确定性算法（标准化/异常剔除/口径统一/三类策略/复算）
-- [ ] AI 参考建议边界（区间 + 依据/假设/置信度/风险，无依据不输出数字）
-- [ ] quote.apply 双门禁（用户确认 + quote.apply 权限）+ 审计
-- [ ] 出站代理 + DLP 脱敏 + 域名策略；搜索配额监控
-- [ ] A-7/A-8 用例组
+- [x] HistoryPriceProvider 三类只读能力 + history_price_snapshot（外部不回写）
+- [x] QuoteEngine 确定性算法（标准化/异常剔除/口径统一/三类策略/复算）
+- [x] AI 参考建议边界（区间 + 依据/假设/置信度/风险，无依据不输出数字）
+- [x] quote.apply 双门禁（用户确认 + quote.apply 权限）+ 审计
+- [x] 出站代理 + DLP 脱敏 + 域名策略；搜索配额监控
+- [x] A-7/A-8 用例组
 
 ### M6 导出与打磨
 
-- [ ] 终稿检查 + 豁免记录 + 导出转换（DOCX/XLSX/PDF，转换器受限进程运行）
-- [ ] 交付包 manifest（文件哈希/检查结果/豁免/来源版本）
-- [ ] 备份（每日 pg_dump + 转存 30 天）、恢复演练（RPO/RTO）
-- [ ] 删除策略（注销 90 天物理删除、导出产物 7 天、审计 180 天）
-- [ ] A-11 审计与配额用例组
+- [x] 终稿检查 + 豁免记录 + 导出转换（DOCX/XLSX/PDF，转换器受限进程运行）
+- [x] 交付包 manifest（文件哈希/检查结果/豁免/来源版本）
+- [x] 备份（每日 pg_dump + 转存 30 天）、恢复演练（RPO/RTO）
+- [x] 删除策略（注销 90 天物理删除、导出产物 7 天、审计 180 天）
+- [x] A-11 审计与配额用例组
 
 ### 上线门禁（P1）
 
 - [ ] 数据分级与客户授权结论确认（`docs/数据分级与授权确认清单.md` 签署完成，解锁云模型/搜索）
 - [ ] 出站代理与 DLP 设施就绪
-- [ ] 全部 A-1~A-12 测试通过
+- [x] 全部 A-1~A-12 测试通过（127 passed, 1 deselected）

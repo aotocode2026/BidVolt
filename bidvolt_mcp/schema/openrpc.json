@@ -1,0 +1,703 @@
+{
+  "openrpc": "1.2.6",
+  "info": {
+    "title": "BidVolt MCP Tools",
+    "version": "0.1.0",
+    "description": "后端业务服务暴露给 Hermes 的能力接口（契约见 docs/hermes/bidvolt-mcp-tools.md）"
+  },
+  "servers": [],
+  "methods": [
+    {
+      "name": "health",
+      "summary": "MCP server 健康检查",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "search_assets",
+      "summary": "按关键词/分类搜索企业资料（企业事实唯一来源）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "category": {
+                "type": "string"
+              },
+              "page": {
+                "type": "integer"
+              },
+              "size": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_project_material_blocks",
+      "summary": "读取项目材料解析出的 doc_block 文本块（带坐标）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "file_id": {
+                "type": "integer"
+              },
+              "page": {
+                "type": "integer"
+              },
+              "size": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "list_project_materials",
+      "summary": "列出项目当前招标材料",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_deliverable_content",
+      "summary": "读取成果指定/当前版本的结构化内容（DocModel/SheetModel）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "deliverable_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "deliverable_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "save_deliverable",
+      "summary": "保存成果新版本（expected_version_id CAS + idempotency_key + source_task_id）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "deliverable_id": {
+                "type": "integer"
+              },
+              "model": {
+                "type": "object"
+              },
+              "expected_version_no": {
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "source_task_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "deliverable_id",
+              "model",
+              "idempotency_key"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "calculate_quote",
+      "summary": "调用确定性 QuoteEngine 计算建议价（只建议不写入）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "material_ref": {
+                "type": "string"
+              },
+              "cost": {
+                "type": "number"
+              },
+              "min_profit_rate": {
+                "type": "number"
+              },
+              "strategy": {
+                "type": "string",
+                "enum": [
+                  "win",
+                  "balance",
+                  "profit"
+                ]
+              }
+            },
+            "required": [
+              "material_ref",
+              "cost"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_history_price",
+      "summary": "查询历史中标记录（外部 Provider 只读）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "material_ref": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "list_requirements",
+      "summary": "列出项目当前生效的招标要求（含坐标与 revision）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_requirement",
+      "summary": "读取单条招标要求详情",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "req_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "req_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "upsert_requirements",
+      "summary": "写入/更新招标要求（招标解析 Skill 产出；coordinates 必填）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "req_type": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "structured": {
+                      "type": "object"
+                    },
+                    "coordinates": {
+                      "type": "array"
+                    },
+                    "confidence": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "req_type",
+                    "content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "project_id",
+              "requirements"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "save_material_match_results",
+      "summary": "保存资料匹配结果（material_match Skill 产出，缺失项关联要求与评分项）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "results": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "requirement_id": {
+                      "type": "integer"
+                    },
+                    "asset_id": {
+                      "type": "integer"
+                    },
+                    "matched": {
+                      "type": "integer",
+                      "enum": [
+                        1,
+                        2,
+                        3
+                      ]
+                    },
+                    "gap_desc": {
+                      "type": "string"
+                    },
+                    "affected_score_item": {
+                      "type": "string"
+                    },
+                    "impact_score": {
+                      "type": "number"
+                    },
+                    "suggestion": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "matched"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "project_id",
+              "results"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "list_material_matches",
+      "summary": "列出项目资料匹配结果",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "search_web",
+      "summary": "AnySearch 网络搜索（出网前经后端 DLP 脱敏 + 域名白名单；门禁关闭时拒绝）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "market",
+                  "competitor",
+                  "policy",
+                  "standard"
+                ]
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "save_source",
+      "summary": "将搜索结果入库并判定 trust_level",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "link_citation",
+      "summary": "记录成果节点对搜索来源的引用（绑定版本）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "deliverable_id": {
+                "type": "integer"
+              },
+              "version_no": {
+                "type": "integer"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "source_id": {
+                "type": "integer"
+              },
+              "quote_text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deliverable_id",
+              "version_no",
+              "source_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    }
+  ]
+}
