@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_capability, require_permission, UserContext
@@ -12,7 +12,9 @@ from app.db import get_session
 from app.models.enterprise_domain import (
     EnterpriseAsset,
     EnterpriseAssetCategory,
+    EnterpriseAssetRevision,
     EnterpriseFact,
+    EnterpriseFactRevision,
     EnterpriseIngestionTask,
 )
 from app.models.task import Task
@@ -343,6 +345,200 @@ async def upsert_enterprise_facts(
     )
     await session.commit()
     return {"asset_id": asset.id, "fact_ids": created, "count": len(created)}
+
+
+@router.get("/assets/{asset_id}/revisions")
+async def asset_revisions(
+    asset_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """企业资料 revision 列表（Issue #2 #23）。"""
+    asset = await session.scalar(
+        select(EnterpriseAsset).where(
+            EnterpriseAsset.id == asset_id,
+            EnterpriseAsset.enterprise_id == user.enterprise_id,
+            EnterpriseAsset.is_deleted.is_(False),
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
+    rows = (
+        await session.scalars(
+            select(EnterpriseAssetRevision)
+            .where(
+                EnterpriseAssetRevision.asset_id == asset_id,
+                EnterpriseAssetRevision.enterprise_id == user.enterprise_id,
+            )
+            .order_by(EnterpriseAssetRevision.revision_no.desc())
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "revision_id": r.id,
+                "revision_no": r.revision_no,
+                "file_id": r.file_id,
+                "sha256": r.sha256,
+                "source_location": r.source_location,
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/assets/{asset_id}/facts")
+async def list_asset_facts(
+    asset_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """企业资料当前结构化字段（Issue #2 #22/#24 展示用）。"""
+    asset = await session.scalar(
+        select(EnterpriseAsset).where(
+            EnterpriseAsset.id == asset_id,
+            EnterpriseAsset.enterprise_id == user.enterprise_id,
+            EnterpriseAsset.is_deleted.is_(False),
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
+    rows = (
+        await session.scalars(
+            select(EnterpriseFact)
+            .where(
+                EnterpriseFact.asset_id == asset_id,
+                EnterpriseFact.enterprise_id == user.enterprise_id,
+            )
+            .order_by(EnterpriseFact.id.asc())
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "fact_id": f.id,
+                "fact_key": f.fact_key,
+                "fact_value": f.fact_value,
+                "confidence": float(f.confidence) if f.confidence is not None else None,
+                "status": f.status,
+                "expires_at": f.expires_at.isoformat() if f.expires_at else None,
+                "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+            }
+            for f in rows
+        ]
+    }
+
+
+@router.put("/facts/{fact_id}")
+async def confirm_or_correct_fact(
+    fact_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.PROJECT_EDIT)),
+) -> dict:
+    """确认或纠正结构化 fact，并写修订记录（Issue #2 #24）。"""
+    fact = await session.scalar(
+        select(EnterpriseFact).where(
+            EnterpriseFact.id == fact_id,
+            EnterpriseFact.enterprise_id == user.enterprise_id,
+        )
+    )
+    if fact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="事实不存在")
+
+    new_value = body.get("fact_value")
+    if new_value is not None and not isinstance(new_value, dict):
+        new_value = {"value": new_value}
+    confirmed = body.get("confirmed") is True
+    if confirmed and new_value is None:
+        fact.status = 2  # 已确认
+    elif new_value is not None:
+        fact.fact_value = new_value
+        fact.status = 3  # 已纠正
+        fact.confidence = 1.0
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="需要 fact_value（纠正）或 confirmed=true（确认）",
+        )
+
+    prev_count = await session.scalar(
+        select(func.count()).select_from(EnterpriseFactRevision).where(
+            EnterpriseFactRevision.fact_id == fact.id,
+            EnterpriseFactRevision.enterprise_id == user.enterprise_id,
+        )
+    )
+    revision = EnterpriseFactRevision(
+        enterprise_id=user.enterprise_id,
+        fact_id=fact.id,
+        revision_no=int(prev_count or 0) + 1,
+        fact_value=dict(fact.fact_value),
+        confidence=float(fact.confidence) if fact.confidence is not None else None,
+        status=fact.status,
+        note=body.get("note"),
+        created_by=user.user_id,
+    )
+    session.add(revision)
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        action="enterprise.fact_confirm_or_correct",
+        object_type="enterprise_fact",
+        object_id=fact.id,
+        payload={"status": fact.status, "revision_no": revision.revision_no},
+    )
+    await session.commit()
+    return {
+        "fact_id": fact.id,
+        "status": fact.status,
+        "revision_no": revision.revision_no,
+        "fact_value": fact.fact_value,
+    }
+
+
+@router.get("/facts/{fact_id}/revisions")
+async def fact_revisions(
+    fact_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """fact 修订记录（Issue #2 #24）。"""
+    fact = await session.scalar(
+        select(EnterpriseFact).where(
+            EnterpriseFact.id == fact_id,
+            EnterpriseFact.enterprise_id == user.enterprise_id,
+        )
+    )
+    if fact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="事实不存在")
+    rows = (
+        await session.scalars(
+            select(EnterpriseFactRevision)
+            .where(
+                EnterpriseFactRevision.fact_id == fact_id,
+                EnterpriseFactRevision.enterprise_id == user.enterprise_id,
+            )
+            .order_by(EnterpriseFactRevision.revision_no.desc())
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "revision_id": r.id,
+                "revision_no": r.revision_no,
+                "fact_value": r.fact_value,
+                "confidence": float(r.confidence) if r.confidence is not None else None,
+                "status": r.status,
+                "note": r.note,
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 @router.get("/ingest/{task_id}")

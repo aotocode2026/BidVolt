@@ -16,6 +16,7 @@ from app.models.enterprise_domain import (
     EnterpriseAssetRevision,
     EnterpriseFact,
     EnterpriseFactEvidence,
+    EnterpriseFactRevision,
     EnterpriseIngestionTask,
 )
 from app.models.export import ExportJob, FinalCheck
@@ -56,6 +57,7 @@ __all__ = [
     "EnterpriseAssetRevision",
     "EnterpriseFact",
     "EnterpriseFactEvidence",
+    "EnterpriseFactRevision",
     "EnterpriseIngestionTask",
     "EnterprisePermission",
     "ExportJob",

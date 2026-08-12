@@ -168,7 +168,8 @@ function panelMaterial() {
     <div class="row"><button class="ghost" onclick="parseProject()">触发招标解析任务</button>
       <span class="muted">当前项目：#${projectId ?? "未选"}</span></div>
     <h4>文件</h4><table><thead><tr><th>ID</th><th>名称</th><th>归属</th><th>状态</th><th>解析</th></tr></thead><tbody id="m-files"></tbody></table>
-    <h4>企业资料</h4><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th></tr></thead><tbody id="m-assets"></tbody></table>`;
+    <h4>企业资料</h4><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="m-assets"></tbody></table>
+    <pre id="m-extra" class="muted"></pre>`;
   refreshFiles(); refreshAssets();
 }
 
@@ -207,8 +208,46 @@ async function viewBlocks(id) {
 async function refreshAssets() {
   try {
     const data = await api("/enterprise/assets");
-    $("m-assets").innerHTML = data.map((a) => `<tr><td>${a.asset_id}</td><td>${esc(a.name)}</td><td>${esc(a.asset_type)}</td><td>${a.status}</td></tr>`).join("");
+    $("m-assets").innerHTML = data.map((a) => `
+      <tr><td>${a.asset_id}</td><td>${esc(a.name)}</td><td>${esc(a.asset_type)}</td><td>${a.status}</td>
+      <td><button class="ghost" onclick="listFacts(${a.asset_id})">facts</button>
+          <button class="ghost" onclick="listAssetRevisions(${a.asset_id})">revisions</button></td></tr>`).join("");
   } catch { $("m-assets").innerHTML = "<tr><td colspan=4>未登录或无权限</td></tr>"; }
+}
+
+async function listFacts(assetId) {
+  try {
+    const data = await api(`/enterprise/assets/${assetId}/facts`);
+    $("m-extra").innerHTML = data.items.map((f) => `
+      <div style="border:1px solid #ccc;margin:4px 0;padding:4px">
+        fact#${f.fact_id} ${esc(f.fact_key)} = ${esc(JSON.stringify(f.fact_value))} (status ${f.status})
+        <button class="ghost" onclick="confirmFact(${f.fact_id})">确认</button>
+        <input id="fix-${f.fact_id}" placeholder="纠正值"><button class="ghost" onclick="correctFact(${f.fact_id})">纠正</button>
+      </div>`).join("") || "无事实";
+  } catch (e) { log(`facts 失败：${e}`, "err"); }
+}
+
+async function confirmFact(factId) {
+  try {
+    const r = await api(`/enterprise/facts/${factId}`, { method: "PUT", body: { confirmed: true } });
+    log(`事实 ${factId} 已确认（修订 #${r.revision_no}）`, "ok");
+  } catch (e) { log(`确认失败：${e}`, "err"); }
+}
+
+async function correctFact(factId) {
+  const val = $(`fix-${factId}`).value.trim();
+  if (!val) return log("请输入纠正值", "err");
+  try {
+    const r = await api(`/enterprise/facts/${factId}`, { method: "PUT", body: { fact_value: val, note: "demo 纠正" } });
+    log(`事实 ${factId} 已纠正为 ${esc(JSON.stringify(r.fact_value))}（修订 #${r.revision_no}）`, "ok");
+  } catch (e) { log(`纠正失败：${e}`, "err"); }
+}
+
+async function listAssetRevisions(assetId) {
+  try {
+    const data = await api(`/enterprise/assets/${assetId}/revisions`);
+    $("m-extra").textContent = JSON.stringify(data.items, null, 2);
+  } catch (e) { log(`revisions 失败：${e}`, "err"); }
 }
 
 async function ingestAssets() {
@@ -357,9 +396,25 @@ function panelTask() {
       <button onclick="doEvaluate()">模拟评标</button>
     </div>
     <div class="row"><span class="muted">任务结果与评分会显示在下方日志；评标项：</span></div>
-    <table><thead><tr><th>item_id</th><th>分类</th><th>问题</th><th>得分/满分</th><th>可提升</th><th>状态</th></tr></thead><tbody id="t-items"></tbody></table>
+    <table><thead><tr><th>item_id</th><th>分类</th><th>问题</th><th>得分/满分</th><th>可提升</th><th>状态</th><th>建议</th></tr></thead><tbody id="t-items"></tbody></table>
+    <div class="row"><input id="s-item-id" placeholder="item_id"><input id="s-suggestion" placeholder="修改后的建议">
+      <button class="ghost" onclick="saveSuggestionOverride()">保存建议修改</button></div>
     <div class="row"><button class="ghost" onclick="confirmAll()">确认全部建议</button>
       <button class="ghost" onclick="reEvaluate()">重审受影响项</button></div>`;
+}
+
+async function saveSuggestionOverride() {
+  const itemId = Number($("s-item-id").value);
+  const suggestion = $("s-suggestion").value.trim();
+  if (!itemId || !suggestion) return log("需要 item_id 与建议内容", "err");
+  if (!scoreCtx) return log("先评标", "err");
+  try {
+    const r = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items/${itemId}/suggestion`, {
+      method: "PUT",
+      body: { suggestion },
+    });
+    log(`建议已保存：item#${r.item_id} 生效建议=${esc(r.effective_suggestion)}`, "ok");
+  } catch (e) { log(`保存建议失败：${e}`, "err"); }
 }
 
 async function submitTask(taskType) {
@@ -380,7 +435,8 @@ async function doEvaluate() {
     const items = await api(`/projects/${projectId}/scores/${ev.score_id}/items`);
     $("t-items").innerHTML = items.map((i) => `
       <tr><td>${i.item_id}</td><td>${esc(i.category)}</td><td>${esc(i.problem_description)}</td>
-      <td>${i.got ?? "-"}/${i.full ?? "-"}</td><td>${i.improvable ?? "-"}</td><td>${i.status}</td></tr>`).join("");
+      <td>${i.got ?? "-"}/${i.full ?? "-"}</td><td>${i.improvable ?? "-"}</td><td>${i.status}</td>
+      <td>${esc(i.effective_suggestion || "")}</td></tr>`).join("");
   } catch (e) { log(`评标失败：${e}`, "err"); }
 }
 

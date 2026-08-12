@@ -99,12 +99,56 @@ async def review_items(
             "improvable": float(i.improvable) if i.improvable is not None else None,
             "risk_level": i.risk_level,
             "suggestion": i.suggestion,
+            "suggestion_override": i.suggestion_override,
+            "effective_suggestion": i.suggestion_override or i.suggestion,
             "action_type": i.action_type,
             "evidence": i.evidence,
             "status": i.status,
         }
         for i in rows
     ]
+
+
+@router.put("/{project_id}/scores/{score_id}/items/{item_id}/suggestion")
+async def save_suggestion_override(
+    project_id: int,
+    score_id: int,
+    item_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("confirm_review_items")),
+) -> dict:
+    """保存用户修改后的评审建议（Issue #2 #29，保留原始 suggestion）。"""
+    item = await session.scalar(
+        select(ReviewItem).where(
+            ReviewItem.id == item_id,
+            ReviewItem.enterprise_id == user.enterprise_id,
+            ReviewItem.project_id == project_id,
+            ReviewItem.score_id == score_id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="评审项不存在")
+    suggestion = (body.get("suggestion") or "").strip()
+    if not suggestion:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="建议为空")
+    item.suggestion_override = suggestion
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        project_id=project_id,
+        action="review_item.suggestion_override",
+        object_type="review_item",
+        object_id=item.id,
+        payload={"suggestion": suggestion},
+    )
+    await session.commit()
+    return {
+        "item_id": item.id,
+        "suggestion_override": item.suggestion_override,
+        "effective_suggestion": item.suggestion_override,
+    }
 
 
 @router.put("/{project_id}/scores/{score_id}/items/{item_id}/confirm")

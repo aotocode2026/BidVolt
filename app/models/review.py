@@ -91,6 +91,7 @@ class ReviewItem(Base, TimestampMixin):
     improvable: Mapped[float | None] = mapped_column(Numeric(6, 2))
     risk_level: Mapped[int | None] = mapped_column(SmallInteger)
     suggestion: Mapped[str | None] = mapped_column(Text)
+    suggestion_override: Mapped[str | None] = mapped_column(Text)  # 用户修改后的建议（保留原始 suggestion）
     action_type: Mapped[str | None] = mapped_column(String(30))  # upload_material / edit_deliverable / manual_review
     evidence: Mapped[dict] = mapped_column(JSONType, nullable=False)
     missing_material_types: Mapped[str | None] = mapped_column(String(200))

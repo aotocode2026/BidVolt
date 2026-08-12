@@ -83,6 +83,25 @@ class EnterpriseFact(Base, TimestampMixin):
     )
 
 
+class EnterpriseFactRevision(Base, TimestampMixin):
+    """企业事实修订记录（Issue #2 #24：确认/纠正保留修订）。"""
+
+    __tablename__ = "enterprise_fact_revision"
+    __table_args__ = (UniqueConstraint("fact_id", "revision_no", name="uq_efr_rev"),)
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    fact_id: Mapped[int] = mapped_column(
+        BigInt, ForeignKey("enterprise_fact.id"), nullable=False, index=True
+    )
+    revision_no: Mapped[int] = mapped_column(BigInt, nullable=False)
+    fact_value: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(BigInt)
+
+
 class EnterpriseFactEvidence(Base, TimestampMixin):
     __tablename__ = "enterprise_fact_evidence"
 
