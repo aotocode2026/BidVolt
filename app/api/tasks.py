@@ -78,6 +78,45 @@ async def task_status(
     }
 
 
+@router.get("/projects/{project_id}/tasks")
+async def list_project_tasks(
+    project_id: int,
+    status_filter: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.PROJECT_EDIT)),
+) -> dict:
+    """按项目列出最近任务（Issue #2 #16：刷新后恢复活动任务/状态）。"""
+    query = (
+        select(Task)
+        .where(
+            Task.enterprise_id == user.enterprise_id,
+            Task.project_id == project_id,
+        )
+        .order_by(Task.id.desc())
+        .limit(50)
+    )
+    if status_filter:
+        try:
+            query = query.where(Task.status == int(status_filter))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="status 必须是数字") from exc
+    rows = (await session.scalars(query)).all()
+    return {
+        "items": [
+            {
+                "task_id": t.id,
+                "task_type": t.task_type,
+                "status": t.status,
+                "idempotency_key": t.idempotency_key,
+                "retry_count": t.retry_count,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "progress": public_event(t),
+            }
+            for t in rows
+        ]
+    }
+
+
 @router.post("/projects/{project_id}/tasks/{task_id}/interrupt")
 async def interrupt_task(
     project_id: int,

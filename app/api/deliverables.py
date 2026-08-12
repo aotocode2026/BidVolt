@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -140,6 +144,44 @@ async def version_content(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return {"version_no": version.version_no, "version_type": version.version_type, "model": content}
+
+
+@router.get("/{deliverable_id}/versions/{version_no}/download")
+async def download_version(
+    deliverable_id: int,
+    version_no: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
+) -> Response:
+    """下载指定成果版本（Issue #2 #40）：商务/技术标→DOCX，报价单→XLSX。"""
+    d = await _get_deliverable(session, user, deliverable_id)
+    try:
+        version, content = await deliverable_service.get_version_content(
+            session, deliverable_id, version_no
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    from app.services import export_service
+
+    if d.deliverable_type == 3:
+        data = export_service.xlsx_bytes(content)
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ext = "xlsx"
+    elif d.deliverable_type in (1, 2):
+        data = export_service.docx_bytes(content)
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ext = "docx"
+    else:
+        data = json.dumps(content, ensure_ascii=False).encode("utf-8")
+        media = "application/json"
+        ext = "json"
+    fname = f"{d.title}_v{version_no}.{ext}"
+    return Response(
+        content=data,
+        media_type=media,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+    )
 
 
 @router.post("/{deliverable_id}/versions", status_code=status.HTTP_201_CREATED)

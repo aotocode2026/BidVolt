@@ -20,6 +20,7 @@ from app.api import (
     requirements,
     review,
     search,
+    snapshots,
     tasks,
 )
 
@@ -29,6 +30,7 @@ app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
+app.include_router(snapshots.router, prefix="/api/v1")
 app.include_router(locks.router, prefix="/api/v1")
 app.include_router(files.router, prefix="/api/v1")
 app.include_router(enterprise.router, prefix="/api/v1")

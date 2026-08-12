@@ -98,7 +98,10 @@ function panelProject() {
     <h3>项目</h3>
     <div class="row"><input id="p-name" placeholder="项目名称"><input id="p-no" placeholder="招标编号(可选)">
       <button onclick="createProject()">创建项目</button></div>
-    <table><thead><tr><th>ID</th><th>名称</th><th>编号</th><th>状态</th><th>操作</th></tr></thead><tbody id="p-rows"></tbody></table>`;
+    <table><thead><tr><th>ID</th><th>名称</th><th>编号</th><th>状态</th><th>操作</th></tr></thead><tbody id="p-rows"></tbody></table>
+    <div class="row"><button class="ghost" onclick="loadSnapshots()">快照列表</button>
+      <button class="ghost" onclick="loadTasks()">活动任务</button></div>
+    <pre id="p-extra" class="muted"></pre>`;
   refreshProjects();
 }
 
@@ -128,6 +131,28 @@ function selectProject(id, name) {
 
 async function archiveProject(id) {
   try { await api(`/projects/${id}/archive`, { method: "POST" }); log(`项目 ${id} 已归档`, "ok"); refreshProjects(); } catch (e) { log(`归档失败：${e}`, "err"); }
+}
+
+async function loadSnapshots() {
+  if (!projectId) return log("先选用项目", "err");
+  try {
+    const data = await api(`/projects/${projectId}/snapshots`);
+    $("p-extra").textContent = JSON.stringify(data.items.map((s) => ({
+      snapshot_id: s.snapshot_id, type: s.snapshot_type, created_at: s.created_at, input_refs: s.input_refs,
+    })), null, 2);
+    log(`快照 ${data.items.length} 条`, "ok");
+  } catch (e) { log(`快照列表失败：${e}`, "err"); }
+}
+
+async function loadTasks() {
+  if (!projectId) return log("先选用项目", "err");
+  try {
+    const data = await api(`/projects/${projectId}/tasks`);
+    $("p-extra").textContent = JSON.stringify(data.items.map((t) => ({
+      task_id: t.task_id, type: t.task_type, status: t.status, created_at: t.created_at, progress: t.progress,
+    })), null, 2);
+    log(`任务 ${data.items.length} 条`, "ok");
+  } catch (e) { log(`任务列表失败：${e}`, "err"); }
 }
 
 /* ---------- 资料 ---------- */
@@ -218,6 +243,7 @@ function panelDeliverable() {
     <div class="row"><textarea id="d-json" placeholder='{"nodes":[{"id":"n1","type":"paragraph","text":"内容"}]}'></textarea></div>
     <div class="row"><select id="d-sel"></select><button onclick="saveVersion()">保存新版本</button>
       <button class="ghost" onclick="aiEdit()">AI 修改选区</button></div>
+    <div id="d-versions" class="muted"></div>
     <table><thead><tr><th>ID</th><th>类型</th><th>标题</th><th>当前版本</th><th>版本列表</th></tr></thead><tbody id="d-rows"></tbody></table>`;
   refreshDeliverables();
 }
@@ -262,8 +288,31 @@ async function saveVersion() {
 async function listVersions(id) {
   try {
     const rows = await api(`/deliverables/${id}/versions`);
+    $("d-versions").innerHTML = rows.map((v) =>
+      `v${v.version_no}(type${v.version_type}) <a href="#" onclick="downloadVersion(${id},${v.version_no});return false">下载</a>`
+    ).join(" · ");
     log(`成果 ${id} 版本：` + rows.map((v) => `v${v.version_no}(type${v.version_type})`).join(", "), "ok");
   } catch (e) { log(e, "err"); }
+}
+
+async function downloadVersion(id, no) {
+  try {
+    const resp = await fetch(`${API}/deliverables/${id}/versions/${no}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const cd = resp.headers.get("content-disposition") || "";
+    const m = cd.match(/filename\*=UTF-8''(.+)/);
+    const fname = m ? decodeURIComponent(m[1]) : `deliverable_${id}_v${no}.docx`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    log(`已下载 ${fname}`, "ok");
+  } catch (e) { log(`下载失败：${e}`, "err"); }
 }
 
 async function generateBid() {
