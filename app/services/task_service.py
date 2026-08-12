@@ -154,7 +154,13 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
             "只依据给定材料，禁止编造。"
         )
         reply = await LLMClient().chat(system, f"招标材料：\n{text}")
-        items = extract_json(reply).get("requirements", [])
+        parsed = extract_json(reply)
+        if isinstance(parsed, dict):
+            items = parsed.get("requirements", [])
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            items = []
         for item in items:
             await requirement_service.upsert_requirement(
                 session,

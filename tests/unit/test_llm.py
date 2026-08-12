@@ -62,6 +62,16 @@ def test_chat_sends_payload_when_enabled(monkeypatch):
 
 def test_extract_json():
     assert extract_json('说明：\n{"a": 1}\n结束') == {"a": 1}
+    # JSON 后跟含花括号的说明文字（真实 MiniMax 输出形态，曾触发 Extra data）
+    assert extract_json('{"a": 1}\n\n备注：结果{"仅供参考"}') == {"a": 1}
+    # ```json 围栏
+    assert extract_json('```json\n{"requirements": []}\n```') == {"requirements": []}
+    # 多个 JSON 片段只取第一个
+    assert extract_json('{"a": 1} 然后 {"b": 2}') == {"a": 1}
+    # 允许返回数组（handler 兼容）
+    assert extract_json('[{"req_type": "qualification", "content": "x"}]') == [
+        {"req_type": "qualification", "content": "x"}
+    ]
     with pytest.raises(ValueError):
         extract_json("没有 JSON")
 

@@ -55,8 +55,10 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
             "temperature": 0.2,
+            # MiniMax-Text-01 上限 40000；设 8000 控制大输入下的生成时长与成本
+            "max_tokens": 8000,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{self.base_url}/text/chatcompletion_v2",
                 json=payload,
@@ -109,9 +111,49 @@ class DashScopeVLClient:
             return data["choices"][0]["message"]["content"]
 
 
-def extract_json(text: str) -> dict:
-    """从 LLM 输出中提取第一个 JSON 对象。"""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match is None:
+def _first_json_object(text: str) -> str | None:
+    """提取首个完整 JSON 对象（花括号配平，兼容字符串内的花括号）。"""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def extract_json(text: str) -> dict | list:
+    """从 LLM 输出中提取 JSON（兼容 ```json 围栏、前后说明文字、多个 JSON 片段）。"""
+    text = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    first = _first_json_object(text)
+    if first is None:
         raise ValueError("LLM 输出中未找到 JSON")
-    return json.loads(match.group(0))
+    try:
+        return json.loads(first)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM 输出 JSON 解析失败：{exc}") from exc

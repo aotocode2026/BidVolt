@@ -17,6 +17,7 @@ venv/
 .test_bidvolt.db
 output/
 .playwright-cli/
+.playwright/
 
 # 系统与编辑器
 .DS_Store
