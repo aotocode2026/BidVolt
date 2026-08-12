@@ -427,6 +427,8 @@ function panelQuote() {
       <button class="ghost" onclick="aiSuggest()">AI 参考价</button>
       <button class="ghost" onclick="applyQuote()">应用到报价单</button>
     </div>
+    <div class="row"><button class="ghost" onclick="loadCalcHistory()">历史测算</button>
+      <button class="ghost" onclick="loadTrend()">样本趋势</button></div>
     <pre id="q-result" class="muted"></pre>`;
 }
 
@@ -447,6 +449,31 @@ async function strategy(name) {
     $("q-result").textContent = JSON.stringify(data, null, 2);
     log(`策略 ${name}：${data.suggested_price}`, "ok");
   } catch (e) { log(`策略失败：${e}`, "err"); }
+}
+
+async function loadCalcHistory() {
+  if (!projectId) return log("先选用项目", "err");
+  try {
+    const data = await api(`/quotes?project_id=${projectId}`);
+    $("q-result").textContent = JSON.stringify(data.items.map((c) => ({
+      calc_id: c.calc_id,
+      status: c.status,
+      suggested: c.result && c.result.suggested,
+      applied_version_no: c.applied_version_no,
+      sample_count: c.sample_count,
+      created_at: c.created_at,
+    })), null, 2);
+    log(`测算记录 ${data.items.length} 条`, "ok");
+  } catch (e) { log(`历史测算失败：${e}`, "err"); }
+}
+
+async function loadTrend() {
+  try {
+    const ref = $("q-material").value || "CABLE-YJV-3x95";
+    const data = await api(`/quotes/history/${encodeURIComponent(ref)}/trend`);
+    $("q-result").textContent = JSON.stringify(data, null, 2);
+    log(`样本趋势：${data.sample_count} 条，中位数 ${data.median_price}`, "ok");
+  } catch (e) { log(`趋势失败：${e}`, "err"); }
 }
 
 async function aiSuggest() {

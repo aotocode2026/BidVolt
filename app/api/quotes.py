@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from statistics import median
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -275,3 +276,151 @@ async def apply_quote(
     )
     await session.commit()
     return {"new_version_no": version.version_no, "calc_status": calc.status}
+
+
+@router.get("")
+async def list_calculations(
+    project_id: int | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
+) -> dict:
+    """测算列表（Issue #2 #30：恢复项目最近/历史报价测算）。"""
+    query = (
+        select(QuoteCalc)
+        .where(QuoteCalc.enterprise_id == user.enterprise_id)
+        .order_by(QuoteCalc.id.desc())
+        .limit(100)
+    )
+    if project_id:
+        query = query.where(QuoteCalc.project_id == project_id)
+    rows = (await session.scalars(query)).all()
+    return {
+        "items": [
+            {
+                "calc_id": c.id,
+                "project_id": c.project_id,
+                "params": c.params,
+                "result": c.result,
+                "status": c.status,
+                "applied_version_no": c.applied_version_no,
+                "has_strategy": bool(c.strategy_results),
+                "has_ai_suggest": bool(c.ai_suggest),
+                "sample_count": len(c.snapshot_refs or []),
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in rows
+        ]
+    }
+
+
+@router.get("/{calc_id}")
+async def calculation_detail(
+    calc_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
+) -> dict:
+    """测算详情（Issue #2 #33：依据/结果/策略/AI 建议/冻结样本）。"""
+    calc = await session.scalar(
+        select(QuoteCalc).where(
+            QuoteCalc.id == calc_id,
+            QuoteCalc.enterprise_id == user.enterprise_id,
+        )
+    )
+    if calc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="测算不存在")
+    samples: list[dict] = []
+    snapshot_ids = calc.snapshot_refs or []
+    if snapshot_ids:
+        rows = (
+            await session.scalars(
+                select(HistoryPriceSnapshot).where(
+                    HistoryPriceSnapshot.id.in_(snapshot_ids),
+                    HistoryPriceSnapshot.enterprise_id == user.enterprise_id,
+                )
+            )
+        ).all()
+        samples = [
+            {
+                "sample_id": r.id,
+                "material_name": r.material_name,
+                "material_code": r.material_code,
+                "spec": r.spec,
+                "region": r.region,
+                "win_price": float(r.win_price),
+                "win_date": r.win_date.isoformat(),
+                "source_hash": r.source_hash,
+            }
+            for r in rows
+        ]
+    return {
+        "calc_id": calc.id,
+        "project_id": calc.project_id,
+        "params": calc.params,
+        "result": calc.result,
+        "strategy_results": calc.strategy_results or {},
+        "ai_suggest": calc.ai_suggest,
+        "status": calc.status,
+        "applied_version_no": calc.applied_version_no,
+        "applied_at": calc.applied_at.isoformat() if calc.applied_at else None,
+        "created_at": calc.created_at.isoformat() if calc.created_at else None,
+        "samples": samples,
+    }
+
+
+@router.get("/history/samples/{sample_id}")
+async def sample_detail(
+    sample_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
+) -> dict:
+    """单条历史报价样本（Issue #2 #35）。"""
+    row = await session.scalar(
+        select(HistoryPriceSnapshot).where(
+            HistoryPriceSnapshot.id == sample_id,
+            HistoryPriceSnapshot.enterprise_id == user.enterprise_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="样本不存在")
+    return {
+        "sample_id": row.id,
+        "provider_id": row.provider_id,
+        "material_name": row.material_name,
+        "material_code": row.material_code,
+        "spec": row.spec,
+        "region": row.region,
+        "win_price": float(row.win_price),
+        "win_date": row.win_date.isoformat(),
+        "source_hash": row.source_hash,
+        "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
+    }
+
+
+@router.get("/history/{material_ref}/trend")
+async def material_trend(
+    material_ref: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
+) -> dict:
+    """物料趋势与可比样本统计（Issue #2 #36，确定性计算）。"""
+    samples = await provider.get_material_samples(material_ref)
+    prices = sorted(s["win_price"] for s in samples)
+    n = len(prices)
+    regions: dict[str, list[float]] = {}
+    for s in samples:
+        regions.setdefault(s["region"], []).append(s["win_price"])
+    latest = max(samples, key=lambda s: s["win_date"]) if samples else None
+    return {
+        "material_ref": material_ref,
+        "sample_count": n,
+        "min_price": prices[0] if n else None,
+        "max_price": prices[-1] if n else None,
+        "avg_price": round(sum(prices) / n, 2) if n else None,
+        "median_price": round(median(prices), 2) if n else None,
+        "latest_price": latest["win_price"] if latest else None,
+        "latest_date": latest["win_date"].isoformat() if latest else None,
+        "region_breakdown": {
+            k: {"count": len(v), "avg": round(sum(v) / len(v), 2)} for k, v in regions.items()
+        },
+        "readonly": True,
+    }
