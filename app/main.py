@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import (
     auth,
     audit,
+    chat,
     deliverables,
     enterprise,
     export,
@@ -29,6 +30,7 @@ app = FastAPI(title="BidVolt API", version="0.1.0")
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
+app.include_router(chat.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
 app.include_router(snapshots.router, prefix="/api/v1")
 app.include_router(locks.router, prefix="/api/v1")

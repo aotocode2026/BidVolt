@@ -508,7 +508,10 @@ function panelSearch() {
     <h3>搜索与对话</h3>
     <div class="row"><input id="s-query" placeholder="搜索关键词"><button onclick="doSearch()">搜索</button></div>
     <pre id="s-result" class="muted"></pre>
-    <div class="row"><input id="c-msg" placeholder="向助手提问"><button onclick="doChat()">发送</button></div>`;
+    <div class="row"><select id="c-sel"></select><button onclick="newConversation()">新建会话</button></div>
+    <div class="row"><input id="c-msg" placeholder="向助手提问"><button onclick="sendMessage()">发送</button></div>
+    <pre id="c-history" class="muted"></pre>`;
+  loadConversations();
 }
 
 async function doSearch() {
@@ -519,12 +522,50 @@ async function doSearch() {
   } catch (e) { $("s-result").textContent = String(e); log(`搜索失败：${e}`, "err"); }
 }
 
-async function doChat() {
+async function loadConversations() {
+  if (!projectId) { $("c-sel").innerHTML = "<option>先选用项目</option>"; return; }
+  try {
+    const data = await api(`/projects/${projectId}/conversations`);
+    $("c-sel").innerHTML = data.items.map((c) =>
+      `<option value="${c.conversation_id}">#${c.conversation_id} ${esc(c.title)}</option>`).join("") || "<option>暂无会话</option>";
+    if (data.items.length) showMessages();
+  } catch (e) { log(`会话列表失败：${e}`, "err"); }
+}
+
+async function newConversation() {
   if (!projectId) return log("先选用项目", "err");
   try {
-    const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "chat", payload: { message: $("c-msg").value }, idempotency_key: `chat-${Date.now()}` } });
-    pollTask(t.task_id);
-  } catch (e) { log(`对话失败：${e}`, "err"); }
+    const c = await api(`/projects/${projectId}/conversations`, { method: "POST", body: {} });
+    log(`已创建会话 #${c.conversation_id}`, "ok");
+    loadConversations();
+  } catch (e) { log(`创建会话失败：${e}`, "err"); }
+}
+
+async function showMessages() {
+  const cid = $("c-sel").value;
+  if (!cid || !projectId) return;
+  try {
+    const data = await api(`/projects/${projectId}/conversations/${cid}/messages`);
+    $("c-history").textContent = data.items.map((m) =>
+      `${m.role === "user" ? "用户" : "助手"}: ${m.content}`).join("\n\n");
+  } catch (e) { log(`消息列表失败：${e}`, "err"); }
+}
+
+async function sendMessage() {
+  const cid = $("c-sel").value;
+  const msg = $("c-msg").value.trim();
+  if (!projectId) return log("先选用项目", "err");
+  if (!cid) return log("先新建会话", "err");
+  if (!msg) return log("消息为空", "err");
+  try {
+    const data = await api(`/projects/${projectId}/conversations/${cid}/messages`, {
+      method: "POST",
+      body: { message: msg },
+    });
+    $("c-msg").value = "";
+    log(`助手（${data.mode}）：${data.reply}`, "ok");
+    showMessages();
+  } catch (e) { log(`发送失败：${e}`, "err"); }
 }
 
 /* ---------- 初始化 ---------- */

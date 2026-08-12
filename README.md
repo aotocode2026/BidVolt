@@ -18,6 +18,7 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
 - 成果版本链：商务标/技术标/报价单生成、校核、CAS 版本冲突保护、**指定版本下载**（DOCX/XLSX）
 - 评审闭环：逐条 review_item、材料补充、单条/批量确认、重审、仅改受影响项
 - 报价：历史价外部只读 Provider、确定性 QuoteEngine、冻结样本可复算、AI 只给参考区间
+- 项目助手：会话 + 消息历史（刷新可恢复），LLM 回答带上下文入库
 - 搜索：AnySearch 真实接入（官方 JSON-RPC 端点），DLP 脱敏 + 域名 trust_level 分级，
   无 Key 走匿名额度（约 50 次/天），正式 Key 由运维在 Secret Manager 配置
 - 云模型：MiniMax 文本（LLM）、百炼 DashScope qwen-vl（视觉），受 P1 门禁控制

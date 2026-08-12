@@ -2,6 +2,7 @@
 
 from app.models.audit import AuditLog
 from app.models.auth import AppUser, Enterprise, EnterprisePermission, ProjectEditLock, RefreshToken
+from app.models.chat import Conversation, ConversationMessage
 from app.models.doc import DocBlock
 from app.models.deliverable import (
     AIEditDiff,
@@ -46,6 +47,8 @@ __all__ = [
     "ArchiveJob",
     "AuditLog",
     "Citation",
+    "Conversation",
+    "ConversationMessage",
     "DocBlock",
     "Enterprise",
     "EnterpriseAsset",
