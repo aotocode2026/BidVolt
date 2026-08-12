@@ -91,9 +91,10 @@ skills:
 
 ## 5. Hermes 运行时接入现状（实际 Agent 进程需要什么）
 
-> 结论先行：`bidvolt_mcp`（stdio MCP server）、5 个 `bidvolt-*` SKILL.md、MCP IDL 与契约测试**均已就绪**；
-> 缺的是**实际运行的 Agent 主进程**（即“谁调用 LLM、谁决定调用哪个 MCP 工具”）。PyPI 上同名的 `hermes`
-> 包是科研元数据工具，与本项目无关，不能直接使用。
+> **部署状态（2026-08-13）：已在服务器容器完成部署并验证。** Hermes Agent（NousResearch/hermes-agent，
+> v0.19.0）安装在 `/data/hermes`（venv + 数据 + skills），supervisor `[program:hermes]` 守护
+> `hermes serve` headless gateway（127.0.0.1:9119）；主推理 MiniMax-Text-01、视觉辅助百炼 qwen-vl-max、
+> bidvolt MCP（24 工具）与 5 个 `bidvolt-*` Skill 均已配置并实测可用（真实搜索调用返回中文招标结果）。
 
 需要三块才能把 Agent 闭环跑起来：
 
@@ -107,4 +108,6 @@ skills:
 3. **授权与密钥注入**：Hermes 进程环境注入 `BIDVOLT_API_BASE`、`BIDVOLT_INTERNAL_TOKEN`、LLM keys；
    每次任务调用 MCP 时携带该任务的 `X-Bidvolt-Cap` capability token（服务端校验任务终态/工具白名单/租户）。
 
-> 该缺口不属于“后端 API 缺失”，而是 Agent 运行时选型与实现；实现后即可做五条 Skill 路径的端到端闭环验收。
+> 当前部署的 MCP 调用使用 Hermes 服务账号 JWT（`BIDVOLT_INTERNAL_TOKEN`）走后端 JWT 回退路径；
+> **任务级 capability token 全流程（任务创建 → 签发 token → Hermes 执行 → 白名单进度）仍是生产前待办**，
+> 完成后即做五条 Skill 路径的端到端闭环验收。

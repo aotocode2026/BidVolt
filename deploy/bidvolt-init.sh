@@ -2,14 +2,17 @@
 # 初始化（容器内直接运行）：空数据卷时初始化 PG 集群 → 幂等建库/用户 → alembic 迁移 → 启动 supervisor
 set -euo pipefail
 
+# 代码/venv 路径（/data/bidvolt 为唯一真源，不依赖符号链接）
+REPO="${REPO:-/data/bidvolt}"
+
 # 固定工作目录（alembic 读取 alembic.ini 依赖 cwd）
-cd /opt/bidvolt 2>/dev/null || cd "$(dirname "${BASH_SOURCE[0]}")/.." || true
+cd "$REPO" 2>/dev/null || cd "$(dirname "${BASH_SOURCE[0]}")/.." || true
 
 # 加载 .env（容器直装场景；生产环境由 Secret Manager 注入同名变量）
 set -a
-if [ -f /opt/bidvolt/.env ]; then
+if [ -f "$REPO/.env" ]; then
   # shellcheck disable=SC1091
-  . /opt/bidvolt/.env
+  . "$REPO/.env"
 fi
 set +a
 
@@ -21,12 +24,22 @@ fi
 PGDATA=/data/pgdata
 DATA=/data/appdata
 BACKUPS=/data/backups
+LOGS=/data/logs/bidvolt
 PGUSER=postgres
 APP_DB="${APP_DB:-bidvolt}"
 APP_USER="${APP_USER:-bidvolt}"
 
-mkdir -p "$PGDATA" "$DATA" "$BACKUPS" "$BACKUPS/wal" /var/log/bidvolt /etc/bidvolt
+mkdir -p "$PGDATA" "$DATA" "$BACKUPS" "$BACKUPS/wal" "$LOGS" /var/log/bidvolt /etc/bidvolt
 chown -R postgres:postgres "$PGDATA" "$BACKUPS"
+
+# 日志落盘持久卷：/var/log/bidvolt -> /data/logs/bidvolt（容器重建不丢日志）
+if [ ! -L /var/log/bidvolt ]; then
+  if [ -d /var/log/bidvolt ]; then
+    mv /var/log/bidvolt/supervisord.log "$LOGS"/supervisord.log 2>/dev/null || true
+    rmdir /var/log/bidvolt 2>/dev/null || true
+  fi
+  ln -s "$LOGS" /var/log/bidvolt
+fi
 
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
   echo "[init] initdb: $PGDATA"
@@ -63,7 +76,9 @@ if [ "$DB_EXISTS" != "1" ]; then
 fi
 
 # 备份 cron（每日 02:00，保留 30 天，见 backup.sh）
-echo "0 2 * * * /usr/local/bin/bidvolt-backup >> /var/log/bidvolt/backup.log 2>&1" > /etc/cron.d/bidvolt-backup
+# 注意：/etc/cron.d 条目必须带用户字段（第 6 列 root），否则 cron 静默忽略
+echo "0 2 * * * root /usr/local/bin/bidvolt-backup >> /var/log/bidvolt/backup.log 2>&1" > /etc/cron.d/bidvolt-backup
+chmod 0644 /etc/cron.d/bidvolt-backup
 
 # ClamAV 运行环境：socket 目录
 mkdir -p /var/run/clamav
@@ -71,7 +86,7 @@ chown -R clamav:clamav /var/run/clamav 2>/dev/null || true
 
 echo "[init] alembic migrations"
 export DATABASE_URL="${DATABASE_URL:-postgresql://${APP_USER}:${APP_DB_PASSWORD}@127.0.0.1:5432/${APP_DB}}"
-/opt/bidvolt/.venv/bin/alembic upgrade head
+"$REPO/.venv/bin/alembic" upgrade head
 
 if [ "$PG_WAS_RUNNING" = false ]; then
   echo "[init] stop PG after migration"
