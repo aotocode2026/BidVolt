@@ -63,3 +63,36 @@ def test_anysearch_gate_closed_raises(monkeypatch):
 
     with pytest.raises(ValueError, match="门禁关闭"):
         AnySearchProvider().query("x")
+
+
+def test_anysearch_uses_proxy_when_configured(monkeypatch):
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "search_enabled", 1)
+    monkeypatch.setattr(settings, "anysearch_key", "as-key")
+    monkeypatch.setattr(settings, "anysearch_base_url", "https://search.example.com/v1")
+    monkeypatch.setattr(settings, "http_proxy", "http://proxy.internal:3128")
+    captured: dict = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": [{"url": "https://www.gov.cn/bid/1", "title": "公告"}]}
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            captured["proxy"] = kwargs.get("proxy")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, json=None, headers=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(search_service.httpx, "Client", _FakeClient)
+    AnySearchProvider().query("电缆")
+    assert captured["proxy"] == "http://proxy.internal:3128"

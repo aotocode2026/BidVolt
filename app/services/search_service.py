@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from urllib.parse import urlparse
 
 import httpx
@@ -75,7 +76,11 @@ class AnySearchProvider:
         if not search_gate_open():
             raise ValueError("搜索门禁关闭（P1）：数据分级未确认或未启用")
         sanitized = sanitize_query(query)
-        with httpx.Client(base_url=settings.anysearch_base_url, timeout=30) as client:
+        proxy = settings.http_proxy or os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+        client_kwargs: dict = {"base_url": settings.anysearch_base_url, "timeout": 30}
+        if proxy:
+            client_kwargs["proxy"] = proxy
+        with httpx.Client(**client_kwargs) as client:
             resp = client.post(
                 "/search",
                 json={"query": sanitized, "scope": scope},

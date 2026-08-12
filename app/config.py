@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     anysearch_key: str = ""
     anysearch_base_url: str = "http://127.0.0.1:8123/anysearch"
     search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（需门禁解锁）
+    http_proxy: str = ""  # 出站代理（搜索/外部调用）；空则直连白名单域名
 
     # 业务端口（容器内 8123，公网 28123）
     bind_host: str = "0.0.0.0"
