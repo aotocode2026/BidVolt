@@ -58,7 +58,13 @@ def test_parse_pdf(tmp_path):
     assert any("10kV" in (b.get("text_content") or "") for b in blocks)
 
 
-def _write_ofd(tmp_path: Path, text: str, size_attr: str = "Size") -> Path:
+def _write_ofd(
+    tmp_path: Path,
+    text: str,
+    size_attr: str = "Size",
+    docroot_loc: str = "Doc_0/Document.xml",
+    page_base_loc: str = "Doc_0/Pages/Page_1/Content.xml",
+) -> Path:
     """构造最小 OFD（zip+XML），按 TextObject 属性大小写区分标准/easyofd 风格。"""
     p = tmp_path / "a.ofd"
     ns = "http://www.ofdspec.org/2016"
@@ -66,7 +72,7 @@ def _write_ofd(tmp_path: Path, text: str, size_attr: str = "Size") -> Path:
 <ofd:OFD xmlns:ofd="{ns}">
   <ofd:DocBody>
     <ofd:DocInfo><ofd:DocID>12345678901234567890123456789012</ofd:DocID></ofd:DocInfo>
-    <ofd:DocRoot><ofd:BaseLoc>Doc_0/Document.xml</ofd:BaseLoc></ofd:DocRoot>
+    <ofd:DocRoot><ofd:BaseLoc>{docroot_loc}</ofd:BaseLoc></ofd:DocRoot>
   </ofd:DocBody>
 </ofd:OFD>
 '''
@@ -78,7 +84,7 @@ def _write_ofd(tmp_path: Path, text: str, size_attr: str = "Size") -> Path:
     <ofd:DocumentRes>Doc_0/DocumentRes.xml</ofd:DocumentRes>
   </ofd:CommonData>
   <ofd:Pages>
-    <ofd:Page ID="1"><ofd:BaseLoc>Doc_0/Pages/Page_1/Content.xml</ofd:BaseLoc></ofd:Page>
+    <ofd:Page ID="1"><ofd:BaseLoc>{page_base_loc}</ofd:BaseLoc></ofd:Page>
   </ofd:Pages>
 </ofd:Document>
 '''
@@ -154,3 +160,17 @@ def test_parse_ofd_no_text_layer(tmp_path):
         )
     with pytest.raises(ValueError, match="无文本层"):
         parser.parse_to_blocks(p, ".ofd")
+
+
+def test_parse_ofd_leading_slash_loc(tmp_path):
+    """真实 OFD（iOFD/dms360 生成）DocRoot 与 Page BaseLoc 使用 / 前缀绝对路径，需兼容。"""
+    p = _write_ofd(
+        tmp_path,
+        "带签章的 OFD：投标文件",
+        docroot_loc="/Doc_0/Document.xml",
+        page_base_loc="/Doc_0/Pages/Page_1/Content.xml",
+    )
+    blocks = parser.parse_to_blocks(p, ".ofd")
+    assert len(blocks) == 1
+    assert "投标文件" in blocks[0]["text_content"]
+    assert blocks[0]["page_no"] == 1

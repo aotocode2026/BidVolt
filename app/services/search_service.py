@@ -13,6 +13,10 @@ from app.config import settings
 TRUST_DOMAIN_L1 = {"gov.cn", "cebpubservice.com", "ndrc.gov.cn"}
 TRUST_DOMAIN_L3 = {"zhihu.com", "weibo.com", "toutiao.com"}
 
+# AnySearch 官方接口：JSON-RPC 2.0 tools/call；匿名额度约 50 次/天，注册 Key 约 1000 次/天
+ANYSEARCH_DEFAULT_URL = "https://api.anysearch.com/mcp"
+ANYSEARCH_CLIENT_HEADER = "mcp/1.0.0"
+
 
 def sanitize_query(text: str) -> str:
     """出网前脱敏：手机号/证件号/银行卡/统一社会信用代码。"""
@@ -33,12 +37,12 @@ def trust_level(url: str) -> int:
 
 
 def search_gate_open() -> bool:
-    """AnySearch 出网门禁（P1）：数据分级确认 + 开关 + Key。"""
-    return (
-        settings.data_classification_confirmed == 1
-        and settings.search_enabled == 1
-        and bool(settings.anysearch_key)
-    )
+    """AnySearch 出网门禁（P1）：数据分级确认 + 开关。
+
+    未配置 ANYSEARCH_KEY 时走匿名额度（约 50 次/天，仅限开发/测试）；
+    生产正式使用建议配置注册 Key（1000 次/天）。出网前一律经 DLP 脱敏。
+    """
+    return settings.data_classification_confirmed == 1 and settings.search_enabled == 1
 
 
 class MockSearchProvider:
@@ -69,25 +73,72 @@ class MockSearchProvider:
         ]
 
 
-class AnySearchProvider:
-    """AnySearch HTTP 适配器（出网前 DLP 脱敏；门禁未开拒绝调用）。"""
+def _parse_anysearch_markdown(text: str) -> list[dict]:
+    """解析 AnySearch MCP 返回的 Markdown 结果（### N. 标题 / - **URL**: ...）。"""
+    results: list[dict] = []
+    current: dict | None = None
+    for line in text.splitlines():
+        m = re.match(r"^\s*###\s+\d+\.\s+(.+)$", line)
+        if m:
+            if current:
+                results.append(current)
+            current = {"title": m.group(1).strip(), "url": None, "snippet": ""}
+            continue
+        if current is None:
+            continue
+        um = re.match(r"^\s*[-*]\s*\*\*URL\*\*:\s*(.+)$", line)
+        if um:
+            current["url"] = um.group(1).strip()
+            continue
+        if line.strip():
+            current["snippet"] = (current["snippet"] + "\n" if current["snippet"] else "") + line.strip()
+    if current:
+        results.append(current)
+    return [r for r in results if r.get("url")]
 
-    def query(self, query: str, scope: str | None = None) -> list[dict]:
+
+class AnySearchProvider:
+    """AnySearch HTTP 适配器（JSON-RPC 2.0；出网前 DLP 脱敏；门禁未开拒绝调用）。
+
+    契约：POST https://api.anysearch.com/mcp，method=tools/call，工具 search；
+    有 Key 时带 Authorization: Bearer <key>，无 Key 时匿名（保留 X-Anysearch-Client 头）。
+    """
+
+    def query(self, query: str, scope: str | None = None, max_results: int = 5) -> list[dict]:
         if not search_gate_open():
             raise ValueError("搜索门禁关闭（P1）：数据分级未确认或未启用")
         sanitized = sanitize_query(query)
         proxy = settings.http_proxy or os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
-        client_kwargs: dict = {"base_url": settings.anysearch_base_url, "timeout": 30}
+        endpoint = settings.anysearch_base_url or ANYSEARCH_DEFAULT_URL
+        client_kwargs: dict = {"timeout": 30}
         if proxy:
             client_kwargs["proxy"] = proxy
+        headers = {"X-Anysearch-Client": ANYSEARCH_CLIENT_HEADER}
+        if settings.anysearch_key:
+            headers["Authorization"] = f"Bearer {settings.anysearch_key}"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": sanitized, "max_results": max(max_results, 1)},
+            },
+        }
         with httpx.Client(**client_kwargs) as client:
-            resp = client.post(
-                "/search",
-                json={"query": sanitized, "scope": scope},
-                headers={"Authorization": f"Bearer {settings.anysearch_key}"},
-            )
+            resp = client.post(endpoint, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
+        if data.get("error"):
+            msg = str(data["error"])
+            if "rate" in msg.lower() or "quota" in msg.lower():
+                raise ValueError(f"AnySearch 频率/额度受限（匿名约 50 次/天，建议配置 Key）：{msg}")
+            raise ValueError(f"AnySearch 调用失败：{msg}")
+        result = data.get("result") or {}
+        if result.get("isError"):
+            raise ValueError(f"AnySearch 返回错误：{result.get('content')}")
+        texts = [item.get("text", "") for item in (result.get("content") or []) if item.get("type") == "text"]
+        parsed = _parse_anysearch_markdown("\n".join(texts))
         return [
             {
                 "url": item["url"],
@@ -95,5 +146,5 @@ class AnySearchProvider:
                 "snippet": item.get("snippet"),
                 "trust_level": trust_level(item["url"]),
             }
-            for item in data.get("results", [])
+            for item in parsed
         ]

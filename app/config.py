@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_vl_model: str = "qwen-vl-max"
     anysearch_key: str = ""
-    anysearch_base_url: str = "http://127.0.0.1:8123/anysearch"
-    search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（需门禁解锁）
+    anysearch_base_url: str = "https://api.anysearch.com/mcp"  # AnySearch 官方端点（JSON-RPC 2.0）
+    search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（真实出网，无 Key 走匿名额度）
     http_proxy: str = ""  # 出站代理（搜索/外部调用）；空则直连白名单域名
 
     # 业务端口（容器内 8123，公网 28123）

@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Live check: OFD upload -> parse -> doc_block retrievable."""
+"""Live check: OFD upload -> parse -> doc_block retrievable.
+
+默认使用合成 OFD；--file 传入真实 OFD 样本（如 scripts/fetch_ofd_samples.py 下载的
+output/playwright/ofd_samples/*.ofd）验证真实文件链路。
+"""
 import argparse, io, time, zipfile
+from pathlib import Path
 import httpx
 
 CONTENT_TEXT = "\u62db\u6807\u6280\u672f\u8981\u6c42\uff1a\u7535\u538b\u7b49\u7ea7 10kV\uff0c\u542b OFD \u5192\u70df\u9a8c\u8bc1"
@@ -20,17 +25,23 @@ def make_ofd() -> bytes:
         zf.writestr("Doc_0/DocumentRes.xml", RES_XML)
     return buf.getvalue()
 
-def run(base: str) -> None:
+def run(base: str, ofd_file: str | None = None) -> None:
     with httpx.Client(base_url=base, timeout=60) as c:
         email = f"ofd-live-{int(time.time())}@test.com"
         reg = c.post("/api/v1/auth/register", json={"email": email, "password": "Abc12345", "enterprise_name": "OFDSmoke"})
         reg.raise_for_status()
         headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
         pid = c.post("/api/v1/projects", json={"name": "OFDSmoke"}, headers=headers).json()["project_id"]
+        if ofd_file:
+            raw = Path(ofd_file).read_bytes()
+            fname = Path(ofd_file).name
+        else:
+            raw = make_ofd()
+            fname = "tender-requirements.ofd"
         up = c.post(
             "/api/v1/files/upload",
             data={"target": "project", "project_id": str(pid)},
-            files=[("files", ("tender-requirements.ofd", make_ofd(), "application/zip"))],
+            files=[("files", (fname, raw, "application/zip"))],
             headers=headers,
         )
         up.raise_for_status()
@@ -40,11 +51,16 @@ def run(base: str) -> None:
         blocks = c.get(f"/api/v1/files/{f['file_id']}/blocks", headers=headers).json()["items"]
         texts = [b.get("text", "") for b in blocks]
         print("block texts:", texts[:3])
-        assert any("10kV" in t for t in texts), "block text miss"
-        assert any("\u62db\u6807" in t for t in texts), "chinese text missing"
+        if ofd_file:
+            assert any(any("\u4e00" <= ch <= "\u9fff" for ch in t) for t in texts), "real OFD chinese text missing"
+        else:
+            assert any("10kV" in t for t in texts), "block text miss"
+            assert any("\u62db\u6807" in t for t in texts), "chinese text missing"
         print("OFD LIVE PASS")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--base", default="http://47.100.182.3:28123")
-    run(p.parse_args().base)
+    p.add_argument("--file", default=None, help="真实 OFD 文件路径（默认用合成 OFD）")
+    args = p.parse_args()
+    run(args.base, args.file)

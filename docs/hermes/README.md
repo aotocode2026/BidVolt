@@ -88,3 +88,23 @@ skills:
 - Skill 目录部署：Hermes 的 skills 目录（官方 `skills/` 或用户级 `~/.hermes/skills/`）放入本仓库 `docs/hermes/skills/*/SKILL.md`
 - 验收命令：`hermes chat --toolsets skills -q "用 招标解析 skill 解析上传的材料"`（官方推荐测试方式）
 - MCP 验收：`hermes mcp configure bidvolt` 检查工具清单是否正确加载
+
+## 5. Hermes 运行时接入现状（实际 Agent 进程需要什么）
+
+> 结论先行：`bidvolt_mcp`（stdio MCP server）、5 个 `bidvolt-*` SKILL.md、MCP IDL 与契约测试**均已就绪**；
+> 缺的是**实际运行的 Agent 主进程**（即“谁调用 LLM、谁决定调用哪个 MCP 工具”）。PyPI 上同名的 `hermes`
+> 包是科研元数据工具，与本项目无关，不能直接使用。
+
+需要三块才能把 Agent 闭环跑起来：
+
+1. **Agent 运行时入口**（核心缺口）：一个可执行程序，入参为 `task_id` + 任务级 capability token；
+   通过 stdio 协议连接 `bidvolt_mcp`，调用 LLM（本项目实际可用 MiniMax / DashScope 的 OpenAI 兼容接口），
+   循环“读任务 → 调工具 → 写结果”，并把进度按白名单事件回报后端。推荐 V1 用本仓库内实现的最小
+   Python agent loop（httpx + MCP stdio client，约 300 行，无外部 Agent SDK 依赖）；如需接入
+   Claude Code headless / LangGraph 等第三方运行时，属团队技术栈决策，需要指定后再接。
+2. **supervisor 监督配置**：`/etc/supervisor/conf.d/bidvolt.conf` 已预留 `[program:hermes]` 注释块，
+   接入后取消注释并指向真实入口。
+3. **授权与密钥注入**：Hermes 进程环境注入 `BIDVOLT_API_BASE`、`BIDVOLT_INTERNAL_TOKEN`、LLM keys；
+   每次任务调用 MCP 时携带该任务的 `X-Bidvolt-Cap` capability token（服务端校验任务终态/工具白名单/租户）。
+
+> 该缺口不属于“后端 API 缺失”，而是 Agent 运行时选型与实现；实现后即可做五条 Skill 路径的端到端闭环验收。

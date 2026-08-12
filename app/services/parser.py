@@ -116,7 +116,7 @@ def _parse_ofd(path: Path) -> list[dict]:
             root = ET.fromstring(zf.read("OFD.xml"))
             for el in root.iter():
                 if local(el.tag) == "DocRoot":
-                    doc_root = elem_text(el) or None
+                    doc_root = (elem_text(el) or "").strip().lstrip("/") or None
                     if doc_root:
                         break
         if not doc_root:
@@ -131,11 +131,11 @@ def _parse_ofd(path: Path) -> list[dict]:
         for el in doc.iter():
             name = local(el.tag)
             if name == "Page":
-                loc = (el.get("BaseLoc") or elem_text(el) or "").strip()
+                loc = (el.get("BaseLoc") or elem_text(el) or "").strip().lstrip("/")
                 if loc and loc not in page_locs:
                     page_locs.append(loc)
             elif name == "TemplatePage":
-                loc = (el.get("BaseLoc") or elem_text(el) or "").strip()
+                loc = (el.get("BaseLoc") or elem_text(el) or "").strip().lstrip("/")
                 if loc and loc not in tpl_locs:
                     tpl_locs.append(loc)
 

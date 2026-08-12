@@ -90,7 +90,9 @@ def test_save_source_and_citation(client):
     assert refs.json()[0]["source"]["trust_level"] == 1
 
 
-def test_chat_handler_gate_closed(client):
+def test_chat_handler_gate_closed(client, monkeypatch):
+    monkeypatch.setattr(settings, "data_classification_confirmed", 0)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 0)
     h, pid, _ = _setup(client)
     client.post(
         f"/api/v1/projects/{pid}/tasks",

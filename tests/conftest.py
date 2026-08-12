@@ -19,6 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401  注册全部模型
+from app.config import settings
 from app.db import get_session
 from app.main import app
 from app.models.base import Base
@@ -62,4 +63,20 @@ def clean_db():
             conn.execute(table.delete())
     engine.dispose()
     shutil.rmtree(os.environ["STORAGE_ROOT"], ignore_errors=True)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def cloud_gate_closed_by_default(monkeypatch):
+    """测试默认门禁关闭：不依赖开发机 .env 的实际解锁状态。
+
+    需要云能力（LLM/VL/搜索）的用例必须显式 monkeypatch 打开门禁并注入测试 Key；
+    防止测试集在 .env 解锁后意外调用真实外部 API 或产生非确定性结果。
+    """
+    monkeypatch.setattr(settings, "data_classification_confirmed", 0)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 0)
+    monkeypatch.setattr(settings, "search_enabled", 0)
+    monkeypatch.setattr(settings, "minimax_api_key", "")
+    monkeypatch.setattr(settings, "dashscope_api_key", "")
+    monkeypatch.setattr(settings, "anysearch_key", "")
     yield
