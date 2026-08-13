@@ -283,6 +283,10 @@ function panelDeliverable() {
     <div class="row"><select id="d-sel"></select><button onclick="saveVersion()">保存新版本</button>
       <button class="ghost" onclick="aiEdit()">AI 修改选区</button></div>
     <div id="d-versions" class="muted"></div>
+    <div class="row"><button class="ghost" onclick="createEditorSession()">创建编辑会话</button>
+      <button class="ghost" onclick="saveCheckpoint()">保存检查点</button>
+      <button class="ghost" onclick="completeEditorSession()">完成编辑</button>
+      <button class="ghost" onclick="cancelEditorSession()">取消会话</button></div>
     <table><thead><tr><th>ID</th><th>类型</th><th>标题</th><th>当前版本</th><th>版本列表</th></tr></thead><tbody id="d-rows"></tbody></table>`;
   refreshDeliverables();
 }
@@ -352,6 +356,60 @@ async function downloadVersion(id, no) {
     a.remove();
     log(`已下载 ${fname}`, "ok");
   } catch (e) { log(`下载失败：${e}`, "err"); }
+}
+
+let editorSession = null;
+
+async function createEditorSession() {
+  const id = $("d-sel").value;
+  if (!id) return log("先创建成果", "err");
+  try {
+    const s = await api(`/deliverables/${id}/editor-sessions`, { method: "POST", body: {} });
+    editorSession = { id: s.session_id, lease: s.lease_token, base: s.base_version_no };
+    $("d-json").value = JSON.stringify(s.content, null, 2);
+    log(`编辑会话 #${s.session_id} 已创建（base v${s.base_version_no}）`, "ok");
+  } catch (e) { log(`创建会话失败：${e}`, "err"); }
+}
+
+async function saveCheckpoint() {
+  if (!editorSession) return log("先创建编辑会话", "err");
+  const id = $("d-sel").value;
+  try {
+    const content = JSON.parse($("d-json").value || '{"nodes":[]}');
+    await api(`/deliverables/${id}/editor-sessions/${editorSession.id}/checkpoint`, {
+      method: "PUT",
+      body: { lease_token: editorSession.lease, content },
+    });
+    log("检查点已保存", "ok");
+  } catch (e) { log(`检查点失败：${e}`, "err"); }
+}
+
+async function completeEditorSession() {
+  if (!editorSession) return log("先创建编辑会话", "err");
+  const id = $("d-sel").value;
+  try {
+    const content = JSON.parse($("d-json").value || '{"nodes":[]}');
+    const r = await api(`/deliverables/${id}/editor-sessions/${editorSession.id}/complete`, {
+      method: "POST",
+      body: { lease_token: editorSession.lease, content, expected_version_no: editorSession.base },
+    });
+    log(`编辑完成 → v${r.version_no}`, "ok");
+    editorSession = null;
+    refreshDeliverables();
+  } catch (e) { log(`完成编辑失败：${e}`, "err"); }
+}
+
+async function cancelEditorSession() {
+  if (!editorSession) return log("先创建编辑会话", "err");
+  const id = $("d-sel").value;
+  try {
+    await api(`/deliverables/${id}/editor-sessions/${editorSession.id}/cancel`, {
+      method: "POST",
+      body: { lease_token: editorSession.lease },
+    });
+    log("会话已取消", "ok");
+    editorSession = null;
+  } catch (e) { log(`取消失败：${e}`, "err"); }
 }
 
 async function generateBid() {

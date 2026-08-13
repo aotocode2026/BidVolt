@@ -20,6 +20,7 @@ from app.models.enterprise_domain import (
     EnterpriseIngestionTask,
 )
 from app.models.export import ExportJob, FinalCheck
+from app.models.editor import EditorSession
 from app.models.file import ArchiveJob, FileObject
 from app.models.project import Project
 from app.models.project_material import (
@@ -61,6 +62,7 @@ __all__ = [
     "EnterpriseIngestionTask",
     "EnterprisePermission",
     "ExportJob",
+    "EditorSession",
     "Deliverable",
     "DeliverableContent",
     "DeliverableVersion",

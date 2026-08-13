@@ -185,3 +185,28 @@ def create_edit_diff(content: dict, selection: dict, instruction: str) -> dict:
         new_node["text"] = instruction
         ops.append({"op": "replace", "node_id": ref, "before": node, "after": new_node})
     return {"operations": ops, "note": "AI 生成（占位实现，待 Hermes 接入）"}
+
+
+async def generate_edit_diff(content: dict, selection: dict, instruction: str) -> dict:
+    """AI 针对性修改：门禁内走真实 LLM 改写，门禁外走占位替换。"""
+    from app.services.llm import LLMClient, llm_enabled
+
+    refs = selection.get("refs") or []
+    nodes = {n.get("id"): n for n in content.get("nodes", [])}
+    if not llm_enabled():
+        return create_edit_diff(content, selection, instruction)
+
+    client = LLMClient()
+    ops: list[dict] = []
+    for ref in refs:
+        node = nodes.get(ref)
+        if node is None:
+            raise ValueError(f"节点不存在：{ref}")
+        user_prompt = f"原文：{node.get('text', '')}\n修改要求：{instruction}\n只输出修改后的文本，不要任何解释。"
+        rewritten = (
+            await client.chat("你是标书编辑助手，按指令改写选中文本，只返回改写结果。", user_prompt)
+        ).strip()
+        new_node = dict(node)
+        new_node["text"] = rewritten
+        ops.append({"op": "replace", "node_id": ref, "before": node, "after": new_node})
+    return {"operations": ops, "note": "AI 生成（MiniMax）"}

@@ -10,6 +10,7 @@ from app.api import (
     audit,
     chat,
     deliverables,
+    editor,
     enterprise,
     export,
     files,
@@ -38,6 +39,7 @@ app.include_router(files.router, prefix="/api/v1")
 app.include_router(enterprise.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(deliverables.router, prefix="/api/v1")
+app.include_router(editor.router, prefix="/api/v1")
 app.include_router(quotes.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")
 app.include_router(review.providers_router, prefix="/api/v1")

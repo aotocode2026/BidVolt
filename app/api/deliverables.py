@@ -316,7 +316,7 @@ async def ai_edit(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="版本已更新，请基于最新版本重新选择")
     _, content = await deliverable_service.get_version_content(session, d.id, base_version_no)
     try:
-        diff = deliverable_service.create_edit_diff(content, body["selection"], body["instruction"])
+        diff = await deliverable_service.generate_edit_diff(content, body["selection"], body["instruction"])
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     row = AIEditDiff(deliverable_id=d.id, base_version_no=base_version_no, diff=diff)
