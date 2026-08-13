@@ -20,6 +20,7 @@ def _to_dict(req: Requirement) -> dict:
     return {
         "req_id": req.id,
         "req_type": req.req_type,
+        "req_key": req.req_key,
         "content": req.content,
         "structured": req.structured,
         "coordinates": req.coordinates,
@@ -75,6 +76,7 @@ async def upsert_requirements(
             enterprise_id=user.enterprise_id,
             project_id=project_id,
             req_type=item["req_type"],
+            req_key=item.get("req_key"),
             content=item["content"],
             structured=item.get("structured"),
             coordinates=item.get("coordinates"),

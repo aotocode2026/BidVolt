@@ -97,7 +97,7 @@ def test_upsert_supersedes_previous_revision(client):
         f"/api/v1/projects/{pid}/requirements/upsert",
         json={
             "requirements": [
-                {"req_type": "qualification", "content": "三级", "coordinates": [{"file_id": 1}]}
+                {"req_type": "qualification", "req_key": "qual", "content": "三级", "coordinates": [{"file_id": 1}]}
             ]
         },
         headers=h,
@@ -109,7 +109,7 @@ def test_upsert_supersedes_previous_revision(client):
         f"/api/v1/projects/{pid}/requirements/upsert",
         json={
             "requirements": [
-                {"req_type": "qualification", "content": "二级（补遗）", "coordinates": [{"file_id": 2}]}
+                {"req_type": "qualification", "req_key": "qual", "content": "二级（补遗）", "coordinates": [{"file_id": 2}]}
             ]
         },
         headers=h,
@@ -119,6 +119,22 @@ def test_upsert_supersedes_previous_revision(client):
     assert len(reqs) == 1
     assert reqs[0]["content"] == "二级（补遗）"
     assert reqs[0]["revision"] == 2
+
+
+def test_same_type_multiple_requirements(client):
+    """同 req_type 多条要求应共存（Issue #2 #11），不再互相覆盖。"""
+    h, pid = _setup(client)
+    for content in ("电压等级 10kV", "短路电流 30kA"):
+        r = client.post(
+            f"/api/v1/projects/{pid}/requirements/upsert",
+            json={"requirements": [{"req_type": "tech_requirement", "content": content, "coordinates": [{"file_id": 1}]}]},
+            headers=h,
+        )
+        assert r.status_code == 201
+    reqs = client.get(f"/api/v1/requirements?project_id={pid}", headers=h).json()
+    tech = [x for x in reqs if x["req_type"] == "tech_requirement"]
+    assert len(tech) == 2
+    assert {x["content"] for x in tech} == {"电压等级 10kV", "短路电流 30kA"}
 
 
 def test_upsert_requires_coordinates(client):

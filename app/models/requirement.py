@@ -15,6 +15,7 @@ class Requirement(Base, TimestampMixin):
     enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     project_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     req_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    req_key: Mapped[str | None] = mapped_column(String(100))
     content: Mapped[str] = mapped_column(Text, nullable=False)
     structured: Mapped[dict | None] = mapped_column(JSONType)
     source_file_id: Mapped[int | None] = mapped_column(BigInt)
@@ -35,6 +36,7 @@ class RequirementRevision(Base, TimestampMixin):
         BigInt, ForeignKey("requirement.id"), nullable=False
     )
     revision_no: Mapped[int] = mapped_column(BigInt, nullable=False)
+    req_key: Mapped[str | None] = mapped_column(String(100))
     content: Mapped[str] = mapped_column(Text, nullable=False)
     structured: Mapped[dict | None] = mapped_column(JSONType)
     coordinates: Mapped[list | None] = mapped_column(JSONType)

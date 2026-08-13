@@ -14,6 +14,7 @@ async def upsert_requirement(
     enterprise_id: int,
     project_id: int,
     req_type: str,
+    req_key: str | None = None,
     content: str,
     structured: dict | None = None,
     coordinates: list | None = None,
@@ -21,35 +22,46 @@ async def upsert_requirement(
     source_file_id: int | None = None,
     source_task_id: int | None = None,
 ) -> Requirement:
-    """同类型同内容视为幂等；新内容覆盖旧条目（supersedes + revision 递增）。"""
-    existing = await session.scalar(
-        select(Requirement).where(
-            Requirement.enterprise_id == enterprise_id,
-            Requirement.project_id == project_id,
-            Requirement.req_type == req_type,
-            Requirement.content == content,
-            Requirement.current.is_(True),
-        )
-    )
+    """写入/更新招标要求。
+
+    - 有 req_key：以 key 为稳定身份做幂等与 supersede（补遗/修订递增 revision）。
+    - 无 req_key：同 req_type 允许存在多条（Issue #2 #11），仅按 (req_type, content, req_key IS NULL)
+      做精确重复幂等，不再按 req_type 覆盖。
+    """
+    idempotency_clauses = [
+        Requirement.enterprise_id == enterprise_id,
+        Requirement.project_id == project_id,
+        Requirement.req_type == req_type,
+        Requirement.content == content,
+        Requirement.current.is_(True),
+    ]
+    if req_key:
+        idempotency_clauses.append(Requirement.req_key == req_key)
+    else:
+        idempotency_clauses.append(Requirement.req_key.is_(None))
+    existing = await session.scalar(select(Requirement).where(*idempotency_clauses))
     if existing is not None:
         return existing
 
-    previous = await session.scalar(
-        select(Requirement)
-        .where(
-            Requirement.enterprise_id == enterprise_id,
-            Requirement.project_id == project_id,
-            Requirement.req_type == req_type,
-            Requirement.current.is_(True),
+    previous = None
+    if req_key:
+        previous = await session.scalar(
+            select(Requirement)
+            .where(
+                Requirement.enterprise_id == enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.req_key == req_key,
+                Requirement.current.is_(True),
+            )
+            .order_by(Requirement.revision.desc())
+            .limit(1)
         )
-        .order_by(Requirement.revision.desc())
-        .limit(1)
-    )
     revision_no = (previous.revision + 1) if previous else 1
     requirement = Requirement(
         enterprise_id=enterprise_id,
         project_id=project_id,
         req_type=req_type,
+        req_key=req_key,
         content=content,
         structured=structured,
         coordinates=coordinates,
@@ -66,6 +78,7 @@ async def upsert_requirement(
             enterprise_id=enterprise_id,
             requirement_id=requirement.id,
             revision_no=revision_no,
+            req_key=req_key,
             content=content,
             structured=structured,
             coordinates=coordinates,
