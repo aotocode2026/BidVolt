@@ -5,14 +5,25 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
+from pathlib import Path
 
 
 CHECKS = [
-    ("ofd_synthetic", "scripts.smoke_ofd_live", "run", {}),
-    ("cloud", "scripts.smoke_cloud_live", "run", {}),
-    ("editor", "scripts.smoke_editor_e2e", "run", {}),
-    ("pg_rls", "scripts.smoke_pg_rls", "run", {}),
+    ("ofd_synthetic", "smoke_ofd_live", "run", {}),
+    ("cloud", "smoke_cloud_live", "run", {}),
+    ("editor", "smoke_editor_e2e", "run", {}),
+    ("pg_rls", "smoke_pg_rls", "run", {}),
 ]
+
+
+def _load_script(module: str):
+    path = Path(__file__).resolve().parent / f"{module}.py"
+    spec = importlib.util.spec_from_file_location(module, path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def main() -> None:
@@ -31,7 +42,7 @@ def main() -> None:
         if name == "pg_rls":
             kwargs["env_path"] = args.env
         try:
-            getattr(importlib.import_module(module), func)(**kwargs)
+            getattr(_load_script(module), func)(**kwargs)
             results.append((name, True, ""))
             print(f"[PASS] {name}")
         except Exception as exc:  # noqa: BLE001
