@@ -171,7 +171,8 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 
 - P1 门禁：`docs/数据分级与授权确认清单.md` 签署前，云模型/搜索默认关闭（fail-closed）
 - 租户隔离：全部业务对象绑定 enterprise_id（+ project_id），PG RLS 纵深防护
-- 任务级授权：capability token 绑定 enterprise/project/task/工具白名单（`X-Bidvolt-Cap`）
+- 任务级授权：capability token 绑定 enterprise/project/task/工具白名单（`X-Bidvolt-Cap`），
+  并在调用时校验 token 项目与请求 `project_id` 一致（跨项目访问 403）
 - JWT 回退：capability 端点普通用户调用时按工具映射执行对应权限点，不再绕过权限检查
 - 文件安全：隔离区 → magic bytes → 强制 ClamAV → 受限进程解析；压缩包限额/符号链接拒绝
 - 出站：搜索前 DLP 脱敏（手机号/证件号/银行卡/信用代码）+ 域名白名单

@@ -139,6 +139,11 @@ def require_capability(tool: str):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务不存在，授权上下文失效")
             if task.status in (int(TaskStatus.DONE), int(TaskStatus.CANCELLED), int(TaskStatus.FAILED_TERMINAL)):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务已结束，授权上下文失效")
+            if task.project_id != int(payload.get("pid", 0)):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="capability token 与任务项目不一致")
+            req_pid = request.path_params.get("project_id")
+            if req_pid is not None and task.project_id != int(req_pid):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="capability token 不属于请求项目")
             await _set_rls_context(session, int(payload["eid"]))
             return UserContext(
                 user_id=0,

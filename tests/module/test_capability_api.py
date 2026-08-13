@@ -74,8 +74,7 @@ def test_other_enterprise_task_token_cannot_read_our_project(client):
         "/api/v1/files/projects/%d/materials" % pid,
         headers={"X-Bidvolt-Cap": task2["capability_token"]},
     )
-    assert r.status_code == 200
-    assert r.json() == []
+    assert r.status_code == 403
     # B \u7684 token \u8bfb\u81ea\u5df1\u7684\u9879\u76ee\uff1a\u6b63\u5e38
     r2 = client.get(
         "/api/v1/files/projects/%d/materials" % pid2,
@@ -157,3 +156,27 @@ def test_capability_invalid_after_task_terminal(client):
     )
     assert r1.status_code == 403
     assert "已结束" in r1.json()["detail"]
+
+
+def test_capability_bound_to_project(client):
+    h = _register(client, email="cap-cross@test.com")
+    pid_a = client.post("/api/v1/projects", json={"name": "A"}, headers=h).json()["project_id"]
+    pid_b = client.post("/api/v1/projects", json={"name": "B"}, headers=h).json()["project_id"]
+    task = client.post(
+        f"/api/v1/projects/{pid_a}/tasks",
+        json={"task_type": "tender_parse", "payload": {}, "idempotency_key": "cap-cross"},
+        headers=h,
+    ).json()
+    cap = task["capability_token"]
+
+    ok = client.get(
+        f"/api/v1/files/projects/{pid_a}/materials",
+        headers={"X-Bidvolt-Cap": cap},
+    )
+    assert ok.status_code == 200
+
+    cross = client.get(
+        f"/api/v1/files/projects/{pid_b}/materials",
+        headers={"X-Bidvolt-Cap": cap},
+    )
+    assert cross.status_code == 403
