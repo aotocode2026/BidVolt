@@ -353,7 +353,9 @@ async def list_providers(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.SCORE_VIEW)),
 ) -> list[dict]:
-    rows = await session.scalars(select(ReviewProvider))
+    rows = await session.scalars(
+        select(ReviewProvider).where(ReviewProvider.enterprise_id == user.enterprise_id)
+    )
     return [
         {
             "provider_id": p.id,
@@ -375,7 +377,10 @@ async def update_provider_config(
     user: UserContext = Depends(require_permission(Permission.REVIEW_PROVIDER_CONFIG)),
 ) -> dict:
     provider = await session.scalar(
-        select(ReviewProvider).where(ReviewProvider.id == provider_id)
+        select(ReviewProvider).where(
+            ReviewProvider.id == provider_id,
+            ReviewProvider.enterprise_id == user.enterprise_id,
+        )
     )
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider 不存在")

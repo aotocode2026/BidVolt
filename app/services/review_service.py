@@ -24,7 +24,10 @@ DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 
 async def ensure_builtin_provider(session: AsyncSession, enterprise_id: int) -> ReviewProvider:
     provider = await session.scalar(
-        select(ReviewProvider).where(ReviewProvider.provider_code == "builtin_completeness")
+        select(ReviewProvider).where(
+            ReviewProvider.provider_code == "builtin_completeness",
+            ReviewProvider.enterprise_id == enterprise_id,
+        )
     )
     if provider is None:
         provider = ReviewProvider(

@@ -131,3 +131,40 @@ def test_same_enterprise_cross_project_isolated(client):
     assert client.get(f"/api/v1/deliverables?project_id={pid2}", headers=h).json() == []
     assert client.get(f"/api/v1/deliverables/{did1}", headers=h).json().get("project_id") == pid1
     assert client.get(f"/api/v1/files/projects/{pid2}/materials", headers=h).json() == []
+
+
+def test_cross_tenant_provider_lock_and_ai_diff(client):
+    ha = _register(client, "audit-a@idor.com")
+    hb = _register(client, "audit-b@idor.com")
+
+    pid = client.post("/api/v1/projects", json={"name": "A项目"}, headers=ha).json()["project_id"]
+    did = client.post(
+        "/api/v1/deliverables",
+        json={"project_id": pid, "deliverable_type": 1, "title": "商务标"},
+        headers=ha,
+    ).json()["deliverable_id"]
+    client.post(
+        f"/api/v1/deliverables/{did}/versions",
+        json={"content": {"nodes": [{"id": "n1", "type": "paragraph", "text": "原文"}]}, "version_type": 4},
+        headers=ha,
+    )
+    diff = client.post(
+        f"/api/v1/deliverables/{did}/ai-edit",
+        json={"selection": {"type": "text", "refs": ["n1"]}, "instruction": "改写"},
+        headers=ha,
+    )
+    diff_id = diff.json()["diff_id"]
+    ev = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=ha).json()
+
+    # 跨企业：AI diff 读取、编辑锁、Provider 配置均不可访问
+    assert client.get(f"/api/v1/deliverables/{did}/ai-edit/{diff_id}", headers=hb).status_code == 404
+    assert client.post(f"/api/v1/projects/{pid}/edit-lock", headers=hb).status_code == 404
+    a_providers = client.get("/api/v1/review-providers", headers=ha).json()
+    a_provider_id = a_providers[0]["provider_id"]
+    assert client.put(
+        f"/api/v1/review-providers/{a_provider_id}/config",
+        json={"enabled": False},
+        headers=hb,
+    ).status_code in (403, 404)
+    # B 看不到 A 的 Provider
+    assert all(p["provider_id"] != a_provider_id for p in client.get("/api/v1/review-providers", headers=hb).json())

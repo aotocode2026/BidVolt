@@ -332,6 +332,7 @@ async def get_ai_edit(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.FILE_READ)),
 ) -> dict:
+    await _get_deliverable(session, user, deliverable_id)
     row = await session.get(AIEditDiff, diff_id)
     if row is None or row.deliverable_id != deliverable_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="diff 不存在")
