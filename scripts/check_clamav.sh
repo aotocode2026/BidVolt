@@ -2,11 +2,13 @@
 # 容器内验证 ClamAV：EICAR 样本应被拦截，正常文本应放行
 set -euo pipefail
 
+REPO="${REPO:-/data/bidvolt}"
+
 EICAR='X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
 printf '%s' "$EICAR" > /tmp/eicar.txt
 printf 'hello world' > /tmp/clean.txt
 
-/opt/bidvolt/.venv/bin/python - <<'PY'
+"$REPO/.venv/bin/python" - <<'PY'
 import io
 import clamd
 

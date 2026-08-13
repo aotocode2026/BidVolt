@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import os
+import re
 from urllib.parse import urlparse
 
 import httpx

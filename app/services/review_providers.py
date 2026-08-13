@@ -39,7 +39,6 @@ class DocumentProvider:
         for rule in self.rules:
             rule_type = rule.get("type")
             field_name = rule.get("field")
-            required = rule.get("required")
             rule_version = rule.get("version", self.version)
             if rule_type == "field_required":
                 value = inputs.get("fields", {}).get(field_name)

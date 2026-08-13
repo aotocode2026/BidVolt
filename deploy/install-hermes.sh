@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 容器内安装/更新 Hermes Agent（数据与 venv 全部位于 /data/hermes，重建容器后免重装依赖）。
-# 依赖：/opt/bidvolt 代码与 .env 已就位（/opt/bidvolt 可为指向 /data/bidvolt 的符号链接）。
+# 依赖：$REPO（默认 /data/bidvolt）代码与 .env 已就位。
 # 用法：bash deploy/install-hermes.sh
 set -euo pipefail
 
@@ -28,7 +28,7 @@ echo "==> 3/7 hermes-agent[mcp]"
 export UV_DEFAULT_INDEX="$UV_INDEX"
 uv pip install --python "$HERMES_VENV" "hermes-agent[mcp]"
 
-echo "==> 4/7 生成 .env（仅首次；密钥来自 /opt/bidvolt/.env 或环境变量）"
+echo "==> 4/7 生成 .env（仅首次；密钥来自 $REPO/.env 或环境变量）"
 if [ ! -f "$HERMES_HOME/.env" ]; then
   "$HERMES_VENV/bin/python" - "$BIDVOLT_ENV" "$HERMES_HOME/.env" <<'PY'
 import os, re, sys

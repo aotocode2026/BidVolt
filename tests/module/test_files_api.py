@@ -16,7 +16,7 @@ def _headers(client):
 def _upload(
     client,
     headers,
-    content: bytes = "招标公告内容".encode("utf-8"),
+    content: bytes = "招标公告内容".encode(),
     name="材料.txt",
     target="enterprise",
     project_id=None,
@@ -44,7 +44,7 @@ def test_upload_and_download(client):
     assert info.json()["name"] == "材料.txt"
 
     dl = client.get(f"/api/v1/files/{file_id}/download", headers=h)
-    assert dl.content == "招标公告内容".encode("utf-8")
+    assert dl.content == "招标公告内容".encode()
 
     blocks = client.get(f"/api/v1/files/{file_id}/blocks", headers=h)
     assert blocks.json()["total"] >= 1

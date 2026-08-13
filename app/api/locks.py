@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import UserContext, require_permission
 from app.constants import Permission
 from app.db import get_session
 from app.models.auth import ProjectEditLock
@@ -41,7 +41,7 @@ async def acquire_lock(
 ) -> dict:
     await _owned_project(session, project_id, user.enterprise_id)
     lock = await session.get(ProjectEditLock, project_id)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if lock is not None and ensure_aware(lock.expires_at) > now:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -75,7 +75,7 @@ async def heartbeat(
     lock = await session.get(ProjectEditLock, project_id)
     if lock is None or lock.holder_user_id != user.user_id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="未持有编辑锁")
-    lock.expires_at = datetime.now(timezone.utc) + HEARTBEAT_TTL
+    lock.expires_at = datetime.now(UTC) + HEARTBEAT_TTL
     await session.commit()
     return {"expires_at": lock.expires_at.isoformat()}
 

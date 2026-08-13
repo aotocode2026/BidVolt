@@ -10,8 +10,8 @@ from jose import JWTError
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_session
 from app.constants import Permission, TaskStatus
+from app.db import get_session
 from app.models.auth import AppUser, EnterprisePermission
 from app.models.task import Task
 from app.services.capability import CapabilityError, verify_capability

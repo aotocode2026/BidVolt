@@ -8,14 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_capability, require_permission, UserContext
+from app.api.deps import UserContext, require_capability, require_permission
 from app.config import settings
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import Deliverable
 from app.models.search import Citation, SearchSource
 from app.services import search_service
-from app.services.audit import write_audit
 
 router = APIRouter(tags=["search"])
 

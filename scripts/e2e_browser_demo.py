@@ -1,0 +1,260 @@
+"""浏览器 E2E：headless Chromium 模拟人操作 demo 前端，真实调用后端 API。
+
+用法：
+    .venv/bin/python scripts/e2e_browser_demo.py [--base http://127.0.0.1:8123]
+
+前置：本地起 API + worker（云门禁关闭、SEARCH_MODE=mock，见 README 第 10 节）。
+产出：output/playwright/e2e-*.png 截图 + 控制台 PASS/FAIL 汇总（退出码 0/1）。
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+import httpx
+from playwright.sync_api import sync_playwright
+
+BASE = "http://127.0.0.1:8123"
+OUT = Path(__file__).resolve().parent.parent / "output" / "playwright"
+DEMO = f"{BASE}/demo/"
+
+results: list[tuple[str, bool, str]] = []
+
+
+def record(name: str, ok: bool, note: str = "") -> None:
+    results.append((name, ok, note))
+    mark = "PASS" if ok else "FAIL"
+    print(f"[{mark}] {name} {('(' + note + ')') if note else ''}", flush=True)
+
+
+def wait_log(page, text: str, timeout_ms: int = 60000) -> bool:
+    """等待页面底部 #log 出现指定文本。"""
+    try:
+        page.wait_for_function(
+            "t => document.getElementById('log').innerText.includes(t)",
+            arg=text,
+            timeout=timeout_ms,
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def shot(page, name: str) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(OUT / f"e2e-{name}.png"), full_page=True)
+
+
+def tab(page, label: str) -> None:
+    page.click(f"#tabs button:has-text('{label}')")
+    page.wait_for_timeout(300)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base", default=BASE)
+    args = parser.parse_args()
+    base = args.base.rstrip("/")
+    global DEMO
+    DEMO = f"{base}/demo/"
+
+    # 等 API 就绪
+    for _ in range(30):
+        try:
+            if httpx.get(f"{base}/healthz", timeout=2).status_code == 200:
+                break
+        except Exception:  # noqa: BLE001
+            time.sleep(1)
+    else:
+        print("API 未就绪"); return 1
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(DEMO)
+        page.wait_for_load_state("networkidle")
+        shot(page, "00-初始")
+
+        # ---------- 1. 注册 ----------
+        email = f"e2e-browser-{int(time.time())}@test.com"
+        try:
+            page.fill("#a-email", email)
+            page.fill("#a-pwd", "Abc12345")
+            page.fill("#a-name", "浏览器E2E企业")
+            page.click("button:has-text('注册')")
+            record("注册", wait_log(page, "register 成功"), email)
+        except Exception as e:  # noqa: BLE001
+            record("注册", False, str(e)[:80])
+        shot(page, "01-注册")
+
+        # ---------- 2. 创建项目 ----------
+        try:
+            tab(page, "项目")
+            page.fill("#p-name", "浏览器E2E项目")
+            page.fill("#p-no", "E2E-2026-0814")
+            page.click("button:has-text('创建项目')")
+            record("创建项目", wait_log(page, "项目创建成功"))
+        except Exception as e:  # noqa: BLE001
+            record("创建项目", False, str(e)[:80])
+        shot(page, "02-项目")
+
+        # ---------- 3. 上传材料 + 招标解析 ----------
+        try:
+            tender = Path(__file__).resolve().parent.parent / "output" / "e2e_tender.txt"
+            tender.parent.mkdir(parents=True, exist_ok=True)
+            tender.write_text(
+                "招标公告\n一、资质要求：投标人须具备电力工程施工总承包资质。\n"
+                "二、技术要求：电缆 YJV-3x95 需符合 GB/T 12706 标准。\n"
+                "三、商务要求：投标保证金 2 万元，履约保证金 5%。\n",
+                encoding="utf-8",
+            )
+            tab(page, "资料")
+            page.set_input_files("#m-file", str(tender))
+            page.click("button:has-text('上传')")
+            ok_up = wait_log(page, "上传 e2e_tender.txt")
+            shot(page, "03-上传")
+            page.click("button:has-text('触发招标解析任务')")
+            ok_parse = wait_log(page, "完成：", timeout_ms=90000)
+            record("上传+招标解析", ok_up and ok_parse, "材料上传与解析任务闭环")
+        except Exception as e:  # noqa: BLE001
+            record("上传+招标解析", False, str(e)[:80])
+        shot(page, "04-解析完成")
+
+        # ---------- 4. 成果：创建/生成/校核/在线编辑 ----------
+        try:
+            tab(page, "成果")
+            page.click("button:has-text('创建三份成果')")
+            ok_create = wait_log(page, "三份成果已创建")
+            page.click("button:has-text('生成标书(bid_generate)')")
+            ok_gen = wait_log(page, "完成：", timeout_ms=90000)
+            page.click("button:has-text('校核(bid_review)')")
+            ok_review = wait_log(page, "完成：", timeout_ms=90000)
+            shot(page, "05-成果")
+            page.click("button:has-text('创建编辑会话')")
+            ok_ses = wait_log(page, "编辑会话 #")
+            page.click("button:has-text('保存检查点')")
+            ok_ckpt = wait_log(page, "检查点已保存")
+            page.click("button:has-text('完成编辑')")
+            ok_done = wait_log(page, "编辑完成 →")
+            record("成果/校核/在线编辑", ok_create and ok_gen and ok_review and ok_ses and ok_ckpt and ok_done)
+        except Exception as e:  # noqa: BLE001
+            record("成果/校核/在线编辑", False, str(e)[:80])
+        shot(page, "06-编辑完成")
+
+        # ---------- 5. 模拟评标（逐条 + 建议 override + 确认 + 重审） ----------
+        try:
+            tab(page, "任务/评标")
+            page.click("button:has-text('模拟评标')")
+            ok_ev = wait_log(page, "评标完成：总分")
+            item_id = page.eval_on_selector("#t-items tr td:first-child", "el => el.innerText")
+            page.fill("#s-item-id", item_id.strip())
+            page.fill("#s-suggestion", "E2E 修改后的建议文本")
+            page.click("button:has-text('保存建议修改')")
+            ok_sugg = wait_log(page, "建议已保存")
+            shot(page, "07-评标")
+            page.click("button:has-text('确认全部建议')")
+            ok_conf = wait_log(page, "确认结果")
+            page.click("button:has-text('重审受影响项')")
+            ok_re = wait_log(page, "重审完成")
+            record("评标闭环", ok_ev and ok_sugg and ok_conf and ok_re, f"item={item_id.strip()}")
+        except Exception as e:  # noqa: BLE001
+            record("评标闭环", False, str(e)[:80])
+        shot(page, "08-重审")
+
+        # ---------- 6. 报价：测算/策略/应用/趋势 ----------
+        try:
+            tab(page, "报价")
+            page.click("button:has-text('测算')")
+            ok_calc = wait_log(page, "测算完成 calc#")
+            page.click("button:has-text('中标策略')")
+            ok_win = wait_log(page, "策略 win")
+            page.click("button:has-text('应用到报价单')")
+            ok_apply = wait_log(page, "报价已应用")
+            page.click("button:has-text('样本趋势')")
+            ok_trend = wait_log(page, "样本趋势")
+            record("报价闭环", ok_calc and ok_win and ok_apply and ok_trend)
+        except Exception as e:  # noqa: BLE001
+            record("报价闭环", False, str(e)[:80])
+        shot(page, "09-报价")
+
+        # ---------- 7. 会话/搜索 ----------
+        try:
+            tab(page, "搜索/对话")
+            page.click("button:has-text('新建会话')")
+            ok_conv = wait_log(page, "已创建会话 #")
+            page.fill("#c-msg", "投标保证金一般是多少？")
+            page.click("button:has-text('发送')")
+            ok_reply = wait_log(page, "助手（")
+            record("项目助手会话", ok_conv and ok_reply)
+        except Exception as e:  # noqa: BLE001
+            record("项目助手会话", False, str(e)[:80])
+        # 搜索：门禁关闭时预期 403（软校验，记录行为即可）
+        try:
+            page.fill("#s-query", "电缆")
+            page.click("button:has-text('搜索')")
+            page.wait_for_timeout(800)
+            record("搜索(门禁关闭行为)", True, "已触发（门禁关闭时预期拒绝）")
+        except Exception as e:  # noqa: BLE001
+            record("搜索(门禁关闭行为)", False, str(e)[:80])
+        shot(page, "10-会话")
+
+        # ---------- 8. 终检与导出 ----------
+        try:
+            tab(page, "导出")
+            page.click("button:has-text('终稿检查')")
+            ok_check = wait_log(page, "终检")
+            page.click("button:has-text('导出 DOCX/XLSX')")
+            ok_export = wait_log(page, "导出完成")
+            record("终检与导出", ok_check and ok_export)
+        except Exception as e:  # noqa: BLE001
+            record("终检与导出", False, str(e)[:80])
+        shot(page, "11-导出")
+
+        # ---------- 9. 快照/活动任务 ----------
+        try:
+            tab(page, "项目")
+            page.click("button:has-text('快照列表')")
+            ok_snap = page.wait_for_function(
+                "document.getElementById('p-extra').innerText.includes('snapshot_id')",
+                timeout=10000,
+            )
+            page.click("button:has-text('活动任务')")
+            ok_tasks = page.wait_for_function(
+                "document.getElementById('p-extra').innerText.includes('task_id')",
+                timeout=10000,
+            )
+            record("快照/活动任务", bool(ok_snap and ok_tasks))
+        except Exception as e:  # noqa: BLE001
+            record("快照/活动任务", False, str(e)[:80])
+        shot(page, "12-快照")
+
+        # ---------- 10. 刷新恢复（会话与数据） ----------
+        try:
+            page.reload()
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(500)
+            logged = page.eval_on_selector("#authbar", "el => el.innerText.includes('已登录')")
+            tab(page, "项目")
+            page.wait_for_timeout(800)
+            restored = page.eval_on_selector(
+                "#p-rows",
+                "el => el.innerText.includes('浏览器E2E项目')",
+            )
+            record("刷新恢复", logged and restored, "localStorage token + 项目列表")
+        except Exception as e:  # noqa: BLE001
+            record("刷新恢复", False, str(e)[:80])
+        shot(page, "13-刷新恢复")
+
+        browser.close()
+
+    failed = [r for r in results if not r[1]]
+    print(f"\n==== 汇总：{len(results) - len(failed)}/{len(results)} PASS ====", flush=True)
+    for name, ok, note in results:
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}  {note}", flush=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

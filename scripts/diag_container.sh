@@ -2,14 +2,17 @@
 # 容器诊断：worker 日志 / 任务状态 / 数据库编码
 set -uo pipefail
 
+REPO="${REPO:-/data/bidvolt}"
+
 echo "=== worker stderr ==="
-tail -8 /var/log/supervisor/worker-stderr--* 2>/dev/null || echo "(no log)"
+tail -8 /var/log/bidvolt/worker* 2>/dev/null || echo "(no log)"
 
 echo "=== task ==="
-su postgres -c "/usr/lib/postgresql/14/bin/psql -d bidvolt -tAc \"SELECT id,status,task_type FROM task ORDER BY id DESC LIMIT 3;\""
+PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1)
+su postgres -c "$PGBIN/psql -d bidvolt -tAc \"SELECT id,status,task_type FROM task ORDER BY id DESC LIMIT 3;\""
 
 echo "=== encoding ==="
 set -a
-. /opt/bidvolt/.env
+. "$REPO/.env"
 set +a
-/opt/bidvolt/.venv/bin/python /tmp/db_check.py
+"$REPO/.venv/bin/python" /tmp/db_check.py 2>/dev/null || echo "(db_check.py 未就位，跳过)"

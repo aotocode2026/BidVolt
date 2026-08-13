@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_capability, require_permission, UserContext
+from app.api.deps import UserContext, require_capability, require_permission
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import AIEditDiff, Deliverable, DeliverableVersion

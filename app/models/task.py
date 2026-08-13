@@ -28,3 +28,8 @@ class Task(Base, TimestampMixin):
     generation: Mapped[int] = mapped_column(BigInt, nullable=False, default=1)
     error: Mapped[dict | None] = mapped_column(JSONType)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 任务租约（Issue #3）：worker 领取后持租约 + 心跳续期；
+    # 进程被强杀/卡死后租约过期，其他 worker 可回收，避免任务永久卡在 RUNNING。
+    lease_owner: Mapped[str | None] = mapped_column(String(120))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

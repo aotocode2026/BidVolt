@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_permission, UserContext
+from app.api.deps import UserContext, require_permission
 from app.constants import Permission
 from app.db import get_session
 from app.models.audit import AuditLog

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -103,7 +102,7 @@ def test_material_match_task(client):
     client.post(
         "/api/v1/files/upload",
         data={"target": "enterprise"},
-        files=[("files", ("资质证书.txt", "电力施工总承包三级".encode("utf-8"), "text/plain"))],
+        files=[("files", ("资质证书.txt", "电力施工总承包三级".encode(), "text/plain"))],
         headers=h,
     )
 

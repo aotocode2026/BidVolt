@@ -148,7 +148,7 @@ def test_mcp_initialize_and_tools():
         finally:
             httpd.shutdown()
 
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     by_id = {r["id"]: r for r in lines}
     assert by_id[1]["result"]["serverInfo"]["name"] == "bidvolt"
     names = [t["name"] for t in by_id[2]["result"]["tools"]]
@@ -190,7 +190,7 @@ def test_mcp_tools_call_backend_with_auth_header():
             httpd.shutdown()
 
     assert _MockBackend.captured_auth == "Bearer my-internal-token"
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     assets = json.loads(lines[0]["result"]["content"][0]["text"])
     assert assets["total"] == 1
     blocks = json.loads(lines[1]["result"]["content"][0]["text"])
@@ -215,7 +215,7 @@ def test_mcp_deliverable_tools():
             httpd.shutdown()
 
     assert _MockBackend.captured_auth == "Bearer deliverable-token"
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     content = json.loads(lines[0]["result"]["content"][0]["text"])
     assert content["version_no"] == 1
     saved = json.loads(lines[1]["result"]["content"][0]["text"])
@@ -239,7 +239,7 @@ def test_mcp_quote_tools():
         finally:
             httpd.shutdown()
 
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     history = json.loads(lines[0]["result"]["content"][0]["text"])
     assert history["readonly"] is True
     calc = json.loads(lines[1]["result"]["content"][0]["text"])
@@ -289,7 +289,7 @@ def test_mcp_requirement_tools():
             httpd.shutdown()
 
     assert _MockBackend.captured_auth == "Bearer req-token"
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     reqs = json.loads(lines[0]["result"]["content"][0]["text"])
     assert reqs[0]["req_type"] == "qualification"
     created = json.loads(lines[1]["result"]["content"][0]["text"])
@@ -314,7 +314,7 @@ def test_mcp_material_match_tools():
             httpd.shutdown()
 
     assert _MockBackend.captured_auth == "Bearer mm-token"
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     assert json.loads(lines[0]["result"]["content"][0]["text"])[0]["matched"] == 1
     assert json.loads(lines[1]["result"]["content"][0]["text"])["count"] == 1
 
@@ -337,7 +337,7 @@ def test_mcp_search_tools():
         finally:
             httpd.shutdown()
 
-    lines = [json.loads(l) for l in out.strip().splitlines()]
+    lines = [json.loads(line) for line in out.strip().splitlines()]
     search = json.loads(lines[0]["result"]["content"][0]["text"])
     assert search["results"][0]["trust_level"] == 1
     assert json.loads(lines[1]["result"]["content"][0]["text"])["source_id"] == 7

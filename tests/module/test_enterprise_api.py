@@ -15,7 +15,7 @@ def _upload_txt(client, headers, name="营业执照.txt"):
     r = client.post(
         "/api/v1/files/upload",
         data={"target": "enterprise"},
-        files=[("files", (name, io.BytesIO("统一社会信用代码 91110000XXXX".encode("utf-8")), "text/plain"))],
+        files=[("files", (name, io.BytesIO("统一社会信用代码 91110000XXXX".encode()), "text/plain"))],
         headers=headers,
     )
     return r.json()["files"][0]["file_id"]

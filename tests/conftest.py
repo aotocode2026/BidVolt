@@ -29,6 +29,8 @@ TEST_DB = Path(__file__).resolve().parent.parent / ".test_bidvolt.db"
 
 def _sync_schema() -> None:
     engine = create_engine(f"sqlite:///{TEST_DB}")
+    # 每次会话全量重建：模型列变更（如 task 租约列）无需手工删除 .test_bidvolt.db
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     engine.dispose()
 

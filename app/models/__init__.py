@@ -3,13 +3,14 @@
 from app.models.audit import AuditLog
 from app.models.auth import AppUser, Enterprise, EnterprisePermission, ProjectEditLock, RefreshToken
 from app.models.chat import Conversation, ConversationMessage
-from app.models.doc import DocBlock
 from app.models.deliverable import (
     AIEditDiff,
     Deliverable,
     DeliverableContent,
     DeliverableVersion,
 )
+from app.models.doc import DocBlock
+from app.models.editor import EditorSession
 from app.models.enterprise_domain import (
     EnterpriseAsset,
     EnterpriseAssetCategory,
@@ -20,7 +21,6 @@ from app.models.enterprise_domain import (
     EnterpriseIngestionTask,
 )
 from app.models.export import ExportJob, FinalCheck
-from app.models.editor import EditorSession
 from app.models.file import ArchiveJob, FileObject
 from app.models.project import Project
 from app.models.project_material import (
@@ -30,8 +30,8 @@ from app.models.project_material import (
     ProjectMaterialRevision,
     ProjectSnapshot,
 )
-from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.models.quota import TenantQuota
+from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.models.requirement import Requirement, RequirementRevision
 from app.models.review import (
     ReviewItem,

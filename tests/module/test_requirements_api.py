@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -26,7 +25,7 @@ def _upload_txt(client, headers, pid):
     r = client.post(
         "/api/v1/files/upload",
         data={"target": "project", "project_id": str(pid)},
-        files=[("files", ("招标.txt", "资质要求：三级。报价规则：上限100万。".encode("utf-8"), "text/plain"))],
+        files=[("files", ("招标.txt", "资质要求：三级。报价规则：上限100万。".encode(), "text/plain"))],
         headers=headers,
     )
     return r.json()["files"][0]["file_id"]

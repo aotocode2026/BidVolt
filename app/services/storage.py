@@ -68,7 +68,7 @@ class StorageProvider:
             return False
         expected = hmac.new(
             settings.jwt_secret.encode("utf-8"),
-            f"{file_id}:{tenant_id}:{exp}".encode("utf-8"),
+            f"{file_id}:{tenant_id}:{exp}".encode(),
             hashlib.sha256,
         ).hexdigest()
         return hmac.compare_digest(expected, sig)

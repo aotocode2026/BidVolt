@@ -5,6 +5,12 @@
 local/
 secrets/
 *.secret
+credentials*
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
 
 # 日志与运行时
 logs/
@@ -18,6 +24,14 @@ venv/
 output/
 .playwright-cli/
 .playwright/
+
+# 数据库/备份制品（Issue #3：防止 dump/SQL 备份误提交）
+*.dump
+*.sql
+*.db
+*.sqlite
+*.sqlite3
+*.bak
 
 # 系统与编辑器
 .DS_Store

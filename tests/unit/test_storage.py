@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from app.services.storage import StorageProvider
@@ -42,7 +40,6 @@ def test_open_rejects_traversal(tmp_path):
 
 
 def test_signed_download_roundtrip_and_expiry(monkeypatch):
-    import time
 
     from urllib.parse import parse_qs, urlparse
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
 import json
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

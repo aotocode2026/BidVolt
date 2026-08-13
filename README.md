@@ -124,19 +124,25 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 
 ### 5.5 备份与恢复
 
-- 每日 02:00 cron `pg_dump -Fc` 到 `/data/backups/bidvolt_<日期>.dump`，保留 30 天；
-  WAL 归档到 `/data/backups/wal`（PITR）。注意 `/etc/cron.d` 条目必须带 `root` 用户字段。
-- 恢复：`pg_restore -d bidvolt /data/backups/bidvolt_xxx.dump`。
+- 每日 02:00 cron `pg_dump -Fc` 到 `/data/backups/bidvolt_<日期>.dump`（生成后 `pg_restore --list`
+  校验可读），同时备份 `/data/appdata` 业务文件（tar.gz），均保留 30 天；
+  WAL 归档到 `/data/backups/wal`（PITR，保留 7 天）。注意 `/etc/cron.d` 条目必须带 `root` 用户字段。
+- 恢复：`pg_restore -d bidvolt /data/backups/bidvolt_xxx.dump` + 解包 `bidvolt_appdata_*.tar.gz`。
 
 ### 5.6 日常运维
 
 - 重启单服务：`supervisorctl restart app|worker|hermes`
 - 改配置：`supervisorctl reread && supervisorctl update`
 - 日志：`/data/logs/bidvolt/`（supervisord.log、backup.log）
-- 升级代码：容器内 `git pull && .venv/bin/pip install -r requirements.txt && supervisorctl restart all`
+- 健康检查：`bidvolt-healthcheck`（PG/API/alembic head/worker/clamd/持久卷/磁盘/读写全覆盖）
+- 升级代码：**`bidvolt-upgrade [tag|commit]`**（预检 → 备份 → 新 venv → 停 app/worker → 迁移 →
+  原子切换 → 冒烟 → 失败自动回滚；发布记录 `/var/log/bidvolt/releases.log`；不重启 PostgreSQL）。
+  已废弃 `git pull && pip install && supervisorctl restart all` 的无保护升级方式。
 - **云能力开关**：`DATA_CLASSIFICATION_CONFIRMED`/`CLOUD_LLM_ENABLED`/`SEARCH_ENABLED` 修改
   `/data/bidvolt/.env` 后，需重启容器（supervisor 继承启动时的环境变量，优先级高于 .env）；
   或把开关固定进 supervisor `environment=` 后 `update`。
+- **任务中断恢复**：worker 带租约领取任务（`task.lease_*`，300s + 心跳续期）；进程被强杀后租约
+  过期自动重新入队，重试耗尽进入 FAILED_TERMINAL 并留审计，不再永久卡 RUNNING。
 
 ## 6. 环境变量（.env，禁止提交 git）
 
@@ -177,6 +183,11 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 - 文件安全：隔离区 → magic bytes → 强制 ClamAV → 受限进程解析；压缩包限额/符号链接拒绝
 - 出站：搜索前 DLP 脱敏（手机号/证件号/银行卡/信用代码）+ 域名白名单
 - SSE/日志：白名单事件，不输出思维链/工具参数/凭据/错误栈
+- 发布门禁（Issue #3）：gitleaks secret 扫描（pre-commit 暂存区 + pre-push 全历史 + CI，
+  全历史扫描 2026-08-14 通过）；生产配置 fail-fast（`BIDVOLT_ENV=production` 拒绝弱口令/
+  占位 JWT_SECRET/不足 32 位内部令牌/SQLite/关闭 ClamAV）；`.env` 权限由脚本强制 0600；
+  数据库口令不进入进程 argv（临时 SQL 文件 + psql 变量）
+- 任务可靠性：worker 租约 + 心跳 + 过期回收（A-4 扩展）；`bidvolt-upgrade` 带备份/迁移/回滚
 
 ## 9. Hermes Agent（已部署）
 
@@ -203,6 +214,11 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 # 本地（SQLite）
 .venv/bin/pytest -q
 
+# lint / 敏感信息扫描（提交前门禁，CI 同套）
+.venv/bin/ruff check app bidvolt_mcp tests
+gitleaks detect --source . --log-opts=--all --no-banner
+pre-commit install && pre-commit install --hook-type pre-push   # 可选：本地钩子
+
 # 容器（PostgreSQL + RLS，加载 .env）
 bash /tmp/run_container_tests.sh -q
 
@@ -214,13 +230,17 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
-当前基线：本地 170 passed；容器 171 passed（PG+RLS）。
+当前基线：本地 206 passed / 1 skipped（含生产 fail-fast 与任务租约用例）；容器（PG+RLS）待服务器复跑。
 
 ## 11. 已知限制 / 路线图
 
 - Hermes 任务级授权：当前 MCP 调用使用服务账号 JWT；生产需接入"任务创建 → capability token →
-  Hermes 执行 → 白名单进度"完整闭环
-- 在线 Word/Excel 编辑会话、项目助手会话历史、快照列表/明细等见
-  [Issue #2 功能清单](https://github.com/zhangsheng377/BidVolt/issues/2)
+  Hermes 执行 → 白名单进度"完整闭环（后端 capability 校验已就绪）
+- Issue #3 发布门禁：本地已落地 gitleaks/pre-commit/CI、配置 fail-fast、租约恢复、`bidvolt-upgrade`
+  升级脚本；剩余待办为在真实服务器完成"部署→重启→健康检查→失败回滚→备份恢复"演练
+  （见 https://github.com/zhangsheng377/BidVolt/issues/3）
+- Issue #4 知识检索：历史标书/方案/行业规范的检索能力尚未评估
+  （见 https://github.com/zhangsheng377/BidVolt/issues/4）
 - AnySearch 中文检索质量受上游服务限制；匿名额度 50 次/天，正式 Key（1000 次/天）由运维配置
 - 扫描版 OFD/图片走视觉模型兜底（qwen-vl），需在业务侧确认视觉门禁与授权
+- ruff 基线收窄为 E/F/I/UP 安全规则集；B008/RUF012 等风格类为后续债务（见 `.ruff.toml`）

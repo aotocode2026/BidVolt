@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api import (
-    auth,
     audit,
+    auth,
     chat,
     deliverables,
     editor,

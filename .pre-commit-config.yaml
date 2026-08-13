@@ -1,0 +1,40 @@
+# BidVolt 提交前/推送前门禁（Issue #3）
+# 安装：pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
+# 说明：
+#   - pre-commit：暂存区敏感信息扫描 + 基础卫生（每次 commit 前）
+#   - pre-push：全历史 secret 扫描 + 全量测试（每次 push 前；pytest 约 2 分钟）
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks # 扫描暂存区（gitleaks protect --staged）
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: debug-statements
+
+  - repo: local
+    hooks:
+      - id: gitleaks-history
+        name: gitleaks 全历史扫描
+        entry: gitleaks detect --source . --log-opts=--all --no-banner
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: pytest
+        name: pytest 全量（SQLite）
+        entry: python -m pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -1,0 +1,50 @@
+name: CI
+
+# Issue #3 发布门禁：提交前敏感信息扫描（全历史）+ 依赖安装检查 + lint + 全量测试。
+# 本地亦可通过 pre-commit（见 .pre-commit-config.yaml）在提交前执行同一批检查。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: gitleaks（全历史敏感信息扫描）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 必须全量历史
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} # 如需企业规则；社区规则可不配
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+
+  tests:
+    name: pytest（SQLite）+ ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Syntax check
+        run: python -m compileall -q app bidvolt_mcp
+      - name: Lint (ruff)
+        run: ruff check app bidvolt_mcp tests
+      - name: Diff hygiene (whitespace)
+        run: git diff --check HEAD^ HEAD
+      - name: Unit & module tests (SQLite)
+        run: pytest -q

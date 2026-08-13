@@ -54,7 +54,7 @@ def test_fact_confirm_and_correct_with_revisions(client):
     h, eid = _setup(client)
     fid = _seed_fact(eid)
 
-    facts = client.get(f"/api/v1/enterprise/assets/99001/facts", headers=h)
+    facts = client.get("/api/v1/enterprise/assets/99001/facts", headers=h)
     assert facts.status_code == 200
     assert facts.json()["items"][0]["fact_id"] == fid
 
@@ -103,7 +103,7 @@ def test_enterprise_ingest_queue(client):
     up = client.post(
         "/api/v1/files/upload",
         data={"target": "enterprise"},
-        files=[("files", ("营业执照.txt", "营业执照".encode("utf-8"), "text/plain"))],
+        files=[("files", ("营业执照.txt", "营业执照".encode(), "text/plain"))],
         headers=h,
     )
     assert up.status_code == 200

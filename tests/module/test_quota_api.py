@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -44,7 +43,7 @@ def test_upload_respects_storage_quota(client):
     r = client.post(
         "/api/v1/files/upload",
         data={"target": "enterprise"},
-        files=[("files", ("材料.txt", "超过配额的十字节内容".encode("utf-8"), "text/plain"))],
+        files=[("files", ("材料.txt", "超过配额的十字节内容".encode(), "text/plain"))],
         headers=h,
     )
     assert r.status_code == 413

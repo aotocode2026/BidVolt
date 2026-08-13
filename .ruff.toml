@@ -1,0 +1,11 @@
+# ruff 基线（Issue #3 CI 门禁）：先收窄到安全规则集，避免一次性整改全部历史债。
+# 已排除的规则为后续债务：B008（FastAPI 依赖注入默认参数模式）、
+# RUF012（可变类默认值）、PLW/SIM/DTZ/C4 等风格类，逐批整改后逐步放开。
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[lint.per-file-ignores]
+"alembic/versions/*.py" = ["E501"]

@@ -115,7 +115,7 @@ def test_re_evaluate_improves_score_after_material(client):
     client.post(
         "/api/v1/files/upload",
         data={"target": "project", "project_id": str(pid)},
-        files=[("files", ("补充材料.txt", io.BytesIO("资质证书".encode("utf-8")), "text/plain"))],
+        files=[("files", ("补充材料.txt", io.BytesIO("资质证书".encode()), "text/plain"))],
         headers=h,
     )
     re = client.post(
@@ -140,7 +140,7 @@ def test_unconfirmed_material_does_not_change_score(client):
     client.post(
         "/api/v1/files/upload",
         data={"target": "project", "project_id": str(pid)},
-        files=[("files", ("补充材料.txt", io.BytesIO("资质证书".encode("utf-8")), "text/plain"))],
+        files=[("files", ("补充材料.txt", io.BytesIO("资质证书".encode()), "text/plain"))],
         headers=h,
     )
     re = client.post(

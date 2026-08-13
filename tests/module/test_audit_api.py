@@ -14,7 +14,7 @@ def _register(client, email, ent):
 
 def test_audit_logs_tenant_scoped_and_permission_gated(client):
     ha = _register(client, "audit-a@test.com", "审计企业A")
-    hb = _register(client, "audit-b@test.com", "审计企业B")
+    _register(client, "audit-b@test.com", "审计企业B")  # 企业 B：后续断言其看不到 A 的日志
 
     pid = client.post("/api/v1/projects", json={"name": "P"}, headers=ha).json()["project_id"]
     # 默认用户无 audit.view

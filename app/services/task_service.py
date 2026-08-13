@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import TaskStatus, TaskType
 from app.models.task import Task
 
 MAX_RETRIES = 3
+# 任务租约（Issue #3：worker 中断后任务不得永久卡在 RUNNING）
+LEASE_SECONDS = 300  # 领取后最长独占时间；到期未续期视为 worker 失联
+HEARTBEAT_INTERVAL = 60  # 执行期间心跳续期间隔（< LEASE_SECONDS 的一半）
+HEARTBEAT_LOCK_TIMEOUT_MS = 2000  # 心跳 UPDATE 等行锁上限（长 handler 持锁时放弃本轮，下轮再试）
+
+
+def _aware(dt: datetime | None) -> datetime:
+    """SQLite 读回的 datetime 可能为 naive，统一按 UTC 解释以便比较。"""
+    if dt is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 async def create_task(
@@ -71,8 +86,94 @@ def public_event(task: Task) -> dict:
     return event
 
 
-async def run_task(session: AsyncSession, task: Task) -> Task:
-    """执行单个任务（handler 由 HANDLERS 注册）。"""
+async def reclaim_stale(session: AsyncSession) -> bool:
+    """回收租约过期的 RUNNING 任务（worker 被强杀/卡死后恢复，避免任务永久卡住）。
+
+    过期任务按重试计次：未达上限 → 重新入队（QUEUED，清租约）；达上限 → FAILED_TERMINAL。
+    返回是否有任务被回收（有则调用方可立即再领取）。
+    """
+    now = datetime.now(UTC)
+    candidates = (
+        await session.scalars(
+            select(Task)
+            .where(
+                Task.status == int(TaskStatus.RUNNING),
+                Task.lease_expires_at.is_not(None),
+            )
+            .order_by(Task.lease_expires_at.asc())
+            .limit(10)
+        )
+    ).all()
+    for task in candidates:
+        if _aware(task.lease_expires_at) >= now:
+            continue  # 租约仍有效（持有 worker 正常执行中）
+        task.retry_count += 1
+        if task.retry_count >= MAX_RETRIES:
+            task.status = int(TaskStatus.FAILED_TERMINAL)
+            task.error = {"message": "worker 中断且重试耗尽（租约过期回收）"}
+            task.finished_at = now
+            task.progress = {
+                "phase": task.task_type,
+                "status": "failed",
+                "percent": 100,
+                "hint": "执行进程中断且重试耗尽，请人工处理",
+            }
+        else:
+            task.status = int(TaskStatus.QUEUED)
+            task.progress = {
+                "phase": task.task_type,
+                "status": "retrying",
+                "percent": 5,
+                "hint": f"执行进程中断，租约过期后重新入队（{task.retry_count}/{MAX_RETRIES}）",
+            }
+        task.lease_owner = None
+        task.lease_expires_at = None
+        await session.commit()
+        return True
+    return False
+
+
+async def _heartbeat_loop(lease_owner: str, task: Task, session_factory) -> None:
+    """独立会话续期租约：不经过 handler 的事务，避免提交半成品写入。"""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        now = datetime.now(UTC)
+        hb = None
+        try:
+            hb = session_factory()
+            async with hb as session:
+                # PG 下设置短 lock_timeout：handler 长时间持行锁时放弃本轮，避免心跳排队
+                if session.bind is not None and session.bind.dialect.name == "postgresql":
+                    await session.execute(text(f"SET LOCAL lock_timeout = '{HEARTBEAT_LOCK_TIMEOUT_MS}ms'"))
+                await session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.lease_owner == lease_owner,
+                        Task.status == int(TaskStatus.RUNNING),
+                    )
+                    .values(
+                        lease_expires_at=now + timedelta(seconds=LEASE_SECONDS),
+                        last_heartbeat_at=now,
+                    )
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001 心跳失败不致命，下一轮重试（SQLite 锁/PG 锁冲突）
+            pass
+
+
+async def run_task(
+    session: AsyncSession,
+    task: Task,
+    *,
+    lease_owner: str | None = None,
+    session_factory=None,
+) -> Task:
+    """执行单个任务（handler 由 HANDLERS 注册）。
+
+    lease_owner 提供时：领取即置租约（防 worker 中断后任务永久卡 RUNNING），
+    session_factory 提供时额外启动心跳续期（须为可创建独立会话的工厂，如 SessionLocal）。
+    """
     is_pg = session.bind is not None and session.bind.dialect.name == "postgresql"
     if is_pg:
         # RLS：worker 无用户上下文，按任务租户显式设置（会话级，跨提交生效）
@@ -80,17 +181,25 @@ async def run_task(session: AsyncSession, task: Task) -> Task:
             text("SELECT set_config('app.enterprise_id', :eid, false)"),
             {"eid": str(task.enterprise_id)},
         )
+    now = datetime.now(UTC)
     task.status = int(TaskStatus.RUNNING)
     task.progress = {"phase": task.task_type, "status": "running", "percent": 10, "current_work": f"开始执行 {task.task_type}"}
+    if lease_owner is not None:
+        task.lease_owner = lease_owner
+        task.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
+        task.last_heartbeat_at = now
+    heartbeat = None
     try:
         await session.commit()
+        if lease_owner is not None and session_factory is not None:
+            heartbeat = asyncio.create_task(_heartbeat_loop(lease_owner, task, session_factory))
         handler = HANDLERS.get(task.task_type)
         if handler is None:
             raise NotImplementedError(f"任务类型未实现：{task.task_type}")
         await handler(session, task)
         task.status = int(TaskStatus.DONE)
         task.progress = {"phase": task.task_type, "status": "done", "percent": 100, "summary": "完成"}
-        task.finished_at = datetime.now(timezone.utc)
+        task.finished_at = datetime.now(UTC)
     except Exception as exc:  # noqa: BLE001
         # 回滚 handler 的部分写入，避免失败任务产生副作用（A-4 单事务原子性）
         await session.rollback()
@@ -99,12 +208,33 @@ async def run_task(session: AsyncSession, task: Task) -> Task:
         if task.retry_count >= MAX_RETRIES:
             task.status = int(TaskStatus.FAILED_TERMINAL)
             task.error = {"message": str(exc)}
-            task.finished_at = datetime.now(timezone.utc)
+            task.finished_at = datetime.now(UTC)
             task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
         else:
             task.status = int(TaskStatus.QUEUED)
             task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
     finally:
+        if heartbeat is not None:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+        if task.status == int(TaskStatus.RUNNING) and lease_owner is not None:
+            # 执行被中断（取消/停机），未走成功/失败路径：按失败计次，避免永久卡 RUNNING
+            await session.rollback()
+            task.retry_count += 1
+            now = datetime.now(UTC)
+            if task.retry_count >= MAX_RETRIES:
+                task.status = int(TaskStatus.FAILED_TERMINAL)
+                task.error = {"message": "执行被中断且重试耗尽"}
+                task.finished_at = now
+                task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "执行被中断且重试耗尽，请人工处理"}
+            else:
+                task.status = int(TaskStatus.QUEUED)
+                task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"执行被中断，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
+        # 终态/重新入队后释放租约，避免过期后被重复回收
+        if lease_owner is not None and task.lease_owner == lease_owner:
+            task.lease_owner = None
+            task.lease_expires_at = None
         if is_pg:
             # 复位租户上下文，避免连接池复用泄漏
             await session.execute(
@@ -138,8 +268,8 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     from sqlalchemy import select as sa_select
 
     from app.models.doc import DocBlock
-    from app.services.llm import LLMClient, extract_json, llm_enabled
     from app.services import requirement_service
+    from app.services.llm import LLMClient, extract_json, llm_enabled
 
     if llm_enabled():
         blocks = (

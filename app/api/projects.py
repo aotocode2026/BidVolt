@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
-from app.constants import Permission, PROJECT_TRANSITIONS, ProjectStatus
+from app.api.deps import UserContext, get_current_user, require_permission
+from app.constants import PROJECT_TRANSITIONS, Permission, ProjectStatus
 from app.db import get_session
 from app.models.project import Project
 from app.schemas.project import (
@@ -52,7 +52,7 @@ async def create_project(
     )
     session.add(project)
     await session.flush()
-    project.updated_at = datetime.now(timezone.utc)
+    project.updated_at = datetime.now(UTC)
     await write_audit(
         session,
         enterprise_id=user.enterprise_id,
@@ -131,7 +131,7 @@ async def update_project(
         object_type="project",
         object_id=project.id,
     )
-    project.updated_at = datetime.now(timezone.utc)
+    project.updated_at = datetime.now(UTC)
     await session.commit()
     return _to_response(project)
 
@@ -186,6 +186,6 @@ async def update_status(
         object_id=project.id,
         payload={"from": current.value, "to": target.value},
     )
-    project.updated_at = datetime.now(timezone.utc)
+    project.updated_at = datetime.now(UTC)
     await session.commit()
     return _to_response(project)

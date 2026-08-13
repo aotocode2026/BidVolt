@@ -32,7 +32,7 @@ def test_mcp_call_with_allowed_tool_works(client):
     h, pid, task = _setup(client)
     cap = task["capability_token"]
     r = client.get(
-        "/api/v1/files/projects/%d/materials" % pid,
+        f"/api/v1/files/projects/{pid}/materials",
         headers={**h, "X-Bidvolt-Cap": cap},
     )
     assert r.status_code == 200
@@ -71,13 +71,13 @@ def test_other_enterprise_task_token_cannot_read_our_project(client):
     ).json()
     # B \u7684 token \u8bfb A \u7684\u9879\u76ee\uff1a\u6309 token \u79df\u6237(2) \u8fc7\u6ee4 \u2192 \u7a7a\u5217\u8868\uff0c\u4e0d\u6cc4\u6f0f A \u6570\u636e
     r = client.get(
-        "/api/v1/files/projects/%d/materials" % pid,
+        f"/api/v1/files/projects/{pid}/materials",
         headers={"X-Bidvolt-Cap": task2["capability_token"]},
     )
     assert r.status_code == 403
     # B \u7684 token \u8bfb\u81ea\u5df1\u7684\u9879\u76ee\uff1a\u6b63\u5e38
     r2 = client.get(
-        "/api/v1/files/projects/%d/materials" % pid2,
+        f"/api/v1/files/projects/{pid2}/materials",
         headers={"X-Bidvolt-Cap": task2["capability_token"]},
     )
     assert r2.status_code == 200
@@ -86,7 +86,7 @@ def test_other_enterprise_task_token_cannot_read_our_project(client):
 def test_user_jwt_without_cap_still_works(client):
     h, pid, _ = _setup(client)
     r = client.get(
-        "/api/v1/files/projects/%d/materials" % pid,
+        f"/api/v1/files/projects/{pid}/materials",
         headers=h,
     )
     assert r.status_code == 200
@@ -103,11 +103,11 @@ def test_capability_tampered_rejected(client):
 
 def test_capability_invalid_after_task_terminal(client):
     """任务结束后授权上下文失效：DONE 状态 token 被拒（A-2）。"""
+    import os
+
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.services.task_service import run_next_task
-
-    import os
 
     database_url = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./.test_bidvolt.db")
     if "postgresql" in database_url and "+asyncpg" not in database_url:
@@ -122,7 +122,7 @@ def test_capability_invalid_after_task_terminal(client):
     cap = task["capability_token"]
     # 任务仍排队时可用
     r0 = client.get(
-        "/api/v1/files/projects/%d/materials" % pid,
+        f"/api/v1/files/projects/{pid}/materials",
         headers={"X-Bidvolt-Cap": cap},
     )
     assert r0.status_code == 200
@@ -151,7 +151,7 @@ def test_capability_invalid_after_task_terminal(client):
     engine.sync_engine.dispose()
     # 终态后 token 失效
     r1 = client.get(
-        "/api/v1/files/projects/%d/materials" % pid,
+        f"/api/v1/files/projects/{pid}/materials",
         headers={"X-Bidvolt-Cap": cap},
     )
     assert r1.status_code == 403

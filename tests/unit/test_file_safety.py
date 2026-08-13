@@ -67,7 +67,7 @@ def test_validate_upload_rejects_unknown_ext():
 
 
 def test_validate_upload_accepts_txt():
-    mime, ext = file_safety.validate_upload("材料.txt", "招标公告内容".encode("utf-8"))
+    mime, ext = file_safety.validate_upload("材料.txt", "招标公告内容".encode())
     assert mime == "text/plain"
     assert ext == ".txt"
 

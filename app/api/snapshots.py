@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_permission, UserContext
+from app.api.deps import UserContext, require_permission
 from app.config import settings
 from app.constants import Permission
 from app.db import get_session
@@ -140,7 +140,7 @@ async def _build_manifest(
             "review_model": settings.minimax_model,
             "vision_model": settings.dashscope_vl_model,
         },
-        "built_at": datetime.now(timezone.utc).isoformat(),
+        "built_at": datetime.now(UTC).isoformat(),
     }
 
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
-from jose import JWTError, jwt
+from jose import jwt
 
 from app.config import settings
 
@@ -26,7 +26,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 def _token_payload(
     user_id: int, enterprise_id: int, permissions: list[str], token_type: str, minutes: int
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "sub": str(user_id),
         "ent": enterprise_id,
@@ -61,7 +61,7 @@ def hash_refresh_token(raw: str) -> str:
 def validate_refresh_token(raw: str, token_hash: str, expires_at: datetime) -> bool:
     if hash_refresh_token(raw) != token_hash:
         return False
-    if datetime.now(timezone.utc) > ensure_aware(expires_at):
+    if datetime.now(UTC) > ensure_aware(expires_at):
         return False
     return True
 
@@ -69,5 +69,5 @@ def validate_refresh_token(raw: str, token_hash: str, expires_at: datetime) -> b
 def ensure_aware(dt: datetime) -> datetime:
     """SQLite 返回 naive datetime；统一转 aware 再比较。"""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt

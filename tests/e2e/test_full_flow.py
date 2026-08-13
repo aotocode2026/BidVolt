@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import io
+import os
 import shutil
 import socket
 import subprocess
@@ -114,7 +114,7 @@ def test_full_business_flow(live_server):
         upload = c.post(
             "/api/v1/files/upload",
             data={"target": "project", "project_id": str(pid)},
-            files=[("files", ("招标文件.txt", "资格要求：电力施工总承包三级".encode("utf-8"), "text/plain"))],
+            files=[("files", ("招标文件.txt", "资格要求：电力施工总承包三级".encode(), "text/plain"))],
             headers=headers,
         )
         assert upload.json()["files"][0]["status"] == 3

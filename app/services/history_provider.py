@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from hashlib import sha256
-import json
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.quote import HistoryPriceSnapshot

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import io
-
 
 def _register(client, email):
     r = client.post(
@@ -23,7 +21,7 @@ def test_cross_tenant_idor(client):
     upload = client.post(
         "/api/v1/files/upload",
         data={"target": "project", "project_id": str(pid)},
-        files=[("files", ("材料.txt", "秘密内容".encode("utf-8"), "text/plain"))],
+        files=[("files", ("材料.txt", "秘密内容".encode(), "text/plain"))],
         headers=ha,
     )
     file_id = upload.json()["files"][0]["file_id"]
@@ -120,7 +118,7 @@ def test_same_enterprise_cross_project_isolated(client):
         json={"project_id": pid1, "deliverable_type": 1, "title": "商务标1"},
         headers=h,
     ).json()["deliverable_id"]
-    req1 = client.post(
+    client.post(
         f"/api/v1/projects/{pid1}/requirements/upsert",
         json={"requirements": [{"req_type": "qualification", "content": "一级资质", "coordinates": [{"file_id": 1}]}]},
         headers=h,
@@ -154,7 +152,7 @@ def test_cross_tenant_provider_lock_and_ai_diff(client):
         headers=ha,
     )
     diff_id = diff.json()["diff_id"]
-    ev = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=ha).json()
+    client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=ha).json()
 
     # 跨企业：AI diff 读取、编辑锁、Provider 配置均不可访问
     assert client.get(f"/api/v1/deliverables/{did}/ai-edit/{diff_id}", headers=hb).status_code == 404

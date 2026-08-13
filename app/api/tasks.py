@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import UserContext, require_permission
 from app.constants import Permission, TaskType
 from app.db import get_session
 from app.models.task import Task

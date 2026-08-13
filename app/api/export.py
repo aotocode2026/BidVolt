@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import io
 import json
 import zipfile
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_permission, UserContext
+from app.api.deps import UserContext, require_permission
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import Deliverable
@@ -146,7 +146,7 @@ async def export_project(
         )
     job.status = 2
     job.files = files
-    job.finished_at = datetime.now(timezone.utc)
+    job.finished_at = datetime.now(UTC)
     await session.commit()
     return {"job_id": job.id, "status": job.status, "files": files}
 

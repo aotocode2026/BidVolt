@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext
-from app.config import settings
 from app.models.doc import DocBlock
 from app.models.enterprise_domain import EnterpriseAsset, EnterpriseAssetRevision
 from app.models.file import ArchiveJob, FileObject
 from app.models.project import Project
 from app.models.project_material import ProjectEvent, ProjectMaterial, ProjectMaterialRevision
 from app.services import file_safety, parser
-from app.services.quota_service import QuotaExceeded, check_storage
+from app.services.quota_service import check_storage
 from app.services.storage import StorageProvider
 
 storage = StorageProvider()

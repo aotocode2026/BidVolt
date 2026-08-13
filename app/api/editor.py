@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_permission, UserContext
+from app.api.deps import UserContext, require_permission
 from app.constants import Permission
 from app.db import get_session
 from app.models.deliverable import Deliverable
@@ -62,8 +62,8 @@ async def _active_session(
     if row.lease_expires_at:
         expires_at = row.lease_expires_at
         if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at < datetime.now(UTC):
             row.status = 4
             await session.commit()
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="会话租约已过期")
@@ -87,7 +87,7 @@ async def create_editor_session(
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该成果已有进行中的编辑会话")
     _, content = await deliverable_service.get_version_content(session, d.id, d.current_version_no)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     row = EditorSession(
         enterprise_id=user.enterprise_id,
         project_id=d.project_id,
@@ -195,7 +195,7 @@ async def save_checkpoint(
     content = body.get("content")
     if not isinstance(content, dict):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="content 必须是对象")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     row.checkpoint = content
     row.last_activity_at = now
     row.lease_expires_at = now + timedelta(minutes=LEASE_MINUTES)
@@ -233,7 +233,7 @@ async def complete_editor_session(
     row.status = 2
     row.completed_version_no = version.version_no
     row.checkpoint = content
-    row.last_activity_at = datetime.now(timezone.utc)
+    row.last_activity_at = datetime.now(UTC)
     await write_audit(
         session,
         enterprise_id=user.enterprise_id,

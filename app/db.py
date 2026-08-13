@@ -16,3 +16,9 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI 依赖：每个请求一个会话。"""
     async with SessionLocal() as session:
         yield session
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI 依赖：每个请求一个会话。"""
+    async with SessionLocal() as session:
+        yield session
