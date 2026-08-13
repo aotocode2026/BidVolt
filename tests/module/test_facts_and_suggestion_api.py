@@ -94,6 +94,32 @@ def test_fact_cross_enterprise_denied(client):
     assert client.put(f"/api/v1/enterprise/facts/{fid}", json={"confirmed": True}, headers=h2).status_code == 404
 
 
+def test_enterprise_ingest_queue(client):
+    r = client.post(
+        "/api/v1/auth/register",
+        json={"email": "q@test.com", "password": "Abc12345", "enterprise_name": "队列企业"},
+    )
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    up = client.post(
+        "/api/v1/files/upload",
+        data={"target": "enterprise"},
+        files=[("files", ("营业执照.txt", "营业执照".encode("utf-8"), "text/plain"))],
+        headers=h,
+    )
+    assert up.status_code == 200
+    assets = client.get("/api/v1/enterprise/assets", headers=h).json()
+    assert assets
+    ing = client.post(
+        "/api/v1/enterprise/ingest",
+        json={"asset_ids": [assets[0]["asset_id"]]},
+        headers=h,
+    )
+    assert ing.status_code == 202
+    lst = client.get("/api/v1/enterprise/ingest", headers=h)
+    assert lst.status_code == 200
+    assert any(i["ingest_id"] == ing.json()["ingest_id"] for i in lst.json()["items"])
+
+
 def test_review_suggestion_override(client):
     r = client.post(
         "/api/v1/auth/register",

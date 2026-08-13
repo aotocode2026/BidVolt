@@ -152,16 +152,26 @@ async def task_stream(
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
+    terminal_events = {3: "done", 5: "cancelled", 6: "failed"}
+
     async def generate():
-        last_event: dict | None = None
+        # 初始快照：支持刷新/断线重连后先拿到当前状态（#18）
+        await session.refresh(task)
+        snapshot = {"task_id": task.id, "status": task.status, "progress": public_event(task)}
+        yield f"event: snapshot\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
+        if task.status in terminal_events:
+            yield f"event: {terminal_events[task.status]}\ndata: {json.dumps({'task_id': task.id, 'status': task.status}, ensure_ascii=False)}\n\n"
+            return
+
+        last_event = snapshot["progress"]
         while True:
             await session.refresh(task)
             event = public_event(task)
             if event != last_event:
                 yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 last_event = event
-            if task.status in (3, 6):  # done / 终态失败
-                yield f"event: done\ndata: {json.dumps({'task_id': task.id}, ensure_ascii=False)}\n\n"
+            if task.status in terminal_events:
+                yield f"event: {terminal_events[task.status]}\ndata: {json.dumps({'task_id': task.id, 'status': task.status}, ensure_ascii=False)}\n\n"
                 break
             await asyncio.sleep(1)
 

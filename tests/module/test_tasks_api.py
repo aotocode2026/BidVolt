@@ -103,7 +103,8 @@ def test_stream_whitelist_event(client):
 
     resp = client.get(f"/api/v1/tasks/{task_id}/stream", headers=h)
     assert "text/event-stream" in resp.headers["content-type"]
-    assert "event: progress" in resp.text
+    assert "event: snapshot" in resp.text
+    assert "event: done" in resp.text
     assert "internal_id" not in resp.text
 
 
@@ -143,6 +144,6 @@ def test_stream_terminal_task_emits_progress_and_done(client):
     engine.sync_engine.dispose()
 
     resp = client.get(f"/api/v1/tasks/{task_id}/stream", headers=h)
-    assert "event: progress" in resp.text
+    assert "event: snapshot" in resp.text
     assert "event: done" in resp.text
     assert "internal_id" not in resp.text

@@ -541,6 +541,34 @@ async def fact_revisions(
     }
 
 
+@router.get("/ingest")
+async def list_ingest_tasks(
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """企业资料处理队列（Issue #2 #21：刷新后恢复活动/历史处理任务）。"""
+    rows = (
+        await session.scalars(
+            select(EnterpriseIngestionTask)
+            .where(EnterpriseIngestionTask.enterprise_id == user.enterprise_id)
+            .order_by(EnterpriseIngestionTask.id.desc())
+            .limit(100)
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "ingest_id": r.id,
+                "task_id": r.task_id,
+                "asset_ids": r.asset_ids,
+                "status": r.status,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.get("/ingest/{task_id}")
 async def ingest_status(
     task_id: int,

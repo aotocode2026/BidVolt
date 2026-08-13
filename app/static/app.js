@@ -164,6 +164,7 @@ function panelMaterial() {
       <input type="file" id="m-file">
       <button onclick="uploadFile()">上传</button>
       <button class="ghost" onclick="ingestAssets()">企业资料导入分类</button>
+      <button class="ghost" onclick="loadIngestQueue()">处理队列</button>
     </div>
     <div class="row"><button class="ghost" onclick="parseProject()">触发招标解析任务</button>
       <span class="muted">当前项目：#${projectId ?? "未选"}</span></div>
@@ -259,6 +260,14 @@ async function ingestAssets() {
     log(`导入分类：${JSON.stringify(data.classified)}`, "ok");
     refreshAssets();
   } catch (e) { log(`导入失败：${e}`, "err"); }
+}
+
+async function loadIngestQueue() {
+  try {
+    const data = await api("/enterprise/ingest");
+    $("m-extra").textContent = JSON.stringify(data.items, null, 2);
+    log(`处理队列 ${data.items.length} 条`, "ok");
+  } catch (e) { log(`处理队列失败：${e}`, "err"); }
 }
 
 async function parseProject() {
