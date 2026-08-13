@@ -208,6 +208,8 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_cloud_live.py            # AnySearch 匿名 + MiniMax LLM
 .venv/bin/python scripts/smoke_ofd_live.py --file <真实OFD>  # 真实 OFD 上传解析
 .venv/bin/python scripts/fetch_ofd_samples.py           # 下载真实 OFD 样本（复现用）
+.venv/bin/python scripts/smoke_pg_rls.py                # 真实 PG：RLS 隔离 + capability + IDOR
+.venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
 当前基线：本地 170 passed；容器 171 passed（PG+RLS）。
