@@ -85,6 +85,42 @@ def test_calculate_strategies_ai_suggest_and_apply(client):
     assert versions.json()[0]["version_type"] == 5  # 报价应用
 
 
+def test_apply_validates_project_and_deliverable_type(client):
+    h, pid, _ = _setup(client)
+    calc_id = client.post(
+        "/api/v1/quotes/calculate",
+        json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1, "project_id": pid},
+        headers=h,
+    ).json()["calc_id"]
+
+    # 非报价单成果 → 409
+    biz = client.post(
+        "/api/v1/deliverables",
+        json={"project_id": pid, "deliverable_type": 1, "title": "商务标"},
+        headers=h,
+    ).json()["deliverable_id"]
+    wrong_type = client.post(
+        "/api/v1/quotes/apply",
+        json={"calc_id": calc_id, "deliverable_id": biz, "expected_version_no": 0},
+        headers=h,
+    )
+    assert wrong_type.status_code == 409
+
+    # 另一项目的报价单 → 409
+    pid2 = client.post("/api/v1/projects", json={"name": "P2"}, headers=h).json()["project_id"]
+    other_quote = client.post(
+        "/api/v1/deliverables",
+        json={"project_id": pid2, "deliverable_type": 3, "title": "报价单"},
+        headers=h,
+    ).json()["deliverable_id"]
+    wrong_project = client.post(
+        "/api/v1/quotes/apply",
+        json={"calc_id": calc_id, "deliverable_id": other_quote, "expected_version_no": 0},
+        headers=h,
+    )
+    assert wrong_project.status_code == 409
+
+
 def test_apply_requires_quote_apply_permission(client):
     h, pid, did = _setup(client)
     calc = client.post(

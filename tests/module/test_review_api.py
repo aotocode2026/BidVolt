@@ -50,6 +50,26 @@ def test_evaluate_partial_score(client):
     assert abs(r["total_score"] - 33.33) < 0.01
 
 
+def test_review_run_list_and_detail(client):
+    h, pid = _setup(client)
+    _create_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务"}]})
+    ev = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h).json()
+    run_id = ev["run_id"]
+
+    runs = client.get(f"/api/v1/projects/{pid}/reviews", headers=h)
+    assert runs.status_code == 200
+    assert any(r["run_id"] == run_id and r["snapshot_id"] == ev["snapshot_id"] for r in runs.json()["items"])
+
+    detail = client.get(f"/api/v1/projects/{pid}/reviews/{run_id}", headers=h)
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["run_id"] == run_id
+    assert body["snapshot_id"] == ev["snapshot_id"]
+    assert body["provider"] and body["provider"]["provider_id"]
+    assert body["score"]["score_id"] == ev["score_id"]
+    assert len(body["items"]) == 3
+
+
 def test_confirm_batch_and_replay(client):
     h, pid = _setup(client)
     body = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h).json()

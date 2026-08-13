@@ -235,6 +235,10 @@ async def apply_quote(
     deliverable = await session.get(Deliverable, body["deliverable_id"])
     if deliverable is None or deliverable.enterprise_id != user.enterprise_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="报价单成果不存在")
+    if deliverable.deliverable_type != 3:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="目标成果不是报价单")
+    if deliverable.project_id != calc.project_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="测算与报价单成果不属于同一项目")
     suggested = (calc.strategy_results or {}).get("win", {}).get("suggested_price", calc.result["suggested"])
     sheet_model = {
         "type": "sheet",

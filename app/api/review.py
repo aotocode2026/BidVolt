@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, require_capability, require_permission, UserContext
 from app.constants import Permission
 from app.db import get_session
-from app.models.review import ReviewItem, ReviewProvider, ScoreRecord
+from app.models.review import ReviewItem, ReviewProvider, ReviewRun, ScoreRecord
 from app.services import review_service
 from app.services.audit import write_audit
 
@@ -63,6 +63,123 @@ async def latest_score(
         "missing_count": score.missing_count,
         "improvable": float(score.improvable) if score.improvable is not None else None,
         "detail": score.detail,
+    }
+
+
+@router.get("/{project_id}/reviews")
+async def list_review_runs(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.SCORE_VIEW)),
+) -> dict:
+    """评审运行列表（Issue #2 #26/#28：按 run 恢复上下文）。"""
+    runs = (
+        await session.scalars(
+            select(ReviewRun)
+            .where(
+                ReviewRun.enterprise_id == user.enterprise_id,
+                ReviewRun.project_id == project_id,
+            )
+            .order_by(ReviewRun.id.desc())
+            .limit(100)
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "run_id": r.id,
+                "provider_id": r.provider_id,
+                "snapshot_id": r.snapshot_id,
+                "status": r.status,
+                "provider_raw_hash": r.provider_raw_hash,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in runs
+        ]
+    }
+
+
+@router.get("/{project_id}/reviews/{run_id}")
+async def review_run_detail(
+    project_id: int,
+    run_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.SCORE_VIEW)),
+) -> dict:
+    """按 run_id 恢复完整评审上下文：provider + score + 逐条 items + snapshot_id。"""
+    run = await session.scalar(
+        select(ReviewRun).where(
+            ReviewRun.id == run_id,
+            ReviewRun.enterprise_id == user.enterprise_id,
+            ReviewRun.project_id == project_id,
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="评审运行不存在")
+    provider = await session.get(ReviewProvider, run.provider_id) if run.provider_id else None
+    score = await session.scalar(
+        select(ScoreRecord)
+        .where(
+            ScoreRecord.review_run_id == run.id,
+            ScoreRecord.enterprise_id == user.enterprise_id,
+            ScoreRecord.project_id == project_id,
+        )
+        .order_by(ScoreRecord.id.desc())
+        .limit(1)
+    )
+    items = (
+        await session.scalars(
+            select(ReviewItem).where(
+                ReviewItem.review_run_id == run.id,
+                ReviewItem.enterprise_id == user.enterprise_id,
+                ReviewItem.project_id == project_id,
+            )
+        )
+    ).all()
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "snapshot_id": run.snapshot_id,
+        "provider": (
+            {
+                "provider_id": provider.id,
+                "provider_type": provider.provider_type,
+                "provider_code": provider.provider_code,
+                "provider_version": provider.provider_version,
+                "name": provider.name,
+            }
+            if provider
+            else None
+        ),
+        "score": (
+            {
+                "score_id": score.id,
+                "total_score": float(score.total_score) if score.total_score is not None else None,
+                "missing_count": score.missing_count,
+                "improvable": float(score.improvable) if score.improvable is not None else None,
+                "detail": score.detail,
+            }
+            if score
+            else None
+        ),
+        "items": [
+            {
+                "item_id": i.id,
+                "category": i.category,
+                "problem_description": i.problem_description,
+                "got": float(i.got) if i.got is not None else None,
+                "full": float(i.full) if i.full is not None else None,
+                "improvable": float(i.improvable) if i.improvable is not None else None,
+                "risk_level": i.risk_level,
+                "suggestion": i.suggestion,
+                "suggestion_override": i.suggestion_override,
+                "effective_suggestion": i.suggestion_override or i.suggestion,
+                "action_type": i.action_type,
+                "evidence": i.evidence,
+                "status": i.status,
+            }
+            for i in items
+        ],
     }
 
 
