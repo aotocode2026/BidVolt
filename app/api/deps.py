@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.constants import TaskStatus
+from app.constants import Permission, TaskStatus
 from app.models.auth import AppUser, EnterprisePermission
 from app.models.task import Task
 from app.services.capability import CapabilityError, verify_capability
@@ -19,6 +19,29 @@ from app.services.permissions import effective_permissions
 from app.services.security import decode_token
 
 bearer = HTTPBearer(auto_error=False)
+
+# MCP 工具 → JWT 回退所需权限点（Issue #2 安全回归：普通 JWT 不能绕过权限检查）
+TOOL_PERMISSION: dict[str, str] = {
+    "get_project_material_blocks": Permission.FILE_READ,
+    "list_project_materials": Permission.FILE_READ,
+    "get_deliverable_content": Permission.FILE_READ,
+    "save_deliverable": Permission.DELIVERABLE_EDIT,
+    "get_latest_score": Permission.SCORE_VIEW,
+    "get_review_items": Permission.SCORE_VIEW,
+    "confirm_review_items": Permission.SCORE_CONFIRM,
+    "list_requirements": Permission.FILE_READ,
+    "get_requirement": Permission.FILE_READ,
+    "upsert_requirements": Permission.PROJECT_EDIT,
+    "get_history_price": Permission.QUOTE_CALCULATE,
+    "calculate_quote": Permission.QUOTE_CALCULATE,
+    "search_web": Permission.FILE_READ,
+    "save_source": Permission.PROJECT_EDIT,
+    "link_citation": Permission.DELIVERABLE_EDIT,
+    "search_assets": Permission.FILE_READ,
+    "get_asset": Permission.FILE_READ,
+    "classify_enterprise_asset": Permission.PROJECT_EDIT,
+    "upsert_enterprise_facts": Permission.PROJECT_EDIT,
+}
 
 
 @dataclass
@@ -123,7 +146,13 @@ def require_capability(tool: str):
                 email="mcp",
                 permissions=set(),
             )
-        # 普通用户 JWT 鉴权
-        return await _auth_user(credentials, session)
+        # 普通用户 JWT 鉴权：按工具映射执行对应权限点，避免绕过权限检查
+        permission = TOOL_PERMISSION.get(tool)
+        if permission is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="未知工具，拒绝 JWT 回退")
+        user_ctx = await _auth_user(credentials, session)
+        if permission not in user_ctx.permissions:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"缺少权限：{permission}")
+        return user_ctx
 
     return checker
