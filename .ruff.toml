@@ -6,6 +6,8 @@ target-version = "py311"
 
 [lint]
 select = ["E4", "E7", "E9", "F", "I", "UP"]
+# UP017 datetime.UTC 为 Python 3.11+ 特性；生产容器 venv 为 Python 3.10，禁止使用
+ignore = ["UP017"]
 
 [lint.per-file-ignores]
 "alembic/versions/*.py" = ["E501"]

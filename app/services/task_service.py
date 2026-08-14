@@ -20,7 +20,7 @@ HEARTBEAT_LOCK_TIMEOUT_MS = 2000  # 心跳 UPDATE 等行锁上限（长 handler 
 
 
 def _aware(dt: datetime | None) -> datetime:
-    """SQLite 读回的 datetime 可能为 naive，统一按 UTC 解释以便比较。"""
+    """SQLite 读回的 datetime 可能为 naive，统一按 timezone.utc 解释以便比较。"""
     if dt is None:
         return datetime.min.replace(tzinfo=UTC)
     if dt.tzinfo is None:
