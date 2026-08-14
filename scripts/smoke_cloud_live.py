@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Live check: 云能力解锁后的真实链路（AnySearch 匿名搜索 + MiniMax LLM）。
 
 依赖容器 .env 已置 DATA_CLASSIFICATION_CONFIRMED=1 / CLOUD_LLM_ENABLED=1 /

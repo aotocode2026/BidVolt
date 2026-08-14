@@ -42,6 +42,22 @@ def test_evaluate_reports_missing_deliverables(client):
     assert all(i["status"] == 1 for i in items.json())
 
 
+def test_two_enterprises_both_evaluate(client):
+    """服务器实测回归：内置 Provider 按企业隔离创建，
+    唯一约束为 (enterprise_id, provider_code)，第二个企业评审不再撞
+    review_provider_provider_code_key（曾致生产 evaluate 500）。"""
+    for email in ("rev-a@test.com", "rev-b@test.com"):
+        r = client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "Abc12345", "enterprise_name": email},
+        )
+        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]
+        r2 = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h)
+        assert r2.status_code == 200, f"{email}: {r2.text[:120]}"
+        assert r2.json()["missing_count"] == 3
+
+
 def test_evaluate_partial_score(client):
     h, pid = _setup(client)
     _create_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务"}]})

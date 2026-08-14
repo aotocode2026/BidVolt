@@ -1,11 +1,14 @@
-# -*- coding: utf-8 -*-
 """Live check: OFD upload -> parse -> doc_block retrievable.
 
 默认使用合成 OFD；--file 传入真实 OFD 样本（如 scripts/fetch_ofd_samples.py 下载的
 output/playwright/ofd_samples/*.ofd）验证真实文件链路。
 """
-import argparse, io, time, zipfile
+import argparse
+import io
+import time
+import zipfile
 from pathlib import Path
+
 import httpx
 
 CONTENT_TEXT = "\u62db\u6807\u6280\u672f\u8981\u6c42\uff1a\u7535\u538b\u7b49\u7ea7 10kV\uff0c\u542b OFD \u5192\u70df\u9a8c\u8bc1"

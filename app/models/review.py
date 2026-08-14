@@ -12,6 +12,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,11 +22,14 @@ from app.models.base import Base, BigInt, JSONType, TimestampMixin
 
 class ReviewProvider(Base, TimestampMixin):
     __tablename__ = "review_provider"
+    __table_args__ = (
+        UniqueConstraint("enterprise_id", "provider_code", name="uq_review_provider_ent_code"),
+    )
 
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
     enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False)
     provider_type: Mapped[str] = mapped_column(String(20), nullable=False)  # document / code / api
-    provider_code: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    provider_code: Mapped[str] = mapped_column(String(50), nullable=False)
     provider_version: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     category: Mapped[str | None] = mapped_column(String(50))

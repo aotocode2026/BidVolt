@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """统一服务器端到端冒烟入口（在容器内运行，命中真实 PG/服务/出网）。"""
 from __future__ import annotations
 
@@ -7,7 +6,6 @@ import argparse
 import importlib
 import importlib.util
 from pathlib import Path
-
 
 CHECKS = [
     ("ofd_synthetic", "smoke_ofd_live", "run", {}),

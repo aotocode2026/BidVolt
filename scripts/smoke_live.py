@@ -48,7 +48,7 @@ def run(base: str) -> None:
         upload = c.post(
             "/api/v1/files/upload",
             data={"target": "project", "project_id": str(pid)},
-            files=[("files", ("招标.txt", "资格要求".encode("utf-8"), "text/plain"))],
+            files=[("files", ("招标.txt", "资格要求".encode(), "text/plain"))],
             headers=headers,
         )
         assert upload.json()["files"][0]["status"] == 3
@@ -78,7 +78,7 @@ def run(base: str) -> None:
 
         check = c.post(f"/api/v1/projects/{pid}/check", json={}, headers=headers).json()
         assert check["passed"] is True
-        exp = c.post(
+        c.post(
             f"/api/v1/projects/{pid}/export",
             json={"formats": ["docx", "xlsx"], "with_manifest": True},
             headers=headers,

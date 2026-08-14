@@ -40,7 +40,7 @@ def run(base: str) -> None:
         upload = c.post(
             "/api/v1/files/upload",
             data={"target": "project", "project_id": str(pid)},
-            files=[("files", ("招标.txt", "资质要求：三级。".encode("utf-8"), "text/plain"))],
+            files=[("files", ("招标.txt", "资质要求：三级。".encode(), "text/plain"))],
             headers=headers,
         )
         file_id = upload.json()["files"][0]["file_id"]

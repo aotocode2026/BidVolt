@@ -6,6 +6,7 @@ import json
 from hashlib import sha256
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.deliverable import Deliverable
@@ -41,7 +42,20 @@ async def ensure_builtin_provider(session: AsyncSession, enterprise_id: int) -> 
             enabled=True,
         )
         session.add(provider)
-        await session.flush()
+        try:
+            # 保存点隔离：并发请求同时创建同企业 Provider 时，唯一约束冲突只回滚本次 INSERT
+            async with session.begin_nested():
+                await session.flush()
+        except IntegrityError:
+            # 冲突说明另一并发请求已建好：回滚保存点后重查（租户内 code 唯一，结果必属于本企业）
+            provider = await session.scalar(
+                select(ReviewProvider).where(
+                    ReviewProvider.provider_code == "builtin_completeness",
+                    ReviewProvider.enterprise_id == enterprise_id,
+                )
+            )
+            if provider is None:
+                raise
     return provider
 
 

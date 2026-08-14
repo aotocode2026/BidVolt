@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 """真实服务器端到端：在线编辑会话（创建→检查点→完成）+ AI 建议（LLM）→应用。"""
 from __future__ import annotations
 
 import argparse
-import json
 import time
 
 import httpx

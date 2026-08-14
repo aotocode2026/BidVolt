@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """真实 PostgreSQL + RLS 集成冒烟（容器内运行）。
 
 验证：
@@ -9,9 +8,6 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import re
 import time
 
 import asyncpg
@@ -87,7 +83,7 @@ def run(base: str, env_path: str) -> None:
         reg_b.raise_for_status()
         eid_b = reg_b.json()["enterprise_id"]
         h_b = {"Authorization": f"Bearer {reg_b.json()['access_token']}"}
-        pid_b = c.post("/api/v1/projects", json={"name": "RLSB项目"}, headers=h_b).json()["project_id"]
+        c.post("/api/v1/projects", json={"name": "RLSB项目"}, headers=h_b).json()["project_id"]
 
         # 跨企业 IDOR：B 不能读取 A 的项目
         idor = c.get(f"/api/v1/projects/{pid_a}", headers=h_b)
