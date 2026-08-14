@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -140,7 +140,7 @@ async def _build_manifest(
             "review_model": settings.minimax_model,
             "vision_model": settings.dashscope_vl_model,
         },
-        "built_at": datetime.now(UTC).isoformat(),
+        "built_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

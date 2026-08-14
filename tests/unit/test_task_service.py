@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -207,7 +207,7 @@ def test_reclaim_stale_requeues_expired_lease():
             # 模拟 worker 领取后进程被强杀：RUNNING + 过期租约
             task.status = int(TaskStatus.RUNNING)
             task.lease_owner = "dead-worker:9"
-            task.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            task.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             await session.commit()
             reclaimed = await task_service.reclaim_stale(session)
             await session.refresh(task)
@@ -238,7 +238,7 @@ def test_reclaim_stale_ignores_valid_lease():
             )
             task.status = int(TaskStatus.RUNNING)
             task.lease_owner = "live-worker:1"
-            task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=300)
+            task.lease_expires_at = datetime.now(timezone.utc) + timedelta(seconds=300)
             await session.commit()
             reclaimed = await task_service.reclaim_stale(session)
             await session.refresh(task)
@@ -267,7 +267,7 @@ def test_reclaim_stale_terminal_after_retry_exhausted():
             task.status = int(TaskStatus.RUNNING)
             task.retry_count = task_service.MAX_RETRIES - 1
             task.lease_owner = "dead-worker:9"
-            task.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            task.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             await session.commit()
             await task_service.reclaim_stale(session)
             await session.refresh(task)

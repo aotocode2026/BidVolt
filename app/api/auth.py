@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -89,7 +89,7 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
         RefreshToken(
             user_id=user.id,
             token_hash=refresh_hash,
-            expires_at=datetime.now(UTC) + timedelta(days=30),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
         )
     )
     await write_audit(
@@ -119,7 +119,7 @@ async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)
         RefreshToken(
             user_id=user.id,
             token_hash=refresh_hash,
-            expires_at=datetime.now(UTC) + timedelta(days=30),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
         )
     )
     await write_audit(
@@ -153,7 +153,7 @@ async def refresh(body: RefreshRequest, session: AsyncSession = Depends(get_sess
         RefreshToken(
             user_id=user.id,
             token_hash=refresh_hash,
-            expires_at=datetime.now(UTC) + timedelta(days=30),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
         )
     )
     await session.commit()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -52,7 +52,7 @@ async def create_project(
     )
     session.add(project)
     await session.flush()
-    project.updated_at = datetime.now(UTC)
+    project.updated_at = datetime.now(timezone.utc)
     await write_audit(
         session,
         enterprise_id=user.enterprise_id,
@@ -131,7 +131,7 @@ async def update_project(
         object_type="project",
         object_id=project.id,
     )
-    project.updated_at = datetime.now(UTC)
+    project.updated_at = datetime.now(timezone.utc)
     await session.commit()
     return _to_response(project)
 
@@ -186,6 +186,6 @@ async def update_status(
         object_id=project.id,
         payload={"from": current.value, "to": target.value},
     )
-    project.updated_at = datetime.now(UTC)
+    project.updated_at = datetime.now(timezone.utc)
     await session.commit()
     return _to_response(project)

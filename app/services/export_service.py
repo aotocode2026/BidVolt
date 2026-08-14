@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from io import BytesIO
 
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
@@ -50,7 +50,7 @@ def run_final_check(deliverables) -> dict:
 def build_manifest(project_id: int, files: list[dict], checks: dict) -> dict:
     return {
         "project_id": project_id,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "files": files,
         "checks": checks,
         "exemptions": [],

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from jose import JWTError
@@ -41,8 +41,8 @@ def test_tampered_token_rejected():
 def test_refresh_token_hash_and_validate():
     raw, token_hash = create_refresh_token()
     assert hash_refresh_token(raw) == token_hash
-    future = datetime.now(UTC) + timedelta(days=1)
-    past = datetime.now(UTC) - timedelta(days=1)
+    future = datetime.now(timezone.utc) + timedelta(days=1)
+    past = datetime.now(timezone.utc) - timedelta(days=1)
     assert validate_refresh_token(raw, token_hash, future)
     assert not validate_refresh_token(raw, token_hash, past)
     assert not validate_refresh_token("other", token_hash, future)

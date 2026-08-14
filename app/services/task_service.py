@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +22,9 @@ HEARTBEAT_LOCK_TIMEOUT_MS = 2000  # 心跳 UPDATE 等行锁上限（长 handler 
 def _aware(dt: datetime | None) -> datetime:
     """SQLite 读回的 datetime 可能为 naive，统一按 timezone.utc 解释以便比较。"""
     if dt is None:
-        return datetime.min.replace(tzinfo=UTC)
+        return datetime.min.replace(tzinfo=timezone.utc)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
+        return dt.replace(tzinfo=timezone.utc)
     return dt
 
 
@@ -92,7 +92,7 @@ async def reclaim_stale(session: AsyncSession) -> bool:
     过期任务按重试计次：未达上限 → 重新入队（QUEUED，清租约）；达上限 → FAILED_TERMINAL。
     返回是否有任务被回收（有则调用方可立即再领取）。
     """
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     candidates = (
         await session.scalars(
             select(Task)
@@ -137,7 +137,7 @@ async def _heartbeat_loop(lease_owner: str, task: Task, session_factory) -> None
     """独立会话续期租约：不经过 handler 的事务，避免提交半成品写入。"""
     while True:
         await asyncio.sleep(HEARTBEAT_INTERVAL)
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         hb = None
         try:
             hb = session_factory()
@@ -181,7 +181,7 @@ async def run_task(
             text("SELECT set_config('app.enterprise_id', :eid, false)"),
             {"eid": str(task.enterprise_id)},
         )
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     task.status = int(TaskStatus.RUNNING)
     task.progress = {"phase": task.task_type, "status": "running", "percent": 10, "current_work": f"开始执行 {task.task_type}"}
     if lease_owner is not None:
@@ -199,7 +199,7 @@ async def run_task(
         await handler(session, task)
         task.status = int(TaskStatus.DONE)
         task.progress = {"phase": task.task_type, "status": "done", "percent": 100, "summary": "完成"}
-        task.finished_at = datetime.now(UTC)
+        task.finished_at = datetime.now(timezone.utc)
     except Exception as exc:  # noqa: BLE001
         # 回滚 handler 的部分写入，避免失败任务产生副作用（A-4 单事务原子性）
         await session.rollback()
@@ -208,7 +208,7 @@ async def run_task(
         if task.retry_count >= MAX_RETRIES:
             task.status = int(TaskStatus.FAILED_TERMINAL)
             task.error = {"message": str(exc)}
-            task.finished_at = datetime.now(UTC)
+            task.finished_at = datetime.now(timezone.utc)
             task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
         else:
             task.status = int(TaskStatus.QUEUED)
@@ -222,7 +222,7 @@ async def run_task(
             # 执行被中断（取消/停机），未走成功/失败路径：按失败计次，避免永久卡 RUNNING
             await session.rollback()
             task.retry_count += 1
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             if task.retry_count >= MAX_RETRIES:
                 task.status = int(TaskStatus.FAILED_TERMINAL)
                 task.error = {"message": "执行被中断且重试耗尽"}

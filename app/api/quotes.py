@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from statistics import median
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -267,7 +267,7 @@ async def apply_quote(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     calc.status = 2
     calc.applied_version_no = version.version_no
-    calc.applied_at = datetime.now(UTC)
+    calc.applied_at = datetime.now(timezone.utc)
     await write_audit(
         session,
         enterprise_id=user.enterprise_id,

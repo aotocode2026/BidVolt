@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -146,7 +146,7 @@ async def export_project(
         )
     job.status = 2
     job.files = files
-    job.finished_at = datetime.now(UTC)
+    job.finished_at = datetime.now(timezone.utc)
     await session.commit()
     return {"job_id": job.id, "status": job.status, "files": files}
 
