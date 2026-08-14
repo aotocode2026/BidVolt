@@ -232,7 +232,7 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
-当前基线：本地 206 passed / 1 skipped（含生产 fail-fast 与任务租约用例）；容器（PG+RLS）待服务器复跑。
+当前基线：本地 207 passed / 1 skipped（含生产 fail-fast、任务租约与多企业评审回归）；容器（PG+RLS）待服务器复跑。
 
 ## 11. 已知限制 / 路线图
 

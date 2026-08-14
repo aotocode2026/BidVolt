@@ -75,15 +75,16 @@
 
 ## 二、剩余待办（需真实服务器验收，无法本地完成）
 
-- [x] ~~服务器完成一轮升级流程~~ → 已按环境约束用归档方式完成真实部署（见第三节）；
-- [ ] 完成一次备份恢复演练：`pg_restore` + appdata 解包到空环境，校验业务可恢复
-      （dump/appdata 备份已带校验，演练待执行）；
-- [ ] 验证容器/宿主机重启后 supervisor 自动拉起（sshrc 兜底）与 `/data` 挂载正确；
-- [x] 将生产密钥轮换为 ≥32 位 → 已轮换为 48 位（旧会话失效，需重新登录）；
-- [ ] 设置 `BIDVOLT_ENV=production` 启用 fail-fast（需先确认 ClamAV 强制扫描
-      `VIRUS_SCAN_REQUIRED=1` 与数据分级签署，否则生产模式会按设计拒绝启动）；
-- [x] CI（GitHub Actions）首次运行确认 gitleaks/ruff/pytest 全绿（sha 599084a 全部通过）；
-- [ ] 数据分级与客户授权清单签署（P1 门禁，见 `docs/数据分级与授权确认清单.md`）。
+- [x] 升级流程真实部署 → 已按环境约束用归档方式完成（见第三节，含 0015/0016 迁移）；
+- [x] 备份恢复演练 → 服务器实测：最新 dump `pg_restore` 到临时库 `bidvolt_restore_drill`，
+      三表计数与备份点一致（48/48/24），appdata tar 清单可读，演练后已清理；
+- [ ] 验证容器/宿主机重启后 supervisor 自动拉起（sshrc 兜底）——平台控制容器生命周期，留待运维执行；
+- [x] 生产密钥轮换为 ≥32 位 → 已轮换为 48 位（旧会话失效，需重新登录）；
+- [x] `BIDVOLT_ENV=production` 启用 → 2026-08-14 已在服务器开启（同时 `VIRUS_SCAN_REQUIRED=1`），
+      fail-fast 全项校验通过、app/worker 正常启动、公网注册冒烟 201；
+- [x] CI（GitHub Actions）首次运行确认 gitleaks/ruff/pytest 全绿；
+- [ ] 数据分级与客户授权清单签署（P1 门禁，见 `docs/数据分级与授权确认清单.md`）——服务器
+      `.env` 已含 `DATA_CLASSIFICATION_CONFIRMED=1`（客户签署落点），正式签署文件待归档。
 
 ## 三、真实服务器部署记录（2026-08-14 完成）
 
@@ -93,28 +94,36 @@
   （挂载盘不支持目录 rename，整目录原子切换不可行；以整树 tar 备份作回滚点）。
 - 密钥轮换：JWT_SECRET / BIDVOLT_INTERNAL_TOKEN 均轮换为 48 位随机串（旧会话全部失效需重新登录），
   Hermes `.env`/`config.yaml` 同步更新并重启生效。
-- 迁移：生产 PostgreSQL 已执行 alembic `0015`（task 租约三列，纯加列），`current == head`。
+- 迁移：生产 PostgreSQL 已执行 alembic `0015`（task 租约三列）+ `0016`（review_provider 复合唯一），
+  `current == head`。
 - 过程中发现并修复的真实问题：
   1. ruff UP017 将 `timezone.utc` 改写为 `datetime.UTC`（Python 3.11+），**服务器 venv 为 Python 3.10**
      → app/worker 启动即崩（重启风暴）；已全量回退并 `ignore UP017`，本地/CI 双验证。
   2. 历史提交中的 shell 脚本带 CRLF → 服务器 bash 语法错误；已加 `.gitattributes`（eol=lf）+
      `git add --renormalize` 全库规整，部署脚本兜底 `sed -i 's/\r$//'`。
+  3. **多企业评审 500**（浏览器 E2E 实测发现）：0005 迁移给 `review_provider.provider_code` 建了
+     全局唯一约束，而内置 Provider 按企业隔离创建，第二个企业评审即撞
+     `review_provider_provider_code_key` → 迁移 0016 改 `(enterprise_id, provider_code)` 复合唯一，
+     `ensure_builtin_provider` 保存点隔离并发冲突，新增双企业评审回归测试（本地 207 passed）。
 - 验证结果（服务器实测）：
   - `supervisorctl status`：postgres/app/worker/hermes/clamd/backup-cron 全部 RUNNING；
   - `bidvolt-healthcheck`（新版：PG/API/alembic head/worker/clamd/持久卷/磁盘/读写）→ HEALTH_OK；
   - 公网 `http://47.100.182.3:28123/healthz` → `{"status":"ok"}`；`/demo/` → 200；
+  - 任务租约实测：执行中任务 `lease_owner=hostname:pid` + 心跳时间戳；终态任务租约释放；
   - 发布记录：`/var/log/bidvolt/releases.log`；回滚点：`/data/backups/bidvolt_tree_preupgrade_*.tgz`。
 
 ## 四、验证基线
 
-- 本地 pytest：206 passed / 1 skipped / 1 deselected（2026-08-14，含新增租约与 fail-fast 用例）；
-- 浏览器 E2E（headless Chromium，`scripts/e2e_browser_demo.py`）：**11/11 PASS**，截图
-  `output/playwright/e2e-*.png`（注册→项目→上传解析→成果/校核/在线编辑→评标闭环→报价闭环→
-  会话→终检导出→快照→刷新恢复）；
-- ruff（E/F/I/UP，ignore UP017）：0 error；
+- 本地 pytest：207 passed / 1 skipped / 1 deselected（2026-08-14）；
+- **服务器浏览器 E2E（headless Chromium 模拟人操作，`scripts/e2e_browser_demo.py --base
+  http://47.100.182.3:28123 --tag prod3`）：14/14 PASS**，截图 `output/playwright/prod3-*.png`，
+  覆盖注册→建项目→上传+真实 LLM 招标解析→三份成果+LLM 润色→校核→在线编辑→模拟评标
+  （建议修改/批量确认/重审）→报价测算/策略/应用/趋势→会话（真实 LLM）→真实 AnySearch 搜索
+  （5 条结果）→终检+LibreOffice 导出→快照/活动任务→刷新恢复；
+- ruff（E/F/I/UP，ignore UP017）：0 error（含 scripts/）；
 - gitleaks 全历史：0 泄漏；
-- 全部 shell 脚本 `bash -n` 通过；服务器迁移 current=head=0015；
-- CI：gitleaks 全历史 / ruff / pytest-SQLite 三任务全部通过。
+- 全部 shell 脚本 `bash -n` 通过；服务器迁移 current=head=0016；
+- CI：gitleaks 全历史 / ruff / pytest-SQLite 三任务全部通过（sha 14e120d）。
 
 ## 五、环境约束备忘（后续运维必读）
 
