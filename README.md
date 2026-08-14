@@ -138,6 +138,8 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 - 升级代码：**`bidvolt-upgrade [tag|commit]`**（预检 → 备份 → 新 venv → 停 app/worker → 迁移 →
   原子切换 → 冒烟 → 失败自动回滚；发布记录 `/var/log/bidvolt/releases.log`；不重启 PostgreSQL）。
   已废弃 `git pull && pip install && supervisorctl restart all` 的无保护升级方式。
+  注意：当前生产服务器无 GitHub 出网且挂载盘不支持目录 rename，实际升级走
+  `git archive` + SFTP 原地解包流程（详见 `docs/issue-3-发布门禁落地.md` 第五节）。
 - **云能力开关**：`DATA_CLASSIFICATION_CONFIRMED`/`CLOUD_LLM_ENABLED`/`SEARCH_ENABLED` 修改
   `/data/bidvolt/.env` 后，需重启容器（supervisor 继承启动时的环境变量，优先级高于 .env）；
   或把开关固定进 supervisor `environment=` 后 `update`。

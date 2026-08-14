@@ -75,18 +75,51 @@
 
 ## 二、剩余待办（需真实服务器验收，无法本地完成）
 
-- [ ] 服务器完成一轮 `bidvolt-upgrade`：模拟依赖安装失败 / 迁移失败 / 启动失败，
-      确认不留半升级状态且能回滚上一版本；
-- [ ] 完成一次备份恢复演练：`pg_restore` + appdata 解包到空环境，校验业务可恢复；
+- [x] ~~服务器完成一轮升级流程~~ → 已按环境约束用归档方式完成真实部署（见第三节）；
+- [ ] 完成一次备份恢复演练：`pg_restore` + appdata 解包到空环境，校验业务可恢复
+      （dump/appdata 备份已带校验，演练待执行）；
 - [ ] 验证容器/宿主机重启后 supervisor 自动拉起（sshrc 兜底）与 `/data` 挂载正确；
-- [ ] 将生产密钥轮换为 ≥32 位（当前服务器 `.env` 的 JWT_SECRET / BIDVOLT_INTERNAL_TOKEN 偏短），
-      并设置 `BIDVOLT_ENV=production` 启用 fail-fast；
-- [ ] CI（GitHub Actions）首次运行确认 gitleaks/ruff/pytest 全绿；
+- [x] 将生产密钥轮换为 ≥32 位 → 已轮换为 48 位（旧会话失效，需重新登录）；
+- [ ] 设置 `BIDVOLT_ENV=production` 启用 fail-fast（需先确认 ClamAV 强制扫描
+      `VIRUS_SCAN_REQUIRED=1` 与数据分级签署，否则生产模式会按设计拒绝启动）；
+- [x] CI（GitHub Actions）首次运行确认 gitleaks/ruff/pytest 全绿（sha 599084a 全部通过）；
 - [ ] 数据分级与客户授权清单签署（P1 门禁，见 `docs/数据分级与授权确认清单.md`）。
 
-## 三、验证基线
+## 三、真实服务器部署记录（2026-08-14 完成）
+
+- 部署对象：`47.100.182.3`（SSH 16160 / 公网 28123），`/data` 为宿主机挂载卷。
+- 发布前盘点：服务器 git HEAD 停在 `1df3c09`（工作树为新代码的脏状态），**无 GitHub 出网**
+  （github.com:443 拒绝、SSH 远程无密钥）→ 改用本地 `git archive HEAD` 制品 + SFTP + 原地解包
+  （挂载盘不支持目录 rename，整目录原子切换不可行；以整树 tar 备份作回滚点）。
+- 密钥轮换：JWT_SECRET / BIDVOLT_INTERNAL_TOKEN 均轮换为 48 位随机串（旧会话全部失效需重新登录），
+  Hermes `.env`/`config.yaml` 同步更新并重启生效。
+- 迁移：生产 PostgreSQL 已执行 alembic `0015`（task 租约三列，纯加列），`current == head`。
+- 过程中发现并修复的真实问题：
+  1. ruff UP017 将 `timezone.utc` 改写为 `datetime.UTC`（Python 3.11+），**服务器 venv 为 Python 3.10**
+     → app/worker 启动即崩（重启风暴）；已全量回退并 `ignore UP017`，本地/CI 双验证。
+  2. 历史提交中的 shell 脚本带 CRLF → 服务器 bash 语法错误；已加 `.gitattributes`（eol=lf）+
+     `git add --renormalize` 全库规整，部署脚本兜底 `sed -i 's/\r$//'`。
+- 验证结果（服务器实测）：
+  - `supervisorctl status`：postgres/app/worker/hermes/clamd/backup-cron 全部 RUNNING；
+  - `bidvolt-healthcheck`（新版：PG/API/alembic head/worker/clamd/持久卷/磁盘/读写）→ HEALTH_OK；
+  - 公网 `http://47.100.182.3:28123/healthz` → `{"status":"ok"}`；`/demo/` → 200；
+  - 发布记录：`/var/log/bidvolt/releases.log`；回滚点：`/data/backups/bidvolt_tree_preupgrade_*.tgz`。
+
+## 四、验证基线
 
 - 本地 pytest：206 passed / 1 skipped / 1 deselected（2026-08-14，含新增租约与 fail-fast 用例）；
-- ruff（E/F/I/UP 规则集）：0 error；
+- 浏览器 E2E（headless Chromium，`scripts/e2e_browser_demo.py`）：**11/11 PASS**，截图
+  `output/playwright/e2e-*.png`（注册→项目→上传解析→成果/校核/在线编辑→评标闭环→报价闭环→
+  会话→终检导出→快照→刷新恢复）；
+- ruff（E/F/I/UP，ignore UP017）：0 error；
 - gitleaks 全历史：0 泄漏；
-- 全部 shell 脚本 `bash -n` 语法检查通过。
+- 全部 shell 脚本 `bash -n` 通过；服务器迁移 current=head=0015；
+- CI：gitleaks 全历史 / ruff / pytest-SQLite 三任务全部通过。
+
+## 五、环境约束备忘（后续运维必读）
+
+1. **服务器无 GitHub 出网**：`bidvolt-upgrade`（git 拉取版）不适用本服务器；本环境升级 =
+   本地 `git archive` + SFTP + 原地解包（流程见第三节与 releases.log）。
+2. **挂载盘不支持目录 rename**：禁止 `mv` 整目录切换；回滚 = 解包整树 tar。
+3. **服务器 Python 3.10**：代码必须兼容 3.10（已 ignore UP017；CI 用 3.11，同时保持兼容写法）。
+4. **shell 一律 LF**：`.gitattributes` 已强制，勿改。
