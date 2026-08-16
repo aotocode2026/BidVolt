@@ -304,6 +304,8 @@ def main() -> int:
             tab(page, "搜索/对话")
             page.click("button:has-text('新建会话')")
             ok_conv = wait_log(page, "已创建会话 #")
+            # 等待会话下拉选中真实 ID（新建后前端会自动选中，公网延迟下必须等待就绪再发送）
+            page.wait_for_function("() => /^\\d+$/.test(document.getElementById('c-sel').value)", timeout=15000)
             page.fill("#c-msg", "投标保证金一般是多少？")
             page.click("button:has-text('发送')")
             ok_reply = wait_log(page, "助手（", timeout_ms=300000)
