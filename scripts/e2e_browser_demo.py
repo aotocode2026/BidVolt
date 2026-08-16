@@ -306,7 +306,7 @@ def main() -> int:
             ok_conv = wait_log(page, "已创建会话 #")
             page.fill("#c-msg", "投标保证金一般是多少？")
             page.click("button:has-text('发送')")
-            ok_reply = wait_log(page, "助手（", timeout_ms=180000)
+            ok_reply = wait_log(page, "助手（", timeout_ms=300000)
             record("项目助手会话", ok_conv and ok_reply)
         except Exception as e:  # noqa: BLE001
             record("项目助手会话", False, str(e)[:80])

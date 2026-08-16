@@ -14,8 +14,8 @@ from app.models.task import Task
 
 MAX_RETRIES = 3
 # 任务租约（Issue #3：worker 中断后任务不得永久卡在 RUNNING）
-LEASE_SECONDS = 300  # 领取后最长独占时间；到期未续期视为 worker 失联
-HEARTBEAT_INTERVAL = 60  # 执行期间心跳续期间隔（< LEASE_SECONDS 的一半）
+LEASE_SECONDS = 600  # 领取后最长独占时间；到期未续期视为 worker 失联（LLM 慢调用留足余量）
+HEARTBEAT_INTERVAL = 90  # 执行期间心跳续期间隔（< LEASE_SECONDS 的一半）
 HEARTBEAT_LOCK_TIMEOUT_MS = 2000  # 心跳 UPDATE 等行锁上限（长 handler 持锁时放弃本轮，下轮再试）
 
 
@@ -26,6 +26,22 @@ def _aware(dt: datetime | None) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+async def _set_rls_context(session: AsyncSession, enterprise_id: int) -> None:
+    """PG：为【当前事务】注入租户 RLS 上下文（与 API 依赖一致，is_local=true）。
+
+    事务级设置随 commit/rollback 自动失效，不随连接归还池而泄漏；代价是
+    worker 路径上每一次 commit 之后、下一笔业务表写入之前都必须重新调用。
+    （生产 Issue #8 根因：曾用会话级 set_config(..., false)，在 asyncpg 连接池下
+    上下文随连接漂移/丢失，导致 requirement_revision 等表 INSERT 随机触发
+    row-level security 策略违例。）
+    """
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        await session.execute(
+            text("SELECT set_config('app.enterprise_id', :eid, true)"),
+            {"eid": str(enterprise_id)},
+        )
 
 
 async def create_task(
@@ -176,11 +192,8 @@ async def run_task(
     """
     is_pg = session.bind is not None and session.bind.dialect.name == "postgresql"
     if is_pg:
-        # RLS：worker 无用户上下文，按任务租户显式设置（会话级，跨提交生效）
-        await session.execute(
-            text("SELECT set_config('app.enterprise_id', :eid, false)"),
-            {"eid": str(task.enterprise_id)},
-        )
+        # RLS：worker 无用户上下文，按任务租户显式设置（事务级，随事务失效）
+        await _set_rls_context(session, task.enterprise_id)
     now = datetime.now(timezone.utc)
     task.status = int(TaskStatus.RUNNING)
     task.progress = {"phase": task.task_type, "status": "running", "percent": 10, "current_work": f"开始执行 {task.task_type}"}
@@ -191,6 +204,10 @@ async def run_task(
     heartbeat = None
     try:
         await session.commit()
+        if is_pg:
+            # 上面 commit 结束事务 → 事务级 RLS 上下文随之失效；
+            # handler 写业务表（requirement/material_match_result 等）前必须重建
+            await _set_rls_context(session, task.enterprise_id)
         if lease_owner is not None and session_factory is not None:
             heartbeat = asyncio.create_task(_heartbeat_loop(lease_owner, task, session_factory))
         handler = HANDLERS.get(task.task_type)
@@ -235,12 +252,33 @@ async def run_task(
         if lease_owner is not None and task.lease_owner == lease_owner:
             task.lease_owner = None
             task.lease_expires_at = None
-        if is_pg:
-            # 复位租户上下文，避免连接池复用泄漏
-            await session.execute(
-                text("SELECT set_config('app.enterprise_id', '', false)")
-            )
-        await session.commit()
+        # （RLS 上下文为事务级，随事务自动清理，无需复位——复位反而会泄漏到连接池）
+        # 最终提交兜底（生产定位 Issue #8）：提交失败时任务状态必须确定性落库，
+        # 不能把任务留在 RUNNING 上等租约回收兜底（表现为 15 分钟无意义重试循环）。
+        try:
+            await session.commit()
+        except Exception as commit_exc:  # noqa: BLE001
+            await session.rollback()
+            try:
+                await session.refresh(task)
+                task.retry_count += 1
+                commit_now = datetime.now(timezone.utc)
+                if task.retry_count >= MAX_RETRIES:
+                    task.status = int(TaskStatus.FAILED_TERMINAL)
+                    task.error = {"message": f"任务状态提交失败且重试耗尽：{commit_exc}"}
+                    task.finished_at = commit_now
+                    task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "任务状态提交失败且重试耗尽，请人工处理"}
+                else:
+                    task.status = int(TaskStatus.QUEUED)
+                    task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"状态提交失败，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
+                task.lease_owner = None
+                task.lease_expires_at = None
+                try:
+                    await session.commit()
+                except Exception:  # noqa: BLE001  二次提交仍失败则交还租约回收兜底
+                    await session.rollback()
+            except Exception:  # noqa: BLE001
+                await session.rollback()
     return task
 
 
@@ -326,6 +364,11 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     if not file_ids:
         raise ValueError("payload.file_ids 为空")
     task.progress = {"phase": task.task_type, "status": "running", "percent": 30, "current_work": f"解析 {len(file_ids)} 个文件"}
+    # 进度立即落库：对外可见（SSE/API），并释放 task 行锁，避免阻塞心跳续期
+    await session.commit()
+    # 关键（生产定位 Issue #8）：RLS 上下文是事务级的，上面 commit 后即被清空；
+    # 必须重建，否则后续 requirement_revision 等业务表 INSERT 会违反 RLS 策略
+    await _set_rls_context(session, task.enterprise_id)
     for file_id in file_ids:
         fobj = await reparse_file(session, int(file_id))
         if fobj.status != 3:
