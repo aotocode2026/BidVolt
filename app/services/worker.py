@@ -40,6 +40,12 @@ async def worker_loop() -> None:
             raise
         except Exception as exc:  # noqa: BLE001
             print(f"[worker] 处理失败：{exc}", flush=True)
+            try:
+                # 落盘诊断日志（生产定位用；supervisor 子进程 stdout 可能不可见）
+                with open("/data/logs/bidvolt/worker.log", "a", encoding="utf-8") as f:
+                    f.write(f"[worker] 处理失败：{exc!r}\n")
+            except OSError:
+                pass
         if not worked:
             await asyncio.sleep(0.5)
 
