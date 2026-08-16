@@ -23,6 +23,8 @@ class FileObject(Base, TimestampMixin):
     mime_type: Mapped[str | None] = mapped_column(String(100))
     ext: Mapped[str | None] = mapped_column(String(20))
     category: Mapped[str | None] = mapped_column(String(50))
+    # 项目文件角色（Issue #6 P1）：招标公告 / 招标文件 / 补充材料 / 已完成标书 / 其他
+    document_role: Mapped[str | None] = mapped_column(String(50))
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     parse_status: Mapped[dict | None] = mapped_column(JSONType)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

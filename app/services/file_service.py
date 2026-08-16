@@ -113,6 +113,7 @@ async def process_upload(
     filename: str,
     target: str,
     project_id: int | None = None,
+    document_role: str | None = None,
 ) -> FileObject:
     if target not in ("enterprise", "project"):
         raise ValueError("target 必须是 enterprise 或 project")
@@ -137,6 +138,7 @@ async def process_upload(
         size_bytes=saved["size_bytes"],
         mime_type=mime,
         ext=ext,
+        document_role=document_role,
         status=2,  # parsing
     )
     session.add(fobj)

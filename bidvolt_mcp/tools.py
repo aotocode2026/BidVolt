@@ -214,6 +214,22 @@ def _save_source(args: dict) -> Any:
         return resp.json()
 
 
+def _search_knowledge(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post(
+            "/api/v1/knowledge/search",
+            json={
+                "query": args["query"],
+                "project_id": args.get("project_id"),
+                "top_k": args.get("top_k", 10),
+                "include_assets": args.get("include_assets", True),
+            },
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _link_citation(args: dict) -> Any:
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
         resp = client.post(
@@ -236,6 +252,22 @@ TOOL_DEFS: list[dict] = [
         "description": "MCP server 健康检查",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "handler": _health,
+    },
+    {
+        "name": "search_knowledge",
+        "description": "检索本企业历史项目材料/企业资料/已确认事实（来源可追溯，默认排除当前项目自身材料），供生成/校核/评审引用",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "project_id": {"type": "integer"},
+                "top_k": {"type": "integer"},
+                "include_assets": {"type": "boolean"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "handler": _search_knowledge,
     },
     {
         "name": "search_assets",

@@ -351,6 +351,48 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     )
     project_name = project.name if project is not None else f"项目{project_id}"
 
+    # 当前项目材料文本块（生成依据，逐段响应要求）
+    from app.models.doc import DocBlock
+    from app.models.file import FileObject
+
+    material_blocks = (
+        await session.scalars(
+            sa_select(DocBlock)
+            .join(FileObject, FileObject.id == DocBlock.file_id)
+            .where(
+                FileObject.project_id == project_id,
+                FileObject.enterprise_id == task.enterprise_id,
+                FileObject.is_deleted.is_(False),
+            )
+            .order_by(DocBlock.file_id, DocBlock.block_index)
+        )
+    ).all()
+    material_text = "\n".join(b.text_content or "" for b in material_blocks)[:30000] or "（项目未上传招标材料）"
+
+    # 历史知识检索（Issue #4）：为技术标提供专业写法素材（来源可追溯，结果仅入任务元数据）
+    knowledge_refs: list[dict] = []
+    if llm_enabled():
+        from app.services import knowledge_service
+
+        kn_query = " ".join(
+            [project_name or "", *[r.content for r in req_by_type.get("tech_requirement", [])[:3]]]
+        )[:200].strip() or (project_name or "")
+        if kn_query:
+            try:
+                kn = await knowledge_service.search_knowledge(
+                    session,
+                    enterprise_id=task.enterprise_id,
+                    query=kn_query,
+                    project_id=project_id,
+                    top_k=5,
+                )
+                knowledge_refs = kn["items"]
+            except Exception:  # noqa: BLE001  检索失败不阻塞生成
+                knowledge_refs = []
+    knowledge_text = "\n".join(
+        f"- [{i['source_type']}]{i['file_name']}：{i['snippet']}" for i in knowledge_refs
+    ) or "（无历史参考素材）"
+
     def _business_model() -> dict:
         nodes = [
             {"id": "n1", "type": "heading", "text": "商务标"},
@@ -404,20 +446,97 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
 
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
+    enhanced: list[str] = []
     if llm_enabled():
+        import re
+
         client = LLMClient()
-        business_text = "\n".join(n.get("text", "") for n in models[1]["nodes"])
-        reply = await client.chat(
-            "你是标书撰写助手。基于给定草稿改写为正式投标语言，只调整措辞与结构，禁止新增企业事实。直接输出正文。",
-            f"商务标草稿：\n{business_text[:8000]}",
-        )
-        if reply.strip():
+
+        def _split_nodes(text: str) -> list[dict]:
+            """把 LLM 输出的 Markdown 拆成段落/标题节点（段落按空行合并）。"""
+            nodes: list[dict] = []
+            buf: list[str] = []
+            idx = 0
+
+            def flush() -> None:
+                nonlocal idx
+                if buf:
+                    content = "\n".join(buf).strip()
+                    if content:
+                        nodes.append({"id": f"llm-n{idx}", "type": "paragraph", "text": content})
+                        idx += 1
+                    buf.clear()
+
+            for raw in text.splitlines():
+                line = raw.rstrip()
+                if re.match(r"^#{1,4}\s", line):
+                    flush()
+                    title = line.lstrip("#").strip()
+                    if title:
+                        nodes.append({"id": f"llm-n{idx}", "type": "heading", "text": title})
+                        idx += 1
+                elif line.strip():
+                    buf.append(line.strip())
+                else:
+                    flush()
+            flush()
+            return nodes or [{"id": "llm-n0", "type": "paragraph", "text": text.strip()}]
+
+        # 商务标：正式投标语言改写（禁止新增企业事实）
+        business_req_text = "\n".join(
+            f"- {r.content}"
+            for key in req_by_type
+            if key not in ("tech_requirement", "quote_rule")
+            for r in req_by_type[key][:10]
+        ) or "（未解析到资格/商务要求）"
+        business_draft = "\n".join(n.get("text", "") for n in models[1]["nodes"])
+        try:
+            business_reply = await client.chat(
+                "你是投标文件撰写助手。基于给定草稿与要求改写为正式投标语言，"
+                "只调整措辞与结构，禁止新增企业事实。直接输出正文。",
+                f"项目名称：{project_name}\n招标人：{project.buyer if project else '未提供'}\n"
+                f"企业事实：\n{fact_text}\n资格/商务要求：\n{business_req_text}\n草稿：\n{business_draft[:6000]}",
+            )
+        except Exception:  # noqa: BLE001  LLM 失败回退确定性草稿
+            business_reply = ""
+        if business_reply.strip():
             models[1] = {
                 "nodes": [
-                    {"id": "llm1", "type": "heading", "text": "商务标"},
-                    {"id": "llm2", "type": "paragraph", "text": reply.strip()},
+                    {"id": "llm-b0", "type": "heading", "text": "商务标"},
+                    *_split_nodes(business_reply.strip()),
                 ]
             }
+            enhanced.append("business")
+
+        # 技术标：全文生成（逐条响应技术要求 + 历史素材作专业写法参考）
+        tech_req_text = "\n".join(
+            f"- {r.content}" for r in req_by_type.get("tech_requirement", [])[:20]
+        ) or "（未解析到技术要求，按当前材料内容组织）"
+        try:
+            tech_reply = await client.chat(
+                "你是投标文件撰写助手，撰写《技术标》正式正文。要求：\n"
+                "1. 分章节组织（技术方案总体说明、主要技术参数及响应、生产与供货组织、质量保障、售后服务、进度与交付等，按招标要求取舍），用 ## 分章；\n"
+                "2. 逐条响应给定技术要求，禁止遗漏；\n"
+                "3. 只依据给定材料与历史参考素材中的通用专业写法，禁止编造企业事实、业绩、人员、证书；\n"
+                "4. 禁止沿用历史项目名称、招标人、金额、工期、人员姓名；\n"
+                "5. 资料不足处明确标注【待补充】；\n"
+                "6. 直接输出 Markdown 正文。",
+                f"项目名称：{project_name}\n招标人：{project.buyer if project else '未提供'}\n"
+                f"技术要求：\n{tech_req_text}\n"
+                f"当前招标材料摘录：\n{material_text[:12000]}\n"
+                f"历史参考素材（仅作专业写法参考，不得复制其中项目事实）：\n{knowledge_text[:4000]}\n"
+                f"企业产品/能力事实：\n{fact_text[:3000]}",
+            )
+        except Exception:  # noqa: BLE001  LLM 失败回退确定性草稿
+            tech_reply = ""
+        if tech_reply.strip():
+            models[2] = {
+                "nodes": [
+                    {"id": "llm-t0", "type": "heading", "text": "技术标"},
+                    *_split_nodes(tech_reply.strip()),
+                ]
+            }
+            enhanced.append("technical")
     versions: dict[int, int] = {}
     for dtype, model in models.items():
         deliverable = await session.scalar(
@@ -445,7 +564,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         versions[dtype] = version.version_no
 
     if llm_enabled():
-        task.result = {**versions, "note": "确定性草稿 + LLM 润色（门禁已开）"}
+        task.result = {
+            **versions,
+            "note": "确定性草稿 + LLM 全文生成" + (f"（增强：{','.join(enhanced)}）" if enhanced else "（LLM 不可用，草稿回退）"),
+            "knowledge_refs": [
+                {"file_name": i["file_name"], "project_id": i["project_id"], "source_type": i["source_type"]}
+                for i in knowledge_refs
+            ],
+        }
     else:
         task.result = {**versions, "note": "确定性草稿（云模型门禁关闭）"}
 

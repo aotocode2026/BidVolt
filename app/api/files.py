@@ -12,6 +12,7 @@ from app.config import settings
 from app.constants import Permission
 from app.db import get_session
 from app.models.doc import DocBlock
+from app.models.enterprise_domain import EnterpriseAsset
 from app.models.file import FileObject
 from app.models.project_material import ProjectMaterial
 from app.schemas.project import Page
@@ -34,6 +35,7 @@ def _file_dict(f: FileObject) -> dict:
         "sha256": f.sha256,
         "category": f.category,
         "project_id": f.project_id,
+        "document_role": f.document_role,
     }
 
 
@@ -41,6 +43,7 @@ def _file_dict(f: FileObject) -> dict:
 async def upload_files(
     target: str = Form(...),
     project_id: int | None = Form(default=None),
+    document_role: str | None = Form(default=None),
     files: list[UploadFile] = File(...),
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.FILE_UPLOAD)),
@@ -50,7 +53,7 @@ async def upload_files(
         data = await upload.read(settings.max_upload_bytes + 1)
         try:
             fobj = await file_service.process_upload(
-                session, user, data, upload.filename or "unnamed", target, project_id
+                session, user, data, upload.filename or "unnamed", target, project_id, document_role
             )
             await write_audit(
                 session,
@@ -61,7 +64,22 @@ async def upload_files(
                 object_type="file_object",
                 object_id=fobj.id,
             )
-            results.append({"file_id": fobj.id, "name": fobj.original_name, "size": fobj.size_bytes, "mime": fobj.mime_type, "status": fobj.status})
+            item = {
+                "file_id": fobj.id,
+                "name": fobj.original_name,
+                "size": fobj.size_bytes,
+                "mime": fobj.mime_type,
+                "status": fobj.status,
+                "document_role": fobj.document_role,
+            }
+            if target == "enterprise":
+                # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest
+                asset = await session.scalar(
+                    select(EnterpriseAsset).where(EnterpriseAsset.source_file_id == fobj.id)
+                )
+                item["asset_id"] = asset.id if asset else None
+                item["auto_ingest"] = True
+            results.append(item)
         except ValueError as exc:
             results.append({"name": upload.filename, "error": str(exc)})
         except QuotaExceeded as exc:

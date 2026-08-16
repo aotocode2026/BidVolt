@@ -42,6 +42,27 @@ def _quote_params(body: dict) -> QuoteParams:
     )
 
 
+# 报价数值契约（Issue #6 P0）：金额/费率一律字符串输出，避免 float 精度与前端精度问题
+_MONEY_KEYS = {
+    "suggested", "min_price", "median", "avg", "base", "cap",
+    "suggested_price", "median_price", "win_price", "unit_price", "price", "cost",
+}
+
+
+def _money_dict(d: dict) -> dict:
+    out: dict = {}
+    for k, v in d.items():
+        if k in _MONEY_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = str(v)
+        elif k == "price_range" and isinstance(v, list):
+            out[k] = [str(x) for x in v]
+        elif k == "samples" and isinstance(v, list):
+            out[k] = [_money_dict(s) if isinstance(s, dict) else s for s in v]
+        else:
+            out[k] = v
+    return out
+
+
 @router.get("/history")
 async def history_query(
     material_ref: str | None = None,
@@ -53,7 +74,7 @@ async def history_query(
     await session.commit()
     return {
         "sample_count": len(samples),
-        "samples": samples,
+        "samples": [_money_dict(s) for s in samples],
         "snapshot_ids": snapshot_ids,
         "readonly": True,
     }
@@ -65,7 +86,7 @@ async def material_samples(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
 ) -> list[dict]:
-    return await provider.get_material_samples(material_ref)
+    return [_money_dict(s) for s in await provider.get_material_samples(material_ref)]
 
 
 @router.get("/history/source-metadata")
@@ -99,7 +120,7 @@ async def calculate_quote(
     )
     session.add(calc)
     await session.commit()
-    return {"calc_id": calc.id, "result": result}
+    return {"calc_id": calc.id, "result": _money_dict(result)}
 
 
 @router.post("/recalc")
@@ -147,7 +168,7 @@ async def recalc_quote(
     result = calculate(params, samples)
     return {
         "calc_id": calc.id,
-        "recalc": result,
+        "recalc": _money_dict(result),
         "matches_original": result["suggested"] == calc.result.get("suggested"),
         "engine_version": result["engine_version"],
     }
@@ -179,7 +200,7 @@ async def quote_strategies(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="未知策略")
     calc.strategy_results = {**(calc.strategy_results or {}), strategy: out}
     await session.commit()
-    return out
+    return _money_dict(out)
 
 
 @router.post("/ai-suggest")
@@ -188,6 +209,11 @@ async def ai_suggest(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.QUOTE_CALCULATE)),
 ) -> dict:
+    """AI 报价建议（Issue #6 P0 整改）：
+    - 无依据/引擎无测算结果时不出任何数字（D-F：无追溯依据不输出数字）；
+    - 仅返回参考区间（源自确定性引擎结果 ±5%），不再返回 recommended 单点数字；
+    - 区间只作决策参考，正式报价仅走 calculate/recalc/strategies/apply 确定性链路。
+    """
     calc = await session.scalar(
         select(QuoteCalc).where(
             QuoteCalc.id == body["calc_id"],
@@ -197,23 +223,22 @@ async def ai_suggest(
     if calc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="测算不存在")
     basis = body.get("basis")
-    if not basis:
-        return {"unavailable": True, "message": "无可追溯依据，不输出报价数字（D-F）"}
-    suggested = calc.result["suggested"]
-    low = round(suggested * 0.95, 2)
-    high = round(suggested * 1.05, 2)
+    suggested = (calc.result or {}).get("suggested")
+    if not basis or suggested is None:
+        return {"unavailable": True, "message": "无可追溯依据或引擎无测算结果，不输出报价数字（D-F）"}
+    low = round(float(suggested) * 0.95, 2)
+    high = round(float(suggested) * 1.05, 2)
     suggest = {
         "price_range": [low, high],
-        "recommended": suggested,
-        "reasons": [f"基于历史样本中位数与调整系数；依据：{basis}"],
-        "assumptions": list(calc.result.get("adjustments", {}).keys()),
+        "reasons": [f"参考区间基于确定性引擎测算价的 ±5%；依据：{basis}"],
+        "assumptions": list((calc.result or {}).get("adjustments", {}).keys()),
         "confidence": "low",
         "risk_level": "medium",
         "is_ai_suggest": True,
     }
     calc.ai_suggest = suggest
     await session.commit()
-    return suggest
+    return _money_dict(suggest)
 
 
 @router.post("/apply", status_code=status.HTTP_201_CREATED)
@@ -386,7 +411,7 @@ async def sample_detail(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="样本不存在")
-    return {
+    return _money_dict({
         "sample_id": row.id,
         "provider_id": row.provider_id,
         "material_name": row.material_name,
@@ -397,7 +422,7 @@ async def sample_detail(
         "win_date": row.win_date.isoformat(),
         "source_hash": row.source_hash,
         "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
-    }
+    })
 
 
 @router.get("/history/{material_ref}/trend")
@@ -414,7 +439,7 @@ async def material_trend(
     for s in samples:
         regions.setdefault(s["region"], []).append(s["win_price"])
     latest = max(samples, key=lambda s: s["win_date"]) if samples else None
-    return {
+    return _money_dict({
         "material_ref": material_ref,
         "sample_count": n,
         "min_price": prices[0] if n else None,
@@ -427,4 +452,4 @@ async def material_trend(
             k: {"count": len(v), "avg": round(sum(v) / len(v), 2)} for k, v in regions.items()
         },
         "readonly": True,
-    }
+    })

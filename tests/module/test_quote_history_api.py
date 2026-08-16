@@ -43,7 +43,7 @@ def test_sample_detail_and_trend(client):
     assert sd.status_code == 200
     sample = sd.json()
     assert sample["sample_id"] == sid
-    assert sample["win_price"] > 0
+    assert isinstance(sample["win_price"], str) and float(sample["win_price"]) > 0  # 金额字符串契约（Issue #6）
     assert sample["win_date"]
 
     tr = client.get("/api/v1/quotes/history/CABLE-YJV-3x95/trend", headers=h)

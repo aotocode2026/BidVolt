@@ -14,8 +14,10 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
 - 登录/会话：JWT 登录、刷新、企业上下文、RLS 租户隔离
 - 项目工作台：项目 CRUD/归档、材料上传（txt/docx/xlsx/pdf/**OFD**）、解析状态
 - 项目快照：列表 + 详情（不可变 manifest：材料哈希/要求版本/成果版本/规则与模型版本）；活动任务查询
-- Requirement：提取/确认/修订/证据定位（文件坐标）；同类型多条要求共存（req_key 稳定身份），补遗用 key 覆盖并递增 revision
-- 成果版本链：商务标/技术标/报价单生成、校核、CAS 版本冲突保护、**指定版本下载**（DOCX/XLSX）、**在线编辑会话**（租约/检查点/完成生成新版本）；AI 修改建议走真实 LLM
+- Requirement：提取/确认/修订/证据定位（文件坐标）；同类型多条要求共存（req_key 稳定身份），补遗用 key 覆盖并递增 revision；
+  **用户确认/修正闭环**（confirm/correct，expected_revision CAS 409 + 审计）
+- 成果版本链：商务标/技术标/报价单生成、校核、CAS 版本冲突保护、**指定版本下载**（DOCX/XLSX）、**在线编辑会话**（租约/检查点/完成生成新版本）；AI 修改建议走真实 LLM；
+  **技术标/商务标由 LLM 全文生成**（逐条响应技术要求、历史素材作专业写法参考、不足处标注【待补充】）
 - 评审闭环：逐条 review_item、材料补充、单条/批量确认、重审、仅改受影响项；用户可修改并保存评审建议（override，保留原始建议）；按 run_id 恢复完整评审上下文
 - 企业资料：结构化 fact 确认/纠正（带修订记录）、资产 revision 列表、处理队列列表
 - 异步任务：SSE 白名单事件（snapshot/progress/done/cancelled/failed），支持刷新与断线重连取当前状态
@@ -24,9 +26,13 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
 - 项目助手：会话 + 消息历史（刷新可恢复），LLM 回答带上下文入库
 - 搜索：AnySearch 真实接入（官方 JSON-RPC 端点），DLP 脱敏 + 域名 trust_level 分级，
   无 Key 走匿名额度（约 50 次/天），正式 Key 由运维在 Secret Manager 配置
+- **企业知识检索**（Issue #4 第一阶段）：历史项目材料/企业资料/已确认事实的关键词检索，
+  来源可追溯（文件/项目/页码/块索引），租户隔离 + 默认排除当前项目，REST + MCP `search_knowledge`
+- **招标公告 URL 安全导入**（Issue #6）：逐跳 SSRF/DNS rebinding 防护、重定向/大小/类型限额，
+  正文仅进入本项目材料（document_role=招标公告），失败落 error_code 留审计
 - 云模型：MiniMax 文本（LLM）、百炼 DashScope qwen-vl（视觉），受 P1 门禁控制
-- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（24 个工具）+ 5 个业务 Skill
-- Demo 前端：`/demo/`（真实调用后端 API，用于逐项验证）
+- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（25 个工具）+ 5 个业务 Skill
+- 测试客户端：`/demo/`（真实调用后端 API，多环境配置 + 连接测试，`scripts/build_test_client.py` 打包分发）
 
 ## 2. 架构
 
@@ -240,12 +246,14 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
-当前基线（2026-08-16）：本地 207 passed / 1 skipped（含生产 fail-fast、任务租约与多企业评审回归）；
+当前基线（2026-08-16）：本地 226 passed / 1 skipped（含生产 fail-fast、任务租约、多企业评审回归与
+Issue #4/#5/#6 新增用例——Requirement 确认/修正、evaluate provider、公告导入 SSRF、知识检索租户隔离、
+报价金额字符串契约、错误 envelope、技术标实质正文回归等）；
 服务器容器（PG+RLS）204 passed（3 个用例为环境交互问题：2 个因生产 .env 与用例 dev 假设冲突——
 已由 `run_container_tests.sh` 固定 `BIDVOLT_ENV=dev` 解决，1 个 capability 终态用例与线上 worker
 竞争任务队列，建议停 worker 后复跑）；线上冒烟 `smoke_all` 4/4 PASS（真实 OFD / AnySearch /
 MiniMax / 在线编辑 / PG+RLS），`live_bid_check`（三份成果生成）/ `live_req_check`（材料解析→
-Requirement）PASS。
+Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
 
 ## 11. 已知限制 / 路线图
 

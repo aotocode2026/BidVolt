@@ -182,11 +182,15 @@ async def logout(
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(user: UserContext = Depends(get_current_user)) -> MeResponse:
+async def me(
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(get_current_user),
+) -> MeResponse:
+    enterprise = await session.get(Enterprise, user.enterprise_id)
     return MeResponse(
         user_id=user.user_id,
         email=user.email,
         enterprise_id=user.enterprise_id,
-        enterprise_name="",  # 由前端补充展示；如需企业名可在 UserContext 扩展
+        enterprise_name=enterprise.name if enterprise else "",
         permissions=sorted(user.permissions),
     )

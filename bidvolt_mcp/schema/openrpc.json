@@ -36,6 +36,50 @@
       }
     },
     {
+      "name": "search_knowledge",
+      "summary": "检索本企业历史项目材料/企业资料/已确认事实（来源可追溯，默认排除当前项目自身材料），供生成/校核/评审引用",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "integer"
+              },
+              "top_k": {
+                "type": "integer"
+              },
+              "include_assets": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "search_assets",
       "summary": "按关键词/分类搜索企业资料（企业事实唯一来源）",
       "params": [

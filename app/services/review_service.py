@@ -68,8 +68,30 @@ async def run_evaluation(
     *,
     enterprise_id: int,
     project_id: int,
+    provider_id: int | None = None,
 ) -> dict:
-    """生成 project_snapshot + review_run + score_record + review_items（初始 pending_confirm）。"""
+    """生成 project_snapshot + review_run + score_record + review_items（初始 pending_confirm）。
+
+    provider_id（Issue #6 P0）：未传则使用企业内置 Provider；传入则校验
+    （必须属于本企业、已启用、当前仅支持 builtin_completeness 引擎），
+    非法/禁用/跨租户/不支持的引擎一律失败关闭（ValueError，由 API 映射 404/422）。
+    评审冻结 Provider 版本与配置身份：provider_code/version 计入快照与 raw_hash。
+    """
+    if provider_id is None:
+        provider = await ensure_builtin_provider(session, enterprise_id)
+    else:
+        provider = await session.scalar(
+            select(ReviewProvider).where(
+                ReviewProvider.id == provider_id,
+                ReviewProvider.enterprise_id == enterprise_id,
+            )
+        )
+        if provider is None:
+            raise ValueError("provider_not_found")
+        if not provider.enabled:
+            raise ValueError("provider_disabled")
+        if provider.provider_code != "builtin_completeness":
+            raise ValueError("provider_unsupported")
     deliverables = (
         await session.scalars(
             select(Deliverable).where(
@@ -82,18 +104,19 @@ async def run_evaluation(
     input_refs = {
         "deliverable_versions": {d.id: d.current_version_no for d in deliverables},
         "ruleset": RULESET_VERSION,
+        "provider_code": provider.provider_code,
+        "provider_version": provider.provider_version,
     }
     snapshot = ProjectSnapshot(
         enterprise_id=enterprise_id,
         project_id=project_id,
         snapshot_type="review",
         input_refs=input_refs,
-        rules_version={"ruleset": RULESET_VERSION},
+        rules_version={"ruleset": RULESET_VERSION, "provider_code": provider.provider_code},
     )
     session.add(snapshot)
     await session.flush()
 
-    provider = await ensure_builtin_provider(session, enterprise_id)
     items_data: list[dict] = []
     for dtype, name in DELIVERABLE_NAMES.items():
         if dtype in existing_types:
@@ -139,7 +162,17 @@ async def run_evaluation(
                 }
             )
 
-    raw_hash = sha256(json.dumps(items_data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    raw_hash = sha256(
+        json.dumps(
+            {
+                "provider_code": provider.provider_code,
+                "provider_version": provider.provider_version,
+                "items": items_data,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
     run = ReviewRun(
         enterprise_id=enterprise_id,
         project_id=project_id,

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     bind_host: str = "0.0.0.0"
     bind_port: int = 8123
 
+    # CORS（Issue #6 P0 生产访问方案）：逗号分隔的来源白名单；空 = 允许所有来源
+    # （Bearer 鉴权无 cookie 依赖）。生产建议同源反代，或收紧为明确来源。
+    cors_origins: str = ""
+
     # 文件安全（M2，P1）
     max_upload_bytes: int = 200 * 1024 * 1024
     virus_scan_required: bool = False  # 生产置 True：ClamAV 不可用则 fail-closed

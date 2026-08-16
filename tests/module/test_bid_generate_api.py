@@ -184,31 +184,59 @@ def test_bid_review_detects_coverage_and_name(client):
     assert not any("电压等级 10kV" in m for m in messages)
 
 
-def test_bid_generate_llm_enhances_business(client, monkeypatch):
+def test_bid_generate_llm_generates_business_and_technical(client, monkeypatch):
+    """回归（产品反馈）：技术标必须由 LLM 生成实质正文，不得只剩确定性 stub。"""
     monkeypatch.setattr(settings, "data_classification_confirmed", 1)
     monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
     monkeypatch.setattr(settings, "minimax_api_key", "test-key")
 
     async def fake_chat(self, system, user):
+        if "技术要求" in user:
+            return (
+                "## 一、技术方案总体说明\n本项目技术方案依据招标要求编制，涵盖设备选型、制造、试验与交付全流程，"
+                "确保各项技术指标满足招标文件要求。\n## 二、主要技术参数及响应\n- 电压等级 10kV\n- 抗短路能力 30kA\n"
+                "## 三、质量保障\n建立健全质量保证体系，从原材料进厂检验到出厂试验全过程受控。\n"
+                "## 四、售后服务\n提供质保期内免费技术服务与备品备件支持。"
+            )
         return "润色后的正式商务标正文。"
 
     monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
 
     h, pid = _setup(client)
     client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={
+            "requirements": [
+                {"req_type": "tech_requirement", "content": "电压等级 10kV", "coordinates": [{"file_id": 1}]},
+                {"req_type": "tech_requirement", "content": "抗短路能力 30kA", "coordinates": [{"file_id": 1}]},
+            ]
+        },
+        headers=h,
+    )
+    client.post(
         f"/api/v1/projects/{pid}/tasks",
         json={
             "task_type": "bid_generate",
             "payload": {"material_ref": "CABLE-YJV-3x95", "cost": 100},
-            "idempotency_key": "bg-llm-1",
+            "idempotency_key": "bg-llm-2",
         },
         headers=h,
     )
     task = _drain_one_task()
     assert task.status == 3
-    assert "LLM 润色" in task.result["note"]
+    assert "LLM 全文生成" in task.result["note"]
+    assert "business" in task.result["note"] and "technical" in task.result["note"]
 
     deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
     biz = next(d for d in deliverables if d["deliverable_type"] == 1)
-    content = client.get(f"/api/v1/deliverables/{biz['deliverable_id']}/content", headers=h).json()
-    assert "润色后的正式商务标正文" in content["model"]["nodes"][1]["text"]
+    biz_content = client.get(f"/api/v1/deliverables/{biz['deliverable_id']}/content", headers=h).json()
+    assert "润色后的正式商务标正文" in biz_content["model"]["nodes"][1]["text"]
+
+    tech = next(d for d in deliverables if d["deliverable_type"] == 2)
+    tech_content = client.get(f"/api/v1/deliverables/{tech['deliverable_id']}/content", headers=h).json()
+    tech_text = "\n".join(n.get("text", "") for n in tech_content["model"]["nodes"])
+    assert "技术方案总体说明" in tech_text
+    assert "电压等级 10kV" in tech_text
+    assert "抗短路能力 30kA" in tech_text
+    assert "草稿由 BidVolt 确定性生成" not in tech_text  # 关键回归：不得退回 stub
+    assert len(tech_text) >= 100  # 实质正文，而非占位

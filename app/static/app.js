@@ -1,5 +1,10 @@
-/* BidVolt Demo：直接调用 /api/v1，覆盖全业务流程 */
-const API = "/api/v1";
+/* BidVolt 测试客户端（Issue #5）：多环境配置 + 连接测试 + 全业务流程真实调用 */
+let API_BASE = "";
+try {
+  const cur = JSON.parse(localStorage.getItem("bidvolt_env_cur") || "null");
+  API_BASE = cur && cur.base ? String(cur.base).replace(/\/+$/, "") : "";
+} catch { API_BASE = ""; }
+const API = () => API_BASE + "/api/v1";
 let token = localStorage.getItem("bidvolt_token") || "";
 let projectId = null;
 let deliverables = [];
@@ -19,7 +24,7 @@ async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (opts.body && !(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  const resp = await fetch(API + path, { ...opts, headers, body: opts.body instanceof FormData ? opts.body : opts.body ? JSON.stringify(opts.body) : undefined });
+  const resp = await fetch(API() + path, { ...opts, headers, body: opts.body instanceof FormData ? opts.body : opts.body ? JSON.stringify(opts.body) : undefined });
   if (resp.status === 204) return null;
   const text = await resp.text();
   let data = null;
@@ -49,6 +54,7 @@ async function logout() {
 const TABS = [
   ["auth", "认证"], ["project", "项目"], ["material", "资料"], ["deliverable", "成果"],
   ["task", "任务/评标"], ["quote", "报价"], ["export", "导出"], ["search", "搜索/对话"],
+  ["settings", "设置/连接"],
 ];
 
 function renderTabs() {
@@ -58,7 +64,7 @@ function renderTabs() {
 
 function renderPanel(tab) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  const fn = { auth: panelAuth, project: panelProject, material: panelMaterial, deliverable: panelDeliverable, task: panelTask, quote: panelQuote, export: panelExport, search: panelSearch }[tab];
+  const fn = { auth: panelAuth, project: panelProject, material: panelMaterial, deliverable: panelDeliverable, task: panelTask, quote: panelQuote, export: panelExport, search: panelSearch, settings: panelSettings }[tab];
   fn();
 }
 
@@ -155,6 +161,27 @@ async function loadTasks() {
   } catch (e) { log(`任务列表失败：${e}`, "err"); }
 }
 
+async function importNotice() {
+  if (!projectId) return log("先选用项目", "err");
+  const url = $("n-url").value.trim();
+  if (!url) return log("请输入公告 URL", "err");
+  try {
+    const data = await api(`/projects/${projectId}/tender-notices/import-url`, { method: "POST", body: { url } });
+    $("m-extra").textContent = JSON.stringify(data, null, 2);
+    log(`公告导入：status=${data.status}${data.error_code ? " 错误=" + data.error_code : " file_id=" + data.file_id}`, data.status === 2 ? "ok" : "err");
+    refreshFiles();
+  } catch (e) { log(`公告导入失败：${e}`, "err"); }
+}
+
+async function loadNotices() {
+  if (!projectId) return log("先选用项目", "err");
+  try {
+    const data = await api(`/projects/${projectId}/tender-notices`);
+    $("m-extra").textContent = JSON.stringify(data.items, null, 2);
+    log(`公告导入记录 ${data.items.length} 条`, "ok");
+  } catch (e) { log(`公告列表失败：${e}`, "err"); }
+}
+
 /* ---------- 资料 ---------- */
 function panelMaterial() {
   $("panel").innerHTML = `
@@ -168,6 +195,9 @@ function panelMaterial() {
     </div>
     <div class="row"><button class="ghost" onclick="parseProject()">触发招标解析任务</button>
       <span class="muted">当前项目：#${projectId ?? "未选"}</span></div>
+    <div class="row"><input id="n-url" placeholder="招标公告 URL（安全导入，SSRF 防护）">
+      <button onclick="importNotice()">导入公告</button>
+      <button class="ghost" onclick="loadNotices()">公告列表</button></div>
     <h4>文件</h4><table><thead><tr><th>ID</th><th>名称</th><th>归属</th><th>状态</th><th>解析</th></tr></thead><tbody id="m-files"></tbody></table>
     <h4>企业资料</h4><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="m-assets"></tbody></table>
     <pre id="m-extra" class="muted"></pre>`;
@@ -658,10 +688,20 @@ function panelSearch() {
     <h3>搜索与对话</h3>
     <div class="row"><input id="s-query" placeholder="搜索关键词"><button onclick="doSearch()">搜索</button></div>
     <pre id="s-result" class="muted"></pre>
+    <div class="row"><input id="k-query" placeholder="企业知识检索（历史案例/资料）"><button onclick="doKnowledge()">知识检索</button></div>
+    <pre id="k-result" class="muted"></pre>
     <div class="row"><select id="c-sel"></select><button onclick="newConversation()">新建会话</button></div>
     <div class="row"><input id="c-msg" placeholder="向助手提问"><button onclick="sendMessage()">发送</button></div>
     <pre id="c-history" class="muted"></pre>`;
   loadConversations();
+}
+
+async function doKnowledge() {
+  try {
+    const data = await api("/knowledge/search", { method: "POST", body: { query: $("k-query").value, project_id: projectId } });
+    $("k-result").textContent = JSON.stringify(data, null, 2);
+    log(`知识检索命中 ${data.items.length} 条（来源可追溯）`, "ok");
+  } catch (e) { $("k-result").textContent = String(e); log(`知识检索失败：${e}`, "err"); }
 }
 
 async function doSearch() {
@@ -716,6 +756,93 @@ async function sendMessage() {
     log(`助手（${data.mode}）：${data.reply}`, "ok");
     showMessages();
   } catch (e) { log(`发送失败：${e}`, "err"); }
+}
+
+/* ---------- 设置 / 连接测试（Issue #5 测试客户端） ---------- */
+function loadEnvs() {
+  try { return JSON.parse(localStorage.getItem("bidvolt_envs") || "[]"); } catch { return []; }
+}
+function saveEnvs(envs) { localStorage.setItem("bidvolt_envs", JSON.stringify(envs)); }
+function currentEnv() {
+  try { return JSON.parse(localStorage.getItem("bidvolt_env_cur") || "null"); } catch { return null; }
+}
+
+function panelSettings() {
+  const envs = loadEnvs();
+  const cur = currentEnv();
+  $("panel").innerHTML = `
+    <h3>服务地址与连接测试</h3>
+    <div class="row">
+      <input id="env-name" placeholder="环境名（如 本地/测试/生产）">
+      <input id="env-base" placeholder="后端地址（如 http://127.0.0.1:8123，留空=同源）">
+      <button onclick="addEnv()">保存环境</button>
+    </div>
+    <table><thead><tr><th>环境名</th><th>地址</th><th>当前</th><th>操作</th></tr></thead><tbody>
+      ${envs.map((e, i) => `<tr>
+        <td>${esc(e.name)}</td><td>${esc(e.base || "（同源）")}</td>
+        <td>${cur && cur.name === e.name ? "✔" : ""}</td>
+        <td><button class="ghost" onclick="selectEnv(${i})">选用</button>
+            <button class="ghost" onclick="deleteEnv(${i})">删除</button></td>
+      </tr>`).join("")}
+    </tbody></table>
+    <div class="row">
+      <button onclick="testConnection()">测试连接（healthz + openapi）</button>
+      <span class="muted">切换环境后无需刷新，登录状态按 token 保留；切换环境建议重新登录</span>
+    </div>
+    <pre id="env-result" class="muted">当前：${cur ? `${cur.name} → ${cur.base || "同源"}` : "同源默认（未保存环境）"}</pre>`;
+}
+
+function addEnv() {
+  const name = $("env-name").value.trim();
+  const base = $("env-base").value.trim().replace(/\/+$/, "");
+  if (!name) return log("环境名不能为空", "err");
+  const envs = loadEnvs().filter((e) => e.name !== name);
+  envs.push({ name, base });
+  saveEnvs(envs);
+  localStorage.setItem("bidvolt_env_cur", JSON.stringify({ name, base }));
+  API_BASE = base;
+  log(`已保存并选用环境：${name} → ${base || "同源"}`, "ok");
+  panelSettings();
+}
+
+function selectEnv(i) {
+  const envs = loadEnvs();
+  const env = envs[i];
+  if (!env) return;
+  localStorage.setItem("bidvolt_env_cur", JSON.stringify(env));
+  API_BASE = env.base;
+  log(`已切换环境：${env.name} → ${env.base || "同源"}（建议重新登录）`, "ok");
+  panelSettings();
+}
+
+function deleteEnv(i) {
+  const envs = loadEnvs();
+  const removed = envs.splice(i, 1);
+  saveEnvs(envs);
+  const cur = currentEnv();
+  if (cur && removed[0] && cur.name === removed[0].name) {
+    localStorage.removeItem("bidvolt_env_cur");
+    API_BASE = "";
+  }
+  panelSettings();
+}
+
+async function testConnection() {
+  const base = API_BASE;
+  const out = [];
+  for (const [label, path] of [["healthz", "/healthz"], ["openapi", "/openapi.json"]]) {
+    const url = base + path;
+    const t0 = Date.now();
+    try {
+      const resp = await fetch(url, { method: "GET" });
+      const text = await resp.text();
+      out.push(`${label}: HTTP ${resp.status}（${Date.now() - t0}ms）${text.slice(0, 80)}`);
+    } catch (e) {
+      out.push(`${label}: 失败 — ${String(e)}`);
+    }
+  }
+  $("env-result").textContent = `测试目标：${base || "同源（本页）"}\n` + out.join("\n");
+  log(`连接测试完成：${out[0]}`, out[0].includes("200") ? "ok" : "err");
 }
 
 /* ---------- 初始化 ---------- */

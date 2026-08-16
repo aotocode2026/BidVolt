@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Numeric, String, Text, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, BigInt, JSONType, TimestampMixin
@@ -24,6 +26,11 @@ class Requirement(Base, TimestampMixin):
     revision: Mapped[int] = mapped_column(BigInt, nullable=False, default=1)
     supersedes: Mapped[int | None] = mapped_column(BigInt)
     current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 用户确认/修正闭环（Issue #6 P0）：unconfirmed / confirmed / rejected
+    confirm_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unconfirmed", server_default="unconfirmed"
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RequirementRevision(Base, TimestampMixin):

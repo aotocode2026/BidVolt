@@ -197,6 +197,41 @@ def main() -> int:
             record("成果/校核/在线编辑", False, str(e)[:80])
         shot(page, tag, "06-编辑完成")
 
+        # ---------- 4b. 成果内容质量（Issue #7 原则：任务 done ≠ 成果可用；产品反馈回归） ----------
+        try:
+            quality = page.evaluate(
+                """async () => {
+              const base = location.origin;
+              const h = { Authorization: 'Bearer ' + localStorage.getItem('bidvolt_token') };
+              const resp = await fetch(base + '/api/v1/deliverables?project_id=' + projectId, { headers: h });
+              const payload = await resp.json();
+              const items = Array.isArray(payload) ? payload : (payload.items || []);
+              const tech = items.find(d => d.deliverable_type === 2);
+              const biz = items.find(d => d.deliverable_type === 1);
+              if (!tech || !biz) return { error: '缺少技术标/商务标成果' };
+              const tc = await (await fetch(base + '/api/v1/deliverables/' + tech.deliverable_id + '/content', { headers: h })).json();
+              const bc = await (await fetch(base + '/api/v1/deliverables/' + biz.deliverable_id + '/content', { headers: h })).json();
+              const t = tc.model.nodes.map(n => n.text || '').join('\\n');
+              const b = bc.model.nodes.map(n => n.text || '').join('\\n');
+              return {
+                tlen: t.length,
+                blen: b.length,
+                techStub: t.includes('草稿由 BidVolt 确定性生成'),
+                bizStub: b.includes('草稿由 BidVolt 确定性生成'),
+                techHead: t.slice(0, 80),
+              };
+            }"""
+            )
+            assert quality.get("error") is None, quality
+            assert quality["tlen"] >= 200, f"技术标正文过短（{quality['tlen']} 字）: {quality.get('techHead')}"
+            assert not quality["techStub"], "技术标仍是确定性占位草稿（产品反馈回归未修复）"
+            assert quality["blen"] >= 100, f"商务标正文过短（{quality['blen']} 字）"
+            assert not quality["bizStub"], "商务标仍是确定性占位草稿"
+            record("成果内容质量", True, f"技术标 {quality['tlen']} 字 / 商务标 {quality['blen']} 字，均非占位草稿")
+        except Exception as e:  # noqa: BLE001
+            record("成果内容质量", False, str(e)[:120])
+        shot(page, tag, "06b-内容质量")
+
         # ---------- 5. 模拟评标（逐条 + 建议 override + 确认 + 重审） ----------
         try:
             tab(page, "任务/评标")
@@ -255,6 +290,41 @@ def main() -> int:
             log_tail = page.evaluate("document.getElementById('log').innerText.split('\\n').slice(0,4).join(' | ')")
             record("搜索", False, f"{str(e)[:60]} LOG={log_tail[:120]}")
         shot(page, tag, "10-会话")
+
+        # ---------- 7b. 企业知识检索（Issue #4，来源可追溯） ----------
+        try:
+            page.fill("#k-query", "电缆 供货方案")
+            page.click("button:has-text('知识检索')")
+            ok_kn = wait_log(page, "知识检索命中", timeout_ms=30000)
+            record("知识检索", ok_kn)
+        except Exception as e:  # noqa: BLE001
+            record("知识检索", False, str(e)[:80])
+
+        # ---------- 7c. 招标公告 URL 导入（Issue #6：SSRF 拒绝内网，落审计） ----------
+        try:
+            tab(page, "资料")
+            page.fill("#n-url", "http://127.0.0.1/blocked-notice.html")
+            page.click("button:has-text('导入公告')")
+            ok_imp = wait_log(page, "公告导入：status=3", timeout_ms=30000)
+            page.click("button:has-text('公告列表')")
+            ok_list = wait_log(page, "公告导入记录", timeout_ms=30000)
+            record("公告导入（SSRF 防护）", ok_imp and ok_list)
+        except Exception as e:  # noqa: BLE001
+            record("公告导入（SSRF 防护）", False, str(e)[:80])
+
+        # ---------- 7d. 测试客户端：环境切换 + 连接测试（Issue #5） ----------
+        try:
+            tab(page, "设置/连接")
+            page.click("button:has-text('测试连接')")
+            ok_conn = wait_log(page, "连接测试完成", timeout_ms=30000)
+            page.fill("#env-name", f"本地-{tag}")
+            page.fill("#env-base", base)
+            page.click("button:has-text('保存环境')")
+            ok_env = wait_log(page, "已保存并选用环境", timeout_ms=30000)
+            record("测试客户端（连接测试/环境保存）", ok_conn and ok_env)
+        except Exception as e:  # noqa: BLE001
+            record("测试客户端（连接测试/环境保存）", False, str(e)[:80])
+        shot(page, tag, "10b-新功能")
 
         # ---------- 8. 终检与导出 ----------
         try:

@@ -40,6 +40,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "list_requirements",
         "save_material_match_results",
         "list_material_matches",
+        "search_knowledge",
     },
     "bid_generate": {
         "search_assets",
@@ -53,12 +54,14 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "get_history_price",
         "get_requirement",
         "list_requirements",
+        "search_knowledge",
     },
     "bid_review": {
         "get_deliverable_content",
         "list_project_materials",
         "get_requirement",
         "list_requirements",
+        "search_knowledge",
     },
     "mock_evaluate": {
         "get_deliverable_content",
@@ -74,6 +77,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "get_deliverable_content",
         "save_deliverable",
         "list_requirements",
+        "search_knowledge",
     },
     "chat": {
         "search_assets",
@@ -84,6 +88,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "get_requirement",
         "list_requirements",
         "search_web",
+        "search_knowledge",
     },
 }
 

@@ -18,6 +18,7 @@ class Project(Base, TimestampMixin):
     enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     tender_no: Mapped[str | None] = mapped_column(String(100))
+    buyer: Mapped[str | None] = mapped_column(String(300))  # 招标人（Issue #6 P1）
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     note: Mapped[str | None] = mapped_column(Text)

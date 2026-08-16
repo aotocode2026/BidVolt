@@ -21,5 +21,6 @@ def test_openrpc_idl_matches_tool_defs():
         "save_material_match_results",
         "save_deliverable",
         "link_citation",
+        "search_knowledge",
     ):
         assert required in names, f"IDL 缺少 P0-3 要求工具：{required}"

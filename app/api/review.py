@@ -20,12 +20,28 @@ providers_router = APIRouter(prefix="/review-providers", tags=["review"])
 @router.post("/{project_id}/evaluate")
 async def evaluate(
     project_id: int,
+    body: dict | None = None,
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.SCORE_CONFIRM)),
 ) -> dict:
-    result = await review_service.run_evaluation(
-        session, enterprise_id=user.enterprise_id, project_id=project_id
-    )
+    """发起评审（Issue #6 P0）：可显式指定 provider_id，非法/禁用/跨租户/不支持的引擎失败关闭。"""
+    provider_id = (body or {}).get("provider_id")
+    if provider_id is not None and not isinstance(provider_id, int):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="provider_id 必须为整数")
+    try:
+        result = await review_service.run_evaluation(
+            session, enterprise_id=user.enterprise_id, project_id=project_id, provider_id=provider_id
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if message == "provider_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="评审 Provider 不存在") from exc
+        if message in ("provider_disabled", "provider_unsupported"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="评审 Provider 已禁用或不支持（当前仅支持 builtin_completeness 引擎）",
+            ) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=message) from exc
     await write_audit(
         session,
         enterprise_id=user.enterprise_id,

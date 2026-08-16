@@ -42,6 +42,7 @@ from app.models.review import (
 )
 from app.models.search import Citation, SearchSource
 from app.models.task import Task
+from app.models.tender_notice import TenderNotice
 
 __all__ = [
     "AppUser",
@@ -88,4 +89,5 @@ __all__ = [
     "RequirementRevision",
     "Task",
     "TenantQuota",
+    "TenderNotice",
 ]

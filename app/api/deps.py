@@ -41,6 +41,7 @@ TOOL_PERMISSION: dict[str, str] = {
     "get_asset": Permission.FILE_READ,
     "classify_enterprise_asset": Permission.PROJECT_EDIT,
     "upsert_enterprise_facts": Permission.PROJECT_EDIT,
+    "search_knowledge": Permission.FILE_READ,
 }
 
 

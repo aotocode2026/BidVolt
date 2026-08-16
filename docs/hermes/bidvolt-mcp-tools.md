@@ -27,6 +27,7 @@
 | 报价 | `calculate_quote` `get_history_price` `get_material_samples` `get_source_metadata` | 读 | 确定性测算 + 外部只读样本/来源元数据（P2：无 apply） |
 | 评标 | `get_latest_score` `get_review_items` `submit_score_items` `confirm_review_items` | 读/写 | 评分汇总 + 逐条 review_item 读写 + 批量确认（snapshot + EvidenceRef + CAS） |
 | 搜索 | `search_web` `save_source` `link_citation` | 读/写 | AnySearch 与引用追溯（P5，绑定版本） |
+| 知识检索 | `search_knowledge` | 读 | 本企业历史项目材料/企业资料/已确认事实检索（Issue #4，来源可追溯，默认排除当前项目） |
 
 **不暴露给 Hermes**：报价应用（apply）、导出、删除、编辑锁管理、权限管理。
 
