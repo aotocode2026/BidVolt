@@ -995,7 +995,10 @@ async function loadConversations() {
     const data = await api(`/projects/${projectId}/conversations`);
     $("c-sel").innerHTML = data.items.map((c) =>
       `<option value="${c.conversation_id}">#${c.conversation_id} ${esc(c.title)}</option>`).join("") || "<option>暂无会话</option>";
-    if (data.items.length) showMessages();
+    if (data.items.length) {
+      $("c-sel").value = String(data.items[data.items.length - 1].conversation_id);
+      showMessages();
+    }
   } catch (e) { log(`会话列表失败：${e}`, "err"); }
 }
 
@@ -1004,7 +1007,9 @@ async function newConversation() {
   try {
     const c = await api(`/projects/${projectId}/conversations`, { method: "POST", body: {} });
     log(`已创建会话 #${c.conversation_id}`, "ok");
-    loadConversations();
+    await loadConversations();
+    $("c-sel").value = String(c.conversation_id);  // 新建后立即选中，用户可直接提问（公网修复：原实现未等待列表加载，发送被静默拦截）
+    showMessages();
   } catch (e) { log(`创建会话失败：${e}`, "err"); }
 }
 
