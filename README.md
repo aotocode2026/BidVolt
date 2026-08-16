@@ -44,15 +44,21 @@ FastAPI（app.main，uvicorn :8123）
 ```
 
 单容器内由 **supervisord** 统一管理 postgres / app / worker / hermes / clamd / backup-cron，
-崩溃自动重启；容器入口为 sshd（无 systemd），部署脚本安装 `/etc/ssh/sshrc` 兜底：
-SSH 登录时若 supervisord 未运行则自动拉起。
+崩溃自动重启；容器入口 CMD 为 `/usr/sbin/sshd -D`（平台镜像无 systemd）。部署脚本安装两级
+自启动自举（均幂等，入口统一为 `/usr/local/bin/bidvolt-boot`）：
+
+1. **sshd 包装器（主）**：`/usr/sbin/sshd` 替换为包装脚本——容器重启时先触发自举
+   （supervisord 未运行则 `nohup bidvolt-init` 拉起全部服务），再 `exec /usr/sbin/sshd.real`；
+2. **sshrc 兜底（副）**：SSH 登录时若 supervisord 未运行同样触发自举（双保险）。
+
+自举日志：`/var/log/bidvolt/boot.log`。
 
 ## 3. 目录结构
 
 ```
 app/             FastAPI 应用（api/services/models/static demo）
 bidvolt_mcp/     MCP stdio server（OpenRPC IDL + 24 个工具）
-deploy/          容器部署脚本（install.sh / bidvolt-init.sh / supervisord.conf / install-hermes.sh / backup.sh）
+deploy/          容器部署脚本（install.sh / bidvolt-init.sh / bidvolt-boot.sh / supervisord.conf / install-hermes.sh / backup.sh / upgrade.sh / healthcheck.sh）
 docs/            架构/模块/威胁模型/数据分级授权清单/Hermes 契约与 Skill
 scripts/         冒烟与工具脚本（真实 OFD 样本、云能力线上冒烟、MCP 契约）
 tests/           pytest（unit/module，容器上跑 PG+RLS）
@@ -135,7 +141,7 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 
 - 重启单服务：`supervisorctl restart app|worker|hermes`
 - 改配置：`supervisorctl reread && supervisorctl update`
-- 日志：`/data/logs/bidvolt/`（supervisord.log、backup.log）
+- 日志：`/data/logs/bidvolt/`（supervisord.log、backup.log、boot.log=启动自举、boot-init.log=自举时 init 输出）
 - 健康检查：`bidvolt-healthcheck`（PG/API/alembic head/worker/clamd/持久卷/磁盘/读写全覆盖）
 - 升级代码：**`bidvolt-upgrade [tag|commit]`**（预检 → 备份 → 新 venv → 停 app/worker → 迁移 →
   原子切换 → 冒烟 → 失败自动回滚；发布记录 `/var/log/bidvolt/releases.log`；不重启 PostgreSQL）。
@@ -234,14 +240,20 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
-当前基线：本地 207 passed / 1 skipped（含生产 fail-fast、任务租约与多企业评审回归）；容器（PG+RLS）待服务器复跑。
+当前基线（2026-08-16）：本地 207 passed / 1 skipped（含生产 fail-fast、任务租约与多企业评审回归）；
+服务器容器（PG+RLS）204 passed（3 个用例为环境交互问题：2 个因生产 .env 与用例 dev 假设冲突——
+已由 `run_container_tests.sh` 固定 `BIDVOLT_ENV=dev` 解决，1 个 capability 终态用例与线上 worker
+竞争任务队列，建议停 worker 后复跑）；线上冒烟 `smoke_all` 4/4 PASS（真实 OFD / AnySearch /
+MiniMax / 在线编辑 / PG+RLS），`live_bid_check`（三份成果生成）/ `live_req_check`（材料解析→
+Requirement）PASS。
 
 ## 11. 已知限制 / 路线图
 
 - Hermes 任务级授权：当前 MCP 调用使用服务账号 JWT；生产需接入"任务创建 → capability token →
   Hermes 执行 → 白名单进度"完整闭环（后端 capability 校验已就绪）
-- Issue #3 发布门禁：本地已落地 gitleaks/pre-commit/CI、配置 fail-fast、租约恢复、`bidvolt-upgrade`
-  升级脚本；剩余待办为在真实服务器完成"部署→重启→健康检查→失败回滚→备份恢复"演练
+- Issue #3 发布门禁：已全部落地——gitleaks/pre-commit/CI 全历史扫描、配置 fail-fast、worker 租约恢复、
+  `bidvolt-upgrade` 升级回滚、备份恢复演练（2026-08-14 服务器实测）、容器重启自启动自举
+  （sshd 包装器，2026-08-16 落地，见 §2/§5.3）
   （见 https://github.com/zhangsheng377/BidVolt/issues/3）
 - Issue #4 知识检索：历史标书/方案/行业规范的检索能力尚未评估
   （见 https://github.com/zhangsheng377/BidVolt/issues/4）
