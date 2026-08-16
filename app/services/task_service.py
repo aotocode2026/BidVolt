@@ -251,6 +251,73 @@ async def run_next_task(session: AsyncSession) -> Task | None:
     return await run_task(session, task)
 
 
+async def _llm_extract_requirements(
+    session: AsyncSession,
+    *,
+    enterprise_id: int,
+    project_id: int,
+    file_ids: list[int],
+    task_id: int,
+) -> int:
+    """从文件文本块抽取 Requirement（门禁内 LLM）。返回抽取条数；门禁关闭返回 0。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.doc import DocBlock
+    from app.services import requirement_service
+    from app.services.llm import LLMClient, extract_json, llm_enabled
+
+    if not llm_enabled():
+        return 0
+    file_ids = [int(i) for i in file_ids]
+    if not file_ids:
+        return 0
+    blocks = (
+        await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
+    ).all()
+    text = "\n".join(b.text_content or "" for b in blocks)[:30000]
+    if not text.strip():
+        return 0
+    system = (
+        "你是投标文件解析助手。从招标材料中抽取资格要求、评分细则、否决条款、技术要求、报价规则、材料清单，"
+        "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
+        "只依据给定材料，禁止编造。"
+    )
+    reply = await LLMClient().chat(system, f"招标材料：\n{text}")
+    parsed = extract_json(reply)
+    if isinstance(parsed, dict):
+        items = parsed.get("requirements", [])
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        items = []
+    if not items:
+        # 抽取为空重试一次（Issue #8：解析 0 条不能静默通过）——更严格的纯 JSON 指令
+        reply = await LLMClient().chat(
+            system + "只输出 JSON 数组本身，禁止任何解释、Markdown 围栏或额外文字；确实没有可抽取项时输出 []。",
+            f"招标材料：\n{text[:20000]}",
+        )
+        parsed = extract_json(reply)
+        if isinstance(parsed, dict):
+            items = parsed.get("requirements", [])
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            items = []
+    for item in items:
+        await requirement_service.upsert_requirement(
+            session,
+            enterprise_id=enterprise_id,
+            project_id=project_id,
+            req_type=item["req_type"],
+            content=item["content"],
+            structured=item.get("structured"),
+            coordinates=item.get("coordinates") or [],
+            confidence=item.get("confidence"),
+            source_task_id=task_id,
+        )
+    return len(items)
+
+
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     """解析项目材料：doc_block + （门禁内）LLM 语义抽取 requirement。"""
     from app.services.file_service import reparse_file
@@ -263,48 +330,18 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         fobj = await reparse_file(session, int(file_id))
         if fobj.status != 3:
             raise ValueError(f"文件解析失败：{fobj.original_name}")
-    result: dict = {"parsed_file_ids": [int(i) for i in file_ids], "requirements_extracted": 0}
 
-    from sqlalchemy import select as sa_select
+    extracted = await _llm_extract_requirements(
+        session,
+        enterprise_id=task.enterprise_id,
+        project_id=task.project_id,
+        file_ids=file_ids,
+        task_id=task.id,
+    )
+    result: dict = {"parsed_file_ids": [int(i) for i in file_ids], "requirements_extracted": extracted}
+    from app.services.llm import llm_enabled
 
-    from app.models.doc import DocBlock
-    from app.services import requirement_service
-    from app.services.llm import LLMClient, extract_json, llm_enabled
-
-    if llm_enabled():
-        blocks = (
-            await session.scalars(
-                sa_select(DocBlock).where(DocBlock.file_id.in_([int(i) for i in file_ids]))
-            )
-        ).all()
-        text = "\n".join(b.text_content or "" for b in blocks)[:30000]
-        system = (
-            "你是投标文件解析助手。从招标材料中抽取资格要求、评分细则、否决条款、技术要求、报价规则、材料清单，"
-            "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
-            "只依据给定材料，禁止编造。"
-        )
-        reply = await LLMClient().chat(system, f"招标材料：\n{text}")
-        parsed = extract_json(reply)
-        if isinstance(parsed, dict):
-            items = parsed.get("requirements", [])
-        elif isinstance(parsed, list):
-            items = parsed
-        else:
-            items = []
-        for item in items:
-            await requirement_service.upsert_requirement(
-                session,
-                enterprise_id=task.enterprise_id,
-                project_id=task.project_id,
-                req_type=item["req_type"],
-                content=item["content"],
-                structured=item.get("structured"),
-                coordinates=item.get("coordinates") or [],
-                confidence=item.get("confidence"),
-                source_task_id=task.id,
-            )
-        result["requirements_extracted"] = len(items)
-    else:
+    if not llm_enabled():
         result["note"] = "云模型门禁关闭，未做语义抽取（仅完成文本解析）"
     task.result = result
 
@@ -334,6 +371,48 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     req_by_type: dict[str, list[Requirement]] = {}
     for req in requirements:
         req_by_type.setdefault(req.req_type, []).append(req)
+
+    # 关键输入自检（Issue #8）：requirements 为空但项目已有材料时，生成前先行解析抽取，
+    # 避免"上传了真实招标文件却未解析"导致成果退化为通用文本。
+    from app.models.file import FileObject
+
+    material_file_ids = [
+        int(i)
+        for i in (
+            await session.scalars(
+                sa_select(FileObject.id).where(
+                    FileObject.project_id == project_id,
+                    FileObject.enterprise_id == task.enterprise_id,
+                    FileObject.is_deleted.is_(False),
+                    FileObject.owner_type == 2,
+                )
+            )
+        ).all()
+    ]
+    if not requirements and material_file_ids:
+        extracted_count = await _llm_extract_requirements(
+            session,
+            enterprise_id=task.enterprise_id,
+            project_id=project_id,
+            file_ids=material_file_ids,
+            task_id=task.id,
+        )
+        if extracted_count > 0:
+            requirements = (
+                await session.scalars(
+                    sa_select(Requirement).where(
+                        Requirement.enterprise_id == task.enterprise_id,
+                        Requirement.project_id == project_id,
+                        Requirement.current.is_(True),
+                    )
+                )
+            ).all()
+            req_by_type = {}
+            for req in requirements:
+                req_by_type.setdefault(req.req_type, []).append(req)
+        pre_extracted = extracted_count
+    else:
+        pre_extracted = None
 
     facts = (
         await session.scalars(
@@ -452,8 +531,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
 
         client = LLMClient()
 
+        def _clean_md(text: str) -> str:
+            """清洗 Markdown 标记（Issue #8）：正式成果节点应为纯文本，不出现 **/###/- 等符号。"""
+            cleaned = re.sub(r"[*_`]{1,3}", "", text)
+            cleaned = re.sub(r"^#{1,6}\s*", "", cleaned)
+            return cleaned.strip()
+
         def _split_nodes(text: str) -> list[dict]:
-            """把 LLM 输出的 Markdown 拆成段落/标题节点（段落按空行合并）。"""
+            """把 LLM 输出的 Markdown 拆成段落/标题节点（段落按空行合并，正文清洗 Markdown 标记）。"""
             nodes: list[dict] = []
             buf: list[str] = []
             idx = 0
@@ -461,7 +546,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             def flush() -> None:
                 nonlocal idx
                 if buf:
-                    content = "\n".join(buf).strip()
+                    content = _clean_md("\n".join(buf))
                     if content:
                         nodes.append({"id": f"llm-n{idx}", "type": "paragraph", "text": content})
                         idx += 1
@@ -471,7 +556,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 line = raw.rstrip()
                 if re.match(r"^#{1,4}\s", line):
                     flush()
-                    title = line.lstrip("#").strip()
+                    title = _clean_md(line.lstrip("#"))
                     if title:
                         nodes.append({"id": f"llm-n{idx}", "type": "heading", "text": title})
                         idx += 1
@@ -480,7 +565,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 else:
                     flush()
             flush()
-            return nodes or [{"id": "llm-n0", "type": "paragraph", "text": text.strip()}]
+            return nodes or [{"id": "llm-n0", "type": "paragraph", "text": _clean_md(text.strip())}]
 
         # 商务标：正式投标语言改写（禁止新增企业事实）
         business_req_text = "\n".join(
@@ -563,17 +648,41 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         )
         versions[dtype] = version.version_no
 
+    # 评审闭环（Issue #8）：生成后自动执行内置评审 + 要求覆盖检查，评审结果绑定当前成果版本
+    from app.services import review_service
+
+    review_info = await review_service.run_evaluation(
+        session, enterprise_id=task.enterprise_id, project_id=project_id
+    )
+    issues = await _review_issues(session, enterprise_id=task.enterprise_id, project_id=project_id)
+    error_count = sum(1 for i in issues if i.get("severity") == "error")
+    requirement_count = len(requirements)
+    deliverables_ready = requirement_count > 0 and error_count == 0
+    quality = {
+        "requirements_count": requirement_count,
+        "pre_extracted": pre_extracted,
+        "review_run_id": review_info["run_id"],
+        "score_id": review_info["score_id"],
+        "issue_count": len(issues),
+        "error_count": error_count,
+        "deliverables_ready": deliverables_ready,
+    }
     if llm_enabled():
         task.result = {
             **versions,
-            "note": "确定性草稿 + LLM 全文生成" + (f"（增强：{','.join(enhanced)}）" if enhanced else "（LLM 不可用，草稿回退）"),
+            "note": (
+                ("正式成果草稿（待人工校核）" if not deliverables_ready else "确定性草稿 + LLM 全文生成")
+                + (f"（增强：{','.join(enhanced)}）" if enhanced else ("（LLM 不可用，草稿回退）" if not deliverables_ready else "") )
+            ),
+            "quality": quality,
+            "issues": issues,
             "knowledge_refs": [
                 {"file_name": i["file_name"], "project_id": i["project_id"], "source_type": i["source_type"]}
                 for i in knowledge_refs
             ],
         }
     else:
-        task.result = {**versions, "note": "确定性草稿（云模型门禁关闭）"}
+        task.result = {**versions, "note": "确定性草稿（云模型门禁关闭）", "quality": quality, "issues": issues}
 
 
 async def _material_match_handler(session: AsyncSession, task: Task) -> None:
@@ -644,8 +753,8 @@ async def _chat_handler(session: AsyncSession, task: Task) -> None:
         }
 
 
-async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
-    """校核模式：完整性、项目名称一致性、资格/技术要求覆盖（确定性）。"""
+async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_id: int) -> list[dict]:
+    """校核模式（共享）：完整性、项目名称一致性、资格/技术要求覆盖（确定性）。"""
     from sqlalchemy import select as sa_select
 
     from app.models.deliverable import Deliverable
@@ -655,8 +764,8 @@ async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
 
     project = await session.scalar(
         sa_select(Project).where(
-            Project.id == task.project_id,
-            Project.enterprise_id == task.enterprise_id,
+            Project.id == project_id,
+            Project.enterprise_id == enterprise_id,
         )
     )
     if project is None:
@@ -664,8 +773,8 @@ async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
     deliverables = (
         await session.scalars(
             sa_select(Deliverable).where(
-                Deliverable.project_id == task.project_id,
-                Deliverable.enterprise_id == task.enterprise_id,
+                Deliverable.project_id == project_id,
+                Deliverable.enterprise_id == enterprise_id,
             )
         )
     ).all()
@@ -692,8 +801,8 @@ async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
     requirements = (
         await session.scalars(
             sa_select(Requirement).where(
-                Requirement.enterprise_id == task.enterprise_id,
-                Requirement.project_id == task.project_id,
+                Requirement.enterprise_id == enterprise_id,
+                Requirement.project_id == project_id,
                 Requirement.current.is_(True),
             )
         )
@@ -712,7 +821,12 @@ async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
                     "locate": req.id,
                 }
             )
+    return issues
 
+
+async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
+    """校核任务：跑覆盖检查并写任务结果（评审闭环也可由 bid_generate 自动触发）。"""
+    issues = await _review_issues(session, enterprise_id=task.enterprise_id, project_id=task.project_id)
     task.result = {"issues": issues, "issue_count": len(issues)}
 
 

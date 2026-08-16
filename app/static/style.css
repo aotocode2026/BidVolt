@@ -4,8 +4,14 @@ header { background: #1f3a5f; color: #fff; padding: 14px 20px; display: flex; ju
 header h1 { font-size: 20px; margin: 0; }
 #authbar { font-size: 13px; color: #cfe0f5; }
 nav#tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 20px 0; }
-nav#tabs button { border: 1px solid #ccd; background: #fff; padding: 6px 12px; cursor: pointer; border-radius: 4px 4px 0 0; }
+nav#tabs button { border: 1px solid #ccd; background: #fff; color: #1f3a5f; padding: 6px 12px; cursor: pointer; border-radius: 4px 4px 0 0; }
 nav#tabs button.active { background: #1f3a5f; color: #fff; }
+#steps { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px 0; font-size: 12px; color: #567; }
+#steps .step { padding: 3px 10px; border: 1px dashed #b8c4d4; border-radius: 10px; background: #f2f5f9; }
+#steps .step.done { border-style: solid; border-color: #1a7f37; color: #1a7f37; background: #e8f6ec; }
+#steps .step.now { border-style: solid; border-color: #1f3a5f; background: #1f3a5f; color: #fff; }
+.form-hint { display: block; color: #c62828; font-size: 12px; min-height: 16px; margin: 2px 0 6px; }
+.field-row { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
 main#panel { background: #fff; margin: 0 20px 20px; padding: 18px; min-height: 420px; border: 1px solid #dde3ea; border-top: none; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
 input, select, textarea { padding: 6px 8px; border: 1px solid #c4ccd6; border-radius: 4px; }

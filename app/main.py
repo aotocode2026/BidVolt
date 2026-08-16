@@ -52,6 +52,17 @@ app.add_middleware(
     allow_credentials=False,
 )
 
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """基础安全响应头（Issue #10 P2）：nosniff / 点击劫持防护 / Referrer 策略。
+    CSP 需配合前端移除内联事件后再收紧（已列路线图）。"""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
+
 _STATUS_CODES = {
     401: "unauthorized",
     403: "forbidden",
@@ -78,14 +89,19 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """422 校验错误（Issue #6 P2）：附带字段级错误明细。"""
+    """422 校验错误（Issue #6 P2）：detail 附带人类可读的字段级摘要，另给结构化 field_errors。"""
+    errors = exc.errors()
+    summary = "；".join(
+        f"{'.'.join(str(p) for p in e.get('loc', []) if p != 'body') or '参数'}：{e.get('msg', '')}"
+        for e in errors[:5]
+    )
     return JSONResponse(
         status_code=422,
         content={
-            "detail": "请求参数校验失败",
+            "detail": f"请求参数校验失败：{summary}",
             "code": "validation_error",
             "request_id": str(uuid.uuid4()),
-            "field_errors": exc.errors()[:20],
+            "field_errors": errors[:20],
         },
     )
 

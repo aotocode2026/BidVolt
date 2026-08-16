@@ -59,7 +59,7 @@ def tab(page, label: str) -> None:
 
 
 def get_token(page) -> str:
-    return page.evaluate("localStorage.getItem('bidvolt_token')") or ""
+    return page.evaluate("window.getBidvoltToken ? window.getBidvoltToken() : ''") or ""
 
 
 def latest_submitted_task_id(page) -> int | None:
@@ -147,9 +147,13 @@ def main() -> int:
             record("注册", False, str(e)[:80])
         shot(page, tag, "01-注册")
 
-        # ---------- 2. 创建项目 ----------
+        # ---------- 2. 创建项目（含空名称前端拦截回归：产品反馈） ----------
         try:
             tab(page, "项目")
+            page.fill("#p-name", "")
+            page.click("button:has-text('创建项目')")
+            ok_block = wait_log(page, "项目名称不能为空", timeout_ms=10000)
+            record("空项目名前端拦截", ok_block)
             page.fill("#p-name", "浏览器E2E项目")
             page.fill("#p-no", f"E2E-{int(time.time())}")
             page.click("button:has-text('创建项目')")
@@ -178,6 +182,31 @@ def main() -> int:
             record("上传+招标解析", False, str(e)[:80])
         shot(page, tag, "04-解析完成")
 
+        # ---------- 3b. Requirement 管理闭环（Issue #8/#10：确认/修正/资料匹配；解析为 0 条时手动兜底 upsert） ----------
+        try:
+            tab(page, "要求/匹配")
+            ok_list = wait_log(page, "已加载要求", timeout_ms=30000)
+            has_rows = page.eval_on_selector_all("#r-rows .r-confirm", "els => els.length > 0")
+            if not has_rows:
+                # LLM 抽取偶发为 0 条：手动 upsert 一条后继续闭环（同时覆盖手动新增功能点）
+                page.fill("#r-content", "电力施工总承包三级资质（E2E 手动兜底）")
+                page.click("button:has-text('新增要求')")
+                wait_log(page, "已写入", timeout_ms=30000)
+                page.wait_for_timeout(500)
+            page.click("#r-rows .r-confirm")
+            ok_confirm = wait_log(page, "已确认", timeout_ms=30000)
+            page.click("#r-rows .r-pick")
+            ok_pick = wait_log(page, "已选中要求", timeout_ms=30000)
+            page.fill("#r-correct", "三级电力施工总承包资质（E2E 人工修正）")
+            page.click("button:has-text('修正选中')")
+            ok_correct = wait_log(page, "已修正", timeout_ms=30000)
+            ok_match = submit_and_wait(page, base, "发起资料匹配", "资料匹配", args.task_timeout)
+            record("Requirement 管理闭环", ok_list and ok_confirm and ok_pick and ok_correct and ok_match,
+                   f"list={ok_list} confirm={ok_confirm} pick={ok_pick} correct={ok_correct} match={ok_match}")
+        except Exception as e:  # noqa: BLE001
+            record("Requirement 管理闭环", False, str(e)[:80])
+        shot(page, tag, "04b-要求闭环")
+
         # ---------- 4. 成果：创建/生成/校核/在线编辑 ----------
         try:
             tab(page, "成果")
@@ -202,7 +231,7 @@ def main() -> int:
             quality = page.evaluate(
                 """async () => {
               const base = location.origin;
-              const h = { Authorization: 'Bearer ' + localStorage.getItem('bidvolt_token') };
+              const h = { Authorization: 'Bearer ' + (window.getBidvoltToken ? window.getBidvoltToken() : '') };
               const resp = await fetch(base + '/api/v1/deliverables?project_id=' + projectId, { headers: h });
               const payload = await resp.json();
               const items = Array.isArray(payload) ? payload : (payload.items || []);
@@ -312,20 +341,6 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             record("公告导入（SSRF 防护）", False, str(e)[:80])
 
-        # ---------- 7d. 测试客户端：环境切换 + 连接测试（Issue #5） ----------
-        try:
-            tab(page, "设置/连接")
-            page.click("button:has-text('测试连接')")
-            ok_conn = wait_log(page, "连接测试完成", timeout_ms=30000)
-            page.fill("#env-name", f"本地-{tag}")
-            page.fill("#env-base", base)
-            page.click("button:has-text('保存环境')")
-            ok_env = wait_log(page, "已保存并选用环境", timeout_ms=30000)
-            record("测试客户端（连接测试/环境保存）", ok_conn and ok_env)
-        except Exception as e:  # noqa: BLE001
-            record("测试客户端（连接测试/环境保存）", False, str(e)[:80])
-        shot(page, tag, "10b-新功能")
-
         # ---------- 8. 终检与导出 ----------
         try:
             tab(page, "导出")
@@ -374,6 +389,22 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             record("刷新恢复", False, str(e)[:80])
         shot(page, tag, "13-刷新恢复")
+
+        # ---------- 10b. 测试客户端：环境切换 + 连接测试（Issue #5/#10，放最后：环境切换会退出登录） ----------
+        try:
+            tab(page, "设置/连接")
+            page.click("button:has-text('测试连接')")
+            ok_conn = wait_log(page, "连接测试", timeout_ms=30000)
+            page.fill("#env-name", f"本地-{tag}")
+            page.fill("#env-base", base)
+            page.click("button:has-text('保存环境')")
+            ok_env = wait_log(page, "已保存并切换环境", timeout_ms=30000)
+            logged_out = page.eval_on_selector("#authbar", "el => el.innerText.includes('未登录')")
+            record("测试客户端（连接测试/环境保存）", ok_conn and ok_env and logged_out,
+                   f"conn={ok_conn} env={ok_env} logged_out={logged_out}")
+        except Exception as e:  # noqa: BLE001
+            record("测试客户端（连接测试/环境保存）", False, str(e)[:80])
+        shot(page, tag, "13b-设置连接")
 
         browser.close()
 
