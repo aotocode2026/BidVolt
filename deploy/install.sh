@@ -53,13 +53,51 @@ echo "==> 4/6 生成 supervisor 配置与运维脚本（路径来自 REPO/HERMES
 sed -e "s|__REPO__|$REPO|g" -e "s|__HERMES_HOME__|$HERMES_HOME|g" \
     deploy/supervisord.conf > /etc/supervisor/conf.d/bidvolt.conf
 cp deploy/bidvolt-init.sh /usr/local/bin/bidvolt-init
+cp deploy/bidvolt-boot.sh /usr/local/bin/bidvolt-boot
 cp deploy/bidvolt-postgres.sh /usr/local/bin/bidvolt-postgres
 cp deploy/backup.sh /usr/local/bin/bidvolt-backup
 cp deploy/healthcheck.sh /usr/local/bin/bidvolt-healthcheck
 cp deploy/upgrade.sh /usr/local/bin/bidvolt-upgrade
-chmod +x /usr/local/bin/bidvolt-init /usr/local/bin/bidvolt-postgres \
+chmod +x /usr/local/bin/bidvolt-init /usr/local/bin/bidvolt-boot /usr/local/bin/bidvolt-postgres \
          /usr/local/bin/bidvolt-backup /usr/local/bin/bidvolt-healthcheck \
          /usr/local/bin/bidvolt-upgrade
+
+echo "==> 4.5/6 容器自启动自举（平台重启容器时无需 SSH 登录自动拉起服务）"
+# 背景：容器入口 CMD 为 `/usr/sbin/sshd -D`（平台提供镜像，无入口脚本/systemd 可改）。
+# 方案一（主）：sshd 包装器——容器重启后 Docker 先运行包装脚本：幂等拉起 bidvolt-boot 后 exec 真实 sshd。
+# 方案二（兜底）：/etc/ssh/sshrc——SSH 登录时触发同一 bidvolt-boot（幂等，双保险）。
+SSHD_REAL=/usr/sbin/sshd.real
+if [ -x "$SSHD_REAL" ]; then
+  echo "    sshd 包装器已存在，跳过"
+else
+  if [ -x /usr/sbin/sshd ] && cp /usr/sbin/sshd "$SSHD_REAL" && chmod 0755 "$SSHD_REAL"; then
+    cat > /usr/sbin/sshd <<'WRAP_EOF'
+#!/bin/bash
+# BidVolt 自举包装：容器重启后由 Docker CMD 以 pid1 运行本脚本，
+# 先幂等拉起服务（bidvolt-boot），再 exec 真实 sshd，保持 pid1 为 sshd。
+if [ ! -x /usr/sbin/sshd.real ]; then
+  echo "$(date -Is) FATAL: /usr/sbin/sshd.real 缺失，sshd 无法启动" >&2
+  exit 1
+fi
+nohup /usr/local/bin/bidvolt-boot >/dev/null 2>&1 </dev/null &
+exec /usr/sbin/sshd.real "$@"
+WRAP_EOF
+    chmod 0755 /usr/sbin/sshd \
+      && echo "    sshd 包装器已安装（原二进制保留为 $SSHD_REAL）" \
+      || { rm -f /usr/sbin/sshd; mv "$SSHD_REAL" /usr/sbin/sshd; echo "    WARN: sshd 包装器写入失败，已回退原状" >&2; }
+  else
+    echo "    WARN: 未找到/无法备份 /usr/sbin/sshd，跳过包装器（仍依赖 SSH 登录兜底）" >&2
+  fi
+fi
+cat > /etc/ssh/sshrc <<'SSHRC_EOF'
+#!/bin/bash
+# BidVolt 兜底：SSH 登录时若 supervisord 未运行则自动拉起（与 sshd 包装器同一入口，幂等）。
+if [ -x /usr/local/bin/bidvolt-boot ]; then
+  nohup /usr/local/bin/bidvolt-boot >/dev/null 2>&1 </dev/null &
+fi
+SSHRC_EOF
+chmod 0755 /etc/ssh/sshrc
+echo "    已安装 /etc/ssh/sshrc 兜底（SSH 登录触发，幂等）"
 
 echo "==> 5/6 安装 Hermes Agent（先于 supervisor 启动；SKIP_HERMES=1 可跳过）"
 if [ "${SKIP_HERMES:-0}" != "1" ]; then

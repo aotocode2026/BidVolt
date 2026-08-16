@@ -73,7 +73,21 @@ APP_DB="${APP_DB:-bidvolt}"
 APP_USER="${APP_USER:-bidvolt}"
 
 mkdir -p "$PGDATA" "$DATA" "$BACKUPS" "$BACKUPS/wal" "$LOGS" /var/log/bidvolt /etc/bidvolt
-chown -R postgres:postgres "$PGDATA" "$BACKUPS"
+
+# 属主修复（条件化）：/data 为 DrvFS(9p) 挂载时 chown -R 极慢（每次启动数分钟），
+# 先用 find 快速探测浅层属主漂移，全部正确则跳过；发现漂移才执行全量 chown。
+_fix_owner_fast() {
+  local dir="$1" owner="$2" dirty=""
+  dirty=$(find "$dir" -maxdepth 2 \( ! -user "$owner" -o ! -group "$owner" \) -print -quit 2>/dev/null)
+  if [ -n "$dirty" ]; then
+    echo "[init] chown -R $owner:$owner $dir（检测到属主漂移：$dirty）"
+    chown -R "$owner:$owner" "$dir"
+  else
+    echo "[init] $dir 属主已正确，跳过 chown"
+  fi
+}
+_fix_owner_fast "$PGDATA" postgres
+_fix_owner_fast "$BACKUPS" postgres
 
 # 日志落盘持久卷：/var/log/bidvolt -> /data/logs/bidvolt（容器重建不丢日志）
 if [ ! -L /var/log/bidvolt ]; then
@@ -87,6 +101,12 @@ fi
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
   echo "[init] initdb: $PGDATA"
   su postgres -c "$PGBIN/initdb -D $PGDATA --auth-local=trust --auth-host=scram-sha-256 -U $PGUSER --encoding=UTF8 --locale=C.UTF-8"
+fi
+
+# 配置落点（幂等）：容器销毁重建后可写层重置、/etc/bidvolt 丢失；
+# 数据卷存在（跳过 initdb）时同样必须重建配置文件，否则 PG 无法启动。
+if [ ! -f /etc/bidvolt/postgresql.conf ]; then
+  echo "[init] 生成 /etc/bidvolt/postgresql.conf"
   cat > /etc/bidvolt/postgresql.conf <<EOF
 data_directory = '$PGDATA'
 listen_addresses = '127.0.0.1'
@@ -96,7 +116,12 @@ archive_mode = on
 archive_command = 'cp %p /data/backups/wal/%f'
 max_wal_size = 1GB
 EOF
+  chown postgres:postgres /etc/bidvolt/postgresql.conf
 fi
+
+# socket 目录：容器重启后 /run 为全新 tmpfs，必须重建（PG 启动依赖）
+mkdir -p /var/run/postgresql
+chown postgres:postgres /var/run/postgresql
 
 # 幂等 bootstrap：PG 未运行时启动 → 建角色/库（如缺失）→ 恢复原状态
 if "$PGBIN/pg_isready" -h /var/run/postgresql -q; then

@@ -78,7 +78,13 @@
 - [x] 升级流程真实部署 → 已按环境约束用归档方式完成（见第三节，含 0015/0016 迁移）；
 - [x] 备份恢复演练 → 服务器实测：最新 dump `pg_restore` 到临时库 `bidvolt_restore_drill`，
       三表计数与备份点一致（48/48/24），appdata tar 清单可读，演练后已清理；
-- [ ] 验证容器/宿主机重启后 supervisor 自动拉起（sshrc 兜底）——平台控制容器生命周期，留待运维执行；
+- [x] 验证容器/宿主机重启后 supervisor 自动拉起 → 2026-08-16 落地 **sshd 包装器自举**（容器入口
+      CMD 为 `/usr/sbin/sshd -D`，无入口脚本/systemd 可改）：`/usr/sbin/sshd` 替换为包装脚本
+      （重启时先幂等触发 `bidvolt-boot` → `bidvolt-init`，再 exec `/usr/sbin/sshd.real`），
+      `/etc/ssh/sshrc` 兜底保留（同一入口，双保险）；`bidvolt-init` 的全量 `chown -R` 改为
+      条件化（find 探测浅层属主漂移，全部正确即跳过——DrvFS 挂载上 chown 极慢，此前每次
+      启动需数分钟）。真实触发场景 2026-08-16 已验证恢复链路（SSH 登录触发兜底 → 6 服务 RUNNING →
+      公网 healthz OK），平台重启后的包装器路径待下次平台重启验收；
 - [x] 生产密钥轮换为 ≥32 位 → 已轮换为 48 位（旧会话失效，需重新登录）；
 - [x] `BIDVOLT_ENV=production` 启用 → 2026-08-14 已在服务器开启（同时 `VIRUS_SCAN_REQUIRED=1`），
       fail-fast 全项校验通过、app/worker 正常启动、公网注册冒烟 201；

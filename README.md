@@ -108,8 +108,10 @@ bash /data/bidvolt/deploy/install.sh
 
 ### 5.3 容器重启 / 重建后恢复
 
-- **同实例重启**：容器可写层与 `/data` 都在，服务由 supervisord 守护；若平台重启后没有自动
-  拉起进程，SSH 登录一次即触发 `/etc/ssh/sshrc` 兜底自动恢复。
+- **同实例重启**：容器可写层与 `/data` 都在，服务由 supervisord 守护。平台重启容器后无需 SSH 登录：
+  `install.sh` 已安装 **sshd 包装器**（`/usr/sbin/sshd` → 先触发 `bidvolt-boot` 幂等自举再 exec
+  `/usr/sbin/sshd.real`，容器入口 CMD 就是 sshd），另保留 `/etc/ssh/sshrc` 登录兜底（双保险）。
+  自举日志：`/var/log/bidvolt/boot.log`。
 - **容器被销毁重建**：`/data` 全部保留（代码/venv/Hermes/数据库/文件/备份/日志），
   只需重新执行 `bash /data/bidvolt/deploy/install.sh`（apt 重装系统包 + 生成配置 + 启动；
   venv 已存在时跳过创建，PG 检测到数据目录直接迁移启动）。
