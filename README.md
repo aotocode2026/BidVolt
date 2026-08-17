@@ -249,9 +249,10 @@ bash /tmp/run_container_tests.sh -q
 当前基线（2026-08-17）：本地 226 passed / 1 skipped（含生产 fail-fast、任务租约、多企业评审回归与
 Issue #4/#5/#6 新增用例——Requirement 确认/修正、evaluate provider、公告导入 SSRF、知识检索租户隔离、
 报价金额字符串契约、错误 envelope、技术标实质正文回归等）；
-本地浏览器全流程 E2E **21/21 PASS**；公网生产环境 E2E（`scripts/e2e_browser_demo.py --base
-http://47.100.182.3:28123`）**21/21 PASS**（真实 LLM：解析抽取 4 条要求、技术标 1903 字/商务标
-381 字、`quality.deliverables_ready=true`、ReviewRun/ScoreRecord 绑定成果版本）；
+本地浏览器全流程 E2E **25/25 PASS**（含 Issue #11 专项回归：成果正文可视化+状态判断、步骤条高亮与
+完成证据、步骤条高亮跟随页面、日志无矛盾误报）；公网生产环境 E2E（`scripts/e2e_browser_demo.py --base
+http://47.100.182.3:28123`）**25/25 PASS**（真实 LLM：解析抽取 4 条要求、技术标 1804 字/商务标 568 字、
+`quality.deliverables_ready=true`、ReviewRun/ScoreRecord 绑定成果版本）；
 服务器容器（PG+RLS）204 passed（3 个用例为环境交互问题：2 个因生产 .env 与用例 dev 假设冲突——
 已由 `run_container_tests.sh` 固定 `BIDVOLT_ENV=dev` 解决，1 个 capability 终态用例与线上 worker
 竞争任务队列，建议停 worker 后复跑）；线上冒烟 `smoke_all` 4/4 PASS（真实 OFD / AnySearch /

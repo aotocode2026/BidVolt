@@ -90,10 +90,11 @@
 ## 五、验证基线（2026-08-17 更新）
 
 - 本地全量 pytest：**226 passed / 1 skipped**（SQLite，含上述全部新用例）；
-- 本地浏览器全流程 E2E（headless Chromium 模拟人操作）：**21/21 PASS**，覆盖注册登录→项目→上传解析（真实 LLM 抽取要求）→Requirement 确认/修正→资料匹配→成果生成（技术标/商务标实质正文断言，非占位）→校核→在线编辑→评标闭环→报价闭环→会话（真实 LLM）→真实 AnySearch 搜索→**知识检索**→**公告导入（SSRF 拒绝实测）**→**环境切换与连接测试**→终检导出→快照/任务恢复→刷新恢复；
-- **公网生产环境浏览器 E2E**（`--base http://47.100.182.3:28123`）：**21/21 PASS**（2026-08-17 最终轮）——tender_parse 真实 LLM 抽取 4 条（task#61）、material_match 4/4（task#62）、bid_generate 技术标 1903 字/商务标 381 字 + `quality.deliverables_ready=true`（task#63）、bid_review（task#64），ReviewRun/ScoreRecord #33–35 绑定成果版本；
+- 本地浏览器全流程 E2E（headless Chromium 模拟人操作）：**25/25 PASS**（Issue #11 整改后含专项回归：成果正文可视化+状态判断、步骤条高亮与完成证据、步骤条高亮跟随页面、日志无矛盾误报），覆盖注册登录→项目→上传解析（真实 LLM 抽取要求）→Requirement 确认/修正→资料匹配→成果生成（技术标/商务标实质正文断言，非占位）→校核→在线编辑→评标闭环→报价闭环→会话（真实 LLM）→真实 AnySearch 搜索→**知识检索**→**公告导入（SSRF 拒绝实测）**→**环境切换与连接测试**→终检导出→快照/任务恢复→刷新恢复；
+- **公网生产环境浏览器 E2E**（`--base http://47.100.182.3:28123`）：**25/25 PASS**（2026-08-17 最终轮）——tender_parse 真实 LLM 抽取 4 条（task#89）、material_match 4/4（task#90）、bid_generate 技术标 1804 字/商务标 568 字 + `quality.deliverables_ready=true`（task#91）、bid_review（task#92），ReviewRun/ScoreRecord 绑定成果版本；技术标正文页面渲染 1859 字（非 JSON）；
 - 服务器实测（部署后）：alembic 0018 迁移完成，六进程 RUNNING，healthcheck OK；
-- 公网复测暴露并已修复的两个生产问题（详见 Issue #8 回复）：
+- 公网复测暴露并已修复的生产问题（详见 Issue #8/#11 回复）：
   1. **worker RLS 租户上下文**：会话级 `set_config` 在 asyncpg 连接池下随连接归还漂移/丢失，`tender_parse`/`material_match` 业务表写入随机触发 `row-level security policy` 违例 → 改为**事务级注入 + 每次提交后重建**（commit `61da09e`），并加任务最终提交兜底；
   2. **新建会话竞态**：新建会话后未选中即发送被静默拦截 → 新建后自动选中并可立即提问（commit `113b8b9`）；
+  3. **Issue #11 测试客户端复测十二条**：步骤条证据化/可点击、成果正文可视化与状态横幅、评审页任务状态表、生成防重复、SSE 健壮化、await 后空安全写入消除 TypeError 误报、日志分级无静默失败（commit `89b6940`/`b6a25b8`）；
 - gitleaks：全历史 0 泄漏；ruff 0 error。
