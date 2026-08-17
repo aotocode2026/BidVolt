@@ -184,7 +184,7 @@ def main() -> int:
 
         # ---------- 3b. Requirement 管理闭环（Issue #8/#10：确认/修正/资料匹配；解析为 0 条时手动兜底 upsert） ----------
         try:
-            tab(page, "要求/匹配")
+            tab(page, "要求")
             ok_list = wait_log(page, "已加载要求", timeout_ms=30000)
             has_rows = page.eval_on_selector_all("#r-rows .r-confirm", "els => els.length > 0")
             if not has_rows:
@@ -207,14 +207,19 @@ def main() -> int:
             record("Requirement 管理闭环", False, str(e)[:80])
         shot(page, tag, "04b-要求闭环")
 
-        # ---------- 4. 成果：创建/生成/校核/在线编辑 ----------
+        # ---------- 4. 成果：创建/生成/校核/在线编辑（Issue #11：按钮语义明确 + 状态横幅） ----------
         try:
             tab(page, "成果")
-            page.click("button:has-text('创建三份成果')")
-            ok_create = wait_log(page, "三份成果已创建")
-            ok_gen = submit_and_wait(page, base, "生成标书(bid_generate)", "生成标书", args.task_timeout)
-            ok_review = submit_and_wait(page, base, "校核(bid_review)", "校核", args.task_timeout)
+            page.click("button:has-text('创建空成果记录')")
+            ok_create = wait_log(page, "三份空成果记录已创建")
+            ok_gen = submit_and_wait(page, base, "生成标书", "生成标书", args.task_timeout)
+            ok_review = submit_and_wait(page, base, "校核", "校核", args.task_timeout)
             shot(page, tag, "05-成果")
+            # 等待成果下拉就绪（前端 SSE 完成后的刷新存在时差）
+            page.wait_for_function(
+                "() => { const el = document.getElementById('d-sel'); return el && /^\\d+$/.test(el.value); }",
+                timeout=20000,
+            )
             page.click("button:has-text('创建编辑会话')")
             ok_ses = wait_log(page, "编辑会话 #")
             page.click("button:has-text('保存检查点')")
@@ -261,9 +266,67 @@ def main() -> int:
             record("成果内容质量", False, str(e)[:120])
         shot(page, tag, "06b-内容质量")
 
+        # ---------- 4c. Issue #11：成果正文可视化 + 状态判断 + 步骤条证据 ----------
+        try:
+            tab(page, "成果")
+            # 等待前端完成刷新（REST 轮询与页面 SSE 处理存在时差）
+            page.wait_for_function(
+                "() => { const el = document.getElementById('d-status'); return el && el.innerText.includes('已生成'); }",
+                timeout=20000,
+            )
+            # 状态横幅：应显示“已生成”而非“仅有记录/尚未生成”
+            banner_ok = page.evaluate(
+                "() => { const el = document.getElementById('d-status'); return el && el.innerText.includes('已生成'); }"
+            )
+            # 成果列表状态列：存在“已生成（可查看）”
+            row_state = page.evaluate(
+                "() => { const el = document.getElementById('d-rows'); return el ? el.innerText.includes('已生成（可查看）') : false; }"
+            )
+            page.wait_for_selector("#d-rows .d-view-btn", timeout=15000)
+            page.click("#d-rows .d-view-btn")
+            page.wait_for_function(
+                "() => { const el = document.getElementById('d-view'); return el && el.innerText.includes('正文'); }",
+                timeout=15000,
+            )
+            view_len = page.evaluate("document.getElementById('d-view').innerText.length")
+            view_not_json = page.evaluate(
+                "() => !document.getElementById('d-view').innerText.includes('\"nodes\"')"
+            )
+            ok_view = view_len >= 100 and view_not_json
+            record("成果正文可视化+状态判断", banner_ok and row_state and ok_view,
+                   f"banner={banner_ok} row_state={row_state} view_len={view_len} not_json={view_not_json}")
+            # 步骤条：当前在成果页 → “成果”步骤应高亮 now；且生成后应标记 done
+            steps_state = page.evaluate(
+                """() => {
+              const steps = [...document.querySelectorAll('#steps .step')];
+              const deliverable = steps[5];
+              return { has_deliverable: !!deliverable && deliverable.innerText.includes('成果'),
+                       now_ok: !!deliverable && deliverable.className.includes('now'),
+                       done_ok: !!deliverable && deliverable.className.includes('done') };
+            }"""
+            )
+            record("步骤条高亮与完成证据（成果页）",
+                   steps_state["has_deliverable"] and steps_state["now_ok"] and steps_state["done_ok"],
+                   str(steps_state))
+            # 切到要求页 → “要求”步骤应高亮 now（Issue #11.1 错位回归）
+            tab(page, "要求")
+            req_now = page.evaluate(
+                "() => [...document.querySelectorAll('#steps .step')][4].className.includes('now')"
+            )
+            record("步骤条高亮跟随页面（要求页）", bool(req_now))
+        except Exception as e:  # noqa: BLE001
+            record("成果正文可视化+状态判断", False, str(e)[:120])
+        shot(page, tag, "06c-正文可视化")
+
         # ---------- 5. 模拟评标（逐条 + 建议 override + 确认 + 重审） ----------
         try:
-            tab(page, "任务/评标")
+            tab(page, "评审")
+            # 任务状态表：真实状态可查（Issue #11.6/12）
+            page.wait_for_function(
+                "() => { const el = document.getElementById('t-tasks'); return el && el.innerText.includes('完成'); }",
+                timeout=15000,
+            )
+            ok_tasks = True
             page.click("button:has-text('模拟评标')")
             ok_ev = wait_log(page, "评标完成：总分")
             page.wait_for_selector("#t-items tr td", timeout=15000)  # 等待明细渲染
@@ -277,11 +340,27 @@ def main() -> int:
             ok_conf = wait_log(page, "确认结果")
             page.click("button:has-text('重审受影响项')")
             ok_re = wait_log(page, "重审完成")
-            record("评标闭环", ok_ev and ok_sugg and ok_conf and ok_re, f"item={item_id.strip()}")
+            record("评标闭环", ok_ev and ok_sugg and ok_conf and ok_re and ok_tasks, f"item={item_id.strip()} tasks_table={ok_tasks}")
         except Exception as e:  # noqa: BLE001
             log_tail = page.evaluate("document.getElementById('log').innerText.split('\\n').slice(0,4).join(' | ')")
             record("评标闭环", False, f"{str(e)[:60]} LOG={log_tail[:120]}")
         shot(page, tag, "08-重审")
+
+        # ---------- 5b. Issue #11.9/10/11/12：成功操作后日志不得出现互相矛盾的误报 ----------
+        try:
+            noise = page.evaluate(
+                """() => {
+              const text = document.getElementById('log').innerText;
+              const bad = ['SSE 中断', '项目列表失败', '文件列表失败', 'TypeError',
+                           'Cannot set properties', 'Cannot read properties'];
+              return { bad: bad.filter(s => text.includes(s)), has_task_done: text.includes('任务') && text.includes('完成') };
+            }"""
+            )
+            record("日志无矛盾误报（成功≠失败）",
+                   len(noise["bad"]) == 0 and noise["has_task_done"],
+                   f"bad={noise['bad']} task_done={noise['has_task_done']}")
+        except Exception as e:  # noqa: BLE001
+            record("日志无矛盾误报（成功≠失败）", False, str(e)[:120])
 
         # ---------- 6. 报价：测算/策略/应用/趋势 ----------
         try:
@@ -394,7 +473,7 @@ def main() -> int:
 
         # ---------- 10b. 测试客户端：环境切换 + 连接测试（Issue #5/#10，放最后：环境切换会退出登录） ----------
         try:
-            tab(page, "设置/连接")
+            tab(page, "连接/设置")
             page.click("button:has-text('测试连接')")
             ok_conn = wait_log(page, "连接测试", timeout_ms=30000)
             page.fill("#env-name", f"本地-{tag}")
