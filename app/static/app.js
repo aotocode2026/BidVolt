@@ -1,4 +1,6 @@
-/* BidVolt 测试客户端（Issue #5/#10）：多环境配置 + 连接测试 + 全业务流程真实调用 */
+/* BidVolt 测试客户端（Issue #5/#10/#11）：多环境配置 + 连接测试 + 全业务流程真实调用。
+   Issue #11 整改：步骤条与 Tab 对齐且可点击、完成状态基于真实证据、成果正文可视化、
+   任务状态表、SSE 健壮、无静默失败（所有失败/降级均在日志与页面上显式展示）。 */
 let API_BASE = "";
 try {
   const cur = JSON.parse(localStorage.getItem("bidvolt_env_cur") || "null");
@@ -12,21 +14,112 @@ const REFRESH_KEY = () => `bidvolt_refresh_${ENV_KEY()}`;
 const USER_KEY = () => `bidvolt_user_${ENV_KEY()}`;
 const PROJECT_KEY = () => `bidvolt_project_${ENV_KEY()}`;
 const TASK_KEY = () => `bidvolt_task_${ENV_KEY()}`;
+const STEPS_KEY = () => `bidvolt_steps_${ENV_KEY()}_${projectId ?? "none"}`;
 let token = localStorage.getItem(TOKEN_KEY()) || "";
 let projectId = null;
 let deliverables = [];
 let calcId = null;
 let activeTaskId = null;
+let activeTaskType = "";
+let generatingTaskId = null;
+let lastGenQuality = null;
+let editorSession = null;
+let selectedReq = null;
+let scoreCtx = null;
+let materialCount = 0;
+let reqCount = 0;
+let reviewDone = false;
+let quoteDone = false;
+let exportDone = false;
+let currentTab = "auth";
+let stepEvidence = {};
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* 空安全 DOM 写入：目标元素不在当前面板时静默跳过，避免“成功后又报 TypeError 失败”的噪声（Issue #11.9/10） */
+const setHtml = (id, html) => { const el = $(id); if (el) el.innerHTML = html; };
+const setText = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+const errMsg = (e) => (e && e.message) ? e.message : String(e);
 
 function log(msg, cls = "") {
   const pre = $("log");
+  if (!pre) return;
   const div = document.createElement("div");
   div.className = cls;
-  div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  const icon = cls === "ok" ? "✓ " : cls === "err" ? "✗ " : cls === "warn" ? "⚠ " : "";
+  div.textContent = `[${new Date().toLocaleTimeString()}] ${icon}${msg}`;
   pre.prepend(div);
+  while (pre.children.length > 400) pre.removeChild(pre.lastChild);
+}
+
+/* ---------- 步骤条（Issue #11.1/2/3：与 Tab 对齐、可点击、完成状态基于真实证据） ---------- */
+const STEP_DEFS = [
+  ["settings", "连接"], ["auth", "认证"], ["project", "项目"], ["material", "资料"],
+  ["req", "要求"], ["deliverable", "成果"], ["task", "评审"], ["quote", "报价"], ["export", "导出"],
+];
+const STEP_HINTS = {
+  settings: "保存并测试后端服务地址", auth: "注册或登录", project: "选用或创建项目",
+  material: "上传项目材料并触发招标解析", req: "确认/修正解析出的要求并发起资料匹配",
+  deliverable: "生成标书并查看正文", task: "模拟评标（评审中心）",
+  quote: "报价测算与策略", export: "终稿检查与导出",
+};
+
+function loadEvidence() {
+  try { stepEvidence = JSON.parse(localStorage.getItem(STEPS_KEY()) || "{}"); } catch { stepEvidence = {}; }
+}
+function saveEvidence() { localStorage.setItem(STEPS_KEY(), JSON.stringify(stepEvidence)); }
+function markStep(key) {
+  if (key && !stepEvidence[key]) { stepEvidence[key] = true; saveEvidence(); }
+  refreshSteps();
+}
+
+function stepIsDone(tab) {
+  if (stepEvidence[tab]) return true;
+  switch (tab) {
+    case "settings": return !!currentEnv();
+    case "auth": return !!token;
+    case "project": return projectId != null;
+    case "material": return materialCount > 0;
+    case "req": return reqCount > 0;
+    case "deliverable": return deliverables.some((d) => d.current_version_no > 0);
+    case "task": return reviewDone;
+    case "quote": return quoteDone;
+    case "export": return exportDone;
+    default: return false;
+  }
+}
+
+function refreshSteps() {
+  const el = $("steps");
+  if (!el) return;
+  el.innerHTML = STEP_DEFS.map(([tab, label], i) => {
+    const done = stepIsDone(tab);
+    const now = currentTab === tab;
+    const cls = "step" + (now ? " now" : "") + (done ? " done" : "");
+    const tip = `${STEP_HINTS[tab] || label}｜${done ? "已实际完成" : "未完成"}${now ? "｜当前页面" : ""}（点击切换）`;
+    return `<span class="${cls}" data-step="${tab}" title="${tip}">${i + 1}. ${label}</span>`;
+  }).join("");
+  el.querySelectorAll("[data-step]").forEach((s) => { s.onclick = () => renderPanel(s.dataset.step); });
+}
+
+/* ---------- Tab（与步骤条同名同序；搜索/对话为辅助页） ---------- */
+const TABS = [
+  ["settings", "连接/设置"], ["auth", "认证"], ["project", "项目"], ["material", "资料"],
+  ["req", "要求"], ["deliverable", "成果"], ["task", "评审"], ["quote", "报价"],
+  ["export", "导出"], ["search", "搜索/对话"],
+];
+
+function renderTabs() {
+  $("tabs").innerHTML = TABS.map(([id, label]) => `<button data-tab="${id}">${label}</button>`).join("");
+  document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => renderPanel(b.dataset.tab));
+}
+
+function renderPanel(tab) {
+  currentTab = tab;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  refreshSteps();
+  const fn = { auth: panelAuth, project: panelProject, material: panelMaterial, req: panelRequirements, deliverable: panelDeliverable, task: panelTask, quote: panelQuote, export: panelExport, search: panelSearch, settings: panelSettings }[tab];
+  if (fn) fn();
 }
 
 function clearBusinessContext() {
@@ -35,6 +128,15 @@ function clearBusinessContext() {
   deliverables = [];
   calcId = null;
   activeTaskId = null;
+  activeTaskType = "";
+  generatingTaskId = null;
+  lastGenQuality = null;
+  materialCount = 0;
+  reqCount = 0;
+  reviewDone = false;
+  quoteDone = false;
+  exportDone = false;
+  stepEvidence = {};
   localStorage.removeItem(PROJECT_KEY());
   localStorage.removeItem(TASK_KEY());
   localStorage.removeItem("bidvolt_calc_" + ENV_KEY());
@@ -98,7 +200,7 @@ async function authedDownload(path, fallbackName = "download") {
     a.remove();
     URL.revokeObjectURL(url);
     log(`下载成功：${a.download}`, "ok");
-  } catch (e) { log(`下载失败：${e}`, "err"); }
+  } catch (e) { log(`下载失败：${errMsg(e)}`, "err"); }
 }
 
 function saveAuth(data) {
@@ -118,7 +220,7 @@ function renderAuth() {
 async function logout() {
   try {
     await api("/auth/logout", { method: "POST", body: { refresh_token: localStorage.getItem(REFRESH_KEY()) } });
-  } catch {}
+  } catch { /* 登出失败不阻塞本地清理 */ }
   token = "";
   localStorage.removeItem(TOKEN_KEY());
   localStorage.removeItem(REFRESH_KEY());
@@ -126,36 +228,6 @@ async function logout() {
   clearBusinessContext();
   renderAuth();
   renderPanel("auth");
-}
-
-const TABS = [
-  ["auth", "认证"], ["project", "项目"], ["material", "资料"], ["req", "要求/匹配"], ["deliverable", "成果"],
-  ["task", "任务/评标"], ["quote", "报价"], ["export", "导出"], ["search", "搜索/对话"],
-  ["settings", "设置/连接"],
-];
-
-const STEP_ORDER = ["auth", "project", "material", "req", "deliverable", "task", "quote", "export", "search"];
-
-function renderSteps(currentTab) {
-  const idx = STEP_ORDER.indexOf(currentTab);
-  const steps = ["连接", "认证", "项目", "资料", "要求", "成果", "评审", "报价", "导出"];
-  $("steps").innerHTML = steps.map((label, i) => {
-    const cls = i === idx ? "step now" : (i < idx ? "step done" : "step");
-    return `<span class="${cls}">${i + 1}. ${label}</span>`;
-  }).join("");
-  $("steps").title = "按顺序完成各步骤；未满足前置条件的操作会给出提示";
-}
-
-function renderTabs() {
-  $("tabs").innerHTML = TABS.map(([id, label]) => `<button data-tab="${id}">${label}</button>`).join("");
-  document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => renderPanel(b.dataset.tab));
-}
-
-function renderPanel(tab) {
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  renderSteps(tab);
-  const fn = { auth: panelAuth, project: panelProject, material: panelMaterial, req: panelRequirements, deliverable: panelDeliverable, task: panelTask, quote: panelQuote, export: panelExport, search: panelSearch, settings: panelSettings }[tab];
-  fn();
 }
 
 /* ---------- 认证（Issue #10 P1.5：分表单 + 前置校验 + 字段级错误 + 提交防重） ---------- */
@@ -206,10 +278,11 @@ async function doAuth(mode) {
     masked.refresh_token = "••••••（已保存，不展示）";  // Issue #10 P0：页面不显示完整 Token
     $("a-result").textContent = JSON.stringify(masked, null, 2);
     log(`${mode} 成功（user#${data.user_id}）`, "ok");
+    markStep("auth");
     renderPanel("project");  // 登录成功后进入项目选择（Issue #10 P1.6 流程）
   } catch (e) {
     hint.textContent = String(e);
-    log(`认证失败：${e}`, "err");
+    log(`认证失败：${errMsg(e)}`, "err");
   } finally {
     btn.disabled = false;
   }
@@ -219,7 +292,7 @@ async function me() {
   try {
     const data = await api("/auth/me");
     $("a-result").textContent = JSON.stringify(data, null, 2);
-  } catch (e) { $("a-result").textContent = String(e); }
+  } catch (e) { $("a-result").textContent = errMsg(e); log(`读取用户信息失败：${errMsg(e)}`, "err"); }
 }
 
 /* ---------- 项目 ---------- */
@@ -236,6 +309,7 @@ function panelProject() {
 }
 
 async function refreshProjects() {
+  if (!$("p-rows")) return;  // 面板未挂载时跳过（任务完成后台刷新不产生噪声，Issue #11.9）
   try {
     const data = await api("/projects?size=50");
     /* Issue #10 P0.2：不再把用户数据拼入内联 onclick，改用 data-* 绑定 */
@@ -249,7 +323,7 @@ async function refreshProjects() {
     document.querySelectorAll("#p-rows .row-archive").forEach((b) => {
       b.onclick = () => archiveProject(Number(b.dataset.id));
     });
-  } catch (e) { log(`项目列表失败：${e}`, "err"); }
+  } catch (e) { log(`项目列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function createProject() {
@@ -260,62 +334,43 @@ async function createProject() {
     const p = await api("/projects", { method: "POST", body: { name, tender_no: ($("p-no").value || "").trim() || null } });
     selectProject(p.project_id, p.name);
     log(`项目创建成功 #${p.project_id}`, "ok");
-  } catch (e) { log(`创建失败：${e}`, "err"); }
+  } catch (e) { log(`创建失败：${errMsg(e)}`, "err"); }
 }
 
 function selectProject(id, name) {
   clearBusinessContext();  // 切换项目清理全部下游上下文（Issue #10 P1.9）
   projectId = id;
+  loadEvidence();
   localStorage.setItem(PROJECT_KEY(), String(id));
   log(`当前项目：${name} (#${id})`, "ok");
+  markStep("project");
   refreshProjects();
 }
 
 async function archiveProject(id) {
-  try { await api(`/projects/${id}/archive`, { method: "POST" }); log(`项目 ${id} 已归档`, "ok"); refreshProjects(); } catch (e) { log(`归档失败：${e}`, "err"); }
+  try { await api(`/projects/${id}/archive`, { method: "POST" }); log(`项目 ${id} 已归档`, "ok"); refreshProjects(); } catch (e) { log(`归档失败：${errMsg(e)}`, "err"); }
 }
 
 async function loadSnapshots() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const data = await api(`/projects/${projectId}/snapshots`);
-    $("p-extra").textContent = JSON.stringify(data.items.map((s) => ({
+    setText("p-extra", JSON.stringify(data.items.map((s) => ({
       snapshot_id: s.snapshot_id, type: s.snapshot_type, created_at: s.created_at, input_refs: s.input_refs,
-    })), null, 2);
+    })), null, 2));
     log(`快照 ${data.items.length} 条`, "ok");
-  } catch (e) { log(`快照列表失败：${e}`, "err"); }
+  } catch (e) { log(`快照列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function loadTasks() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const data = await api(`/projects/${projectId}/tasks`);
-    $("p-extra").textContent = JSON.stringify(data.items.map((t) => ({
+    setText("p-extra", JSON.stringify(data.items.map((t) => ({
       task_id: t.task_id, type: t.task_type, status: t.status, created_at: t.created_at, progress: t.progress,
-    })), null, 2);
+    })), null, 2));
     log(`任务 ${data.items.length} 条`, "ok");
-  } catch (e) { log(`任务列表失败：${e}`, "err"); }
-}
-
-async function importNotice() {
-  if (!projectId) return log("先选用项目", "err");
-  const url = $("n-url").value.trim();
-  if (!url) return log("请输入公告 URL", "err");
-  try {
-    const data = await api(`/projects/${projectId}/tender-notices/import-url`, { method: "POST", body: { url } });
-    $("m-extra").textContent = JSON.stringify(data, null, 2);
-    log(`公告导入：status=${data.status}${data.error_code ? " 错误=" + data.error_code : " file_id=" + data.file_id}`, data.status === 2 ? "ok" : "err");
-    refreshFiles();
-  } catch (e) { log(`公告导入失败：${e}`, "err"); }
-}
-
-async function loadNotices() {
-  if (!projectId) return log("先选用项目", "err");
-  try {
-    const data = await api(`/projects/${projectId}/tender-notices`);
-    $("m-extra").textContent = JSON.stringify(data.items, null, 2);
-    log(`公告导入记录 ${data.items.length} 条`, "ok");
-  } catch (e) { log(`公告列表失败：${e}`, "err"); }
+  } catch (e) { log(`任务列表失败：${errMsg(e)}`, "err"); }
 }
 
 /* ---------- 资料 ---------- */
@@ -352,54 +407,80 @@ async function uploadFile() {
   try {
     const data = await api("/files/upload", { method: "POST", body: fd });
     log(`上传 ${file.name} → ${JSON.stringify(data.files[0])}`, "ok");
-    refreshFiles(); refreshAssets();
-  } catch (e) { log(`上传失败：${e}`, "err"); }
+    if (target === "project") markStep("material");
+    await refreshFiles(); await refreshAssets();
+  } catch (e) { log(`上传失败：${errMsg(e)}`, "err"); }
 }
 
 async function refreshFiles() {
+  if (!$("m-files")) return;  // 面板未挂载时跳过（Issue #11.10 噪声修复）
   try {
     const data = await api("/files?size=50");
-    $("m-files").innerHTML = data.items.map((f) => `
+    materialCount = data.items.filter((f) => f.project_id).length;
+    setHtml("m-files", data.items.map((f) => `
       <tr><td>${f.file_id}</td><td>${esc(f.name)}</td><td>${f.project_id ? "项目" : "企业"}</td><td>${f.status}</td>
       <td><button class="ghost" onclick="authedDownload('/files/${f.file_id}/download','文件')">下载</button> ·
-          <button class="ghost" onclick="viewBlocks(${f.file_id})">文本块</button></td></tr>`).join("");
-  } catch (e) { log(`文件列表失败：${e}`, "err"); }
+          <button class="ghost" onclick="viewBlocks(${f.file_id})">文本块</button></td></tr>`).join(""));
+    refreshSteps();
+  } catch (e) { log(`文件列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function viewBlocks(id) {
   try {
     const data = await api(`/files/${id}/blocks`);
     log("文本块：" + data.items.map((b) => b.text).join(" | ").slice(0, 300), "ok");
-  } catch (e) { log(`文本块失败：${e}`, "err"); }
+  } catch (e) { log(`文本块失败：${errMsg(e)}`, "err"); }
 }
 
 async function refreshAssets() {
+  if (!$("m-assets")) return;
   try {
     const data = await api("/enterprise/assets");
-    $("m-assets").innerHTML = data.map((a) => `
+    setHtml("m-assets", data.map((a) => `
       <tr><td>${a.asset_id}</td><td>${esc(a.name)}</td><td>${esc(a.asset_type)}</td><td>${a.status}</td>
       <td><button class="ghost" onclick="listFacts(${a.asset_id})">facts</button>
-          <button class="ghost" onclick="listAssetRevisions(${a.asset_id})">revisions</button></td></tr>`).join("");
-  } catch { $("m-assets").innerHTML = "<tr><td colspan=4>未登录或无权限</td></tr>"; }
+          <button class="ghost" onclick="listAssetRevisions(${a.asset_id})">revisions</button></td></tr>`).join(""));
+  } catch { setHtml("m-assets", "<tr><td colspan=4>未登录或无权限</td></tr>"); }
+}
+
+async function importNotice() {
+  if (!projectId) return log("先选用项目", "err");
+  const url = $("n-url").value.trim();
+  if (!url) return log("请输入公告 URL", "err");
+  try {
+    const data = await api(`/projects/${projectId}/tender-notices/import-url`, { method: "POST", body: { url } });
+    setText("m-extra", JSON.stringify(data, null, 2));
+    log(`公告导入：status=${data.status}${data.error_code ? " 错误=" + data.error_code : " file_id=" + data.file_id}`, data.status === 2 ? "ok" : "err");
+    refreshFiles();
+  } catch (e) { log(`公告导入失败：${errMsg(e)}`, "err"); }
+}
+
+async function loadNotices() {
+  if (!projectId) return log("先选用项目", "err");
+  try {
+    const data = await api(`/projects/${projectId}/tender-notices`);
+    setText("m-extra", JSON.stringify(data.items, null, 2));
+    log(`公告导入记录 ${data.items.length} 条`, "ok");
+  } catch (e) { log(`公告列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function listFacts(assetId) {
   try {
     const data = await api(`/enterprise/assets/${assetId}/facts`);
-    $("m-extra").innerHTML = data.items.map((f) => `
+    setHtml("m-extra", data.items.map((f) => `
       <div style="border:1px solid #ccc;margin:4px 0;padding:4px">
         fact#${f.fact_id} ${esc(f.fact_key)} = ${esc(JSON.stringify(f.fact_value))} (status ${f.status})
         <button class="ghost" onclick="confirmFact(${f.fact_id})">确认</button>
         <input id="fix-${f.fact_id}" placeholder="纠正值"><button class="ghost" onclick="correctFact(${f.fact_id})">纠正</button>
-      </div>`).join("") || "无事实";
-  } catch (e) { log(`facts 失败：${e}`, "err"); }
+      </div>`).join("") || "无事实");
+  } catch (e) { log(`facts 失败：${errMsg(e)}`, "err"); }
 }
 
 async function confirmFact(factId) {
   try {
     const r = await api(`/enterprise/facts/${factId}`, { method: "PUT", body: { confirmed: true } });
     log(`事实 ${factId} 已确认（修订 #${r.revision_no}）`, "ok");
-  } catch (e) { log(`确认失败：${e}`, "err"); }
+  } catch (e) { log(`确认失败：${errMsg(e)}`, "err"); }
 }
 
 async function correctFact(factId) {
@@ -408,14 +489,14 @@ async function correctFact(factId) {
   try {
     const r = await api(`/enterprise/facts/${factId}`, { method: "PUT", body: { fact_value: val, note: "demo 纠正" } });
     log(`事实 ${factId} 已纠正为 ${esc(JSON.stringify(r.fact_value))}（修订 #${r.revision_no}）`, "ok");
-  } catch (e) { log(`纠正失败：${e}`, "err"); }
+  } catch (e) { log(`纠正失败：${errMsg(e)}`, "err"); }
 }
 
 async function listAssetRevisions(assetId) {
   try {
     const data = await api(`/enterprise/assets/${assetId}/revisions`);
-    $("m-extra").textContent = JSON.stringify(data.items, null, 2);
-  } catch (e) { log(`revisions 失败：${e}`, "err"); }
+    setText("m-extra", JSON.stringify(data.items, null, 2));
+  } catch (e) { log(`revisions 失败：${errMsg(e)}`, "err"); }
 }
 
 async function ingestAssets() {
@@ -426,15 +507,15 @@ async function ingestAssets() {
     const data = await api("/enterprise/ingest", { method: "POST", body: { asset_ids: ids } });
     log(`导入分类：${JSON.stringify(data.classified)}`, "ok");
     refreshAssets();
-  } catch (e) { log(`导入失败：${e}`, "err"); }
+  } catch (e) { log(`导入失败：${errMsg(e)}`, "err"); }
 }
 
 async function loadIngestQueue() {
   try {
     const data = await api("/enterprise/ingest");
-    $("m-extra").textContent = JSON.stringify(data.items, null, 2);
+    setText("m-extra", JSON.stringify(data.items, null, 2));
     log(`处理队列 ${data.items.length} 条`, "ok");
-  } catch (e) { log(`处理队列失败：${e}`, "err"); }
+  } catch (e) { log(`处理队列失败：${errMsg(e)}`, "err"); }
 }
 
 async function parseProject() {
@@ -442,10 +523,10 @@ async function parseProject() {
   try {
     const files = await api(`/files?target=project&project_id=${projectId}`);
     const ids = files.items.map((f) => f.file_id);
-    if (!ids.length) return log("项目无文件", "err");
+    if (!ids.length) return log("项目无文件：请先上传项目材料", "err");
     const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "tender_parse", payload: { file_ids: ids }, idempotency_key: `parse-${Date.now()}` } });
-    pollTask(t.task_id);
-  } catch (e) { log(`任务提交失败：${e}`, "err"); }
+    pollTask(t.task_id, "tender_parse");
+  } catch (e) { log(`任务提交失败：${errMsg(e)}`, "err"); }
 }
 
 /* ---------- 要求/匹配（Issue #10 P1.13：Requirement 确认/修正 + 资料匹配完整闭环） ---------- */
@@ -468,19 +549,20 @@ function panelRequirements() {
   loadRequirements();
 }
 
-let selectedReq = null;
 async function loadRequirements() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const rows = await api(`/requirements?project_id=${projectId}`);
-    $("r-rows").innerHTML = rows.map((r) => `
+    reqCount = rows.length;
+    if (reqCount > 0) markStep("req");
+    setHtml("r-rows", rows.map((r) => `
       <tr data-id="${r.req_id}" data-rev="${r.revision}">
         <td>${r.req_id}</td><td>${esc(r.req_type)}</td><td>${esc(r.content)}</td><td>r${r.revision}</td>
         <td>${esc(r.confirm_status)}</td>
         <td><button class="r-confirm" data-id="${r.req_id}" data-rev="${r.revision}">确认</button>
             <button class="ghost r-reject" data-id="${r.req_id}" data-rev="${r.revision}">拒绝</button>
             <button class="ghost r-pick" data-id="${r.req_id}" data-rev="${r.revision}">选中修正</button></td>
-      </tr>`).join("") || "<tr><td colspan='6'>暂无要求（先上传材料并触发“招标解析”）</td></tr>";
+      </tr>`).join("") || "<tr><td colspan='6'>暂无要求（先上传材料并触发“招标解析”，或手动新增）</td></tr>");
     document.querySelectorAll("#r-rows .r-confirm").forEach((b) => {
       b.onclick = () => confirmRequirement(Number(b.dataset.id), Number(b.dataset.rev), true);
     });
@@ -494,7 +576,8 @@ async function loadRequirements() {
       };
     });
     log(`已加载要求 ${rows.length} 条`, "ok");
-  } catch (e) { log(`要求列表失败：${e}`, "err"); }
+    refreshSteps();
+  } catch (e) { log(`要求列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function upsertRequirement() {
@@ -507,8 +590,9 @@ async function upsertRequirement() {
       body: { requirements: [{ req_type: $("r-type").value, content, coordinates: [{ source: "manual" }] }] },
     });
     log(`已写入 ${r.count} 条要求`, "ok");
+    markStep("req");
     loadRequirements();
-  } catch (e) { log(`写入失败：${e}`, "err"); }
+  } catch (e) { log(`写入失败：${errMsg(e)}`, "err"); }
 }
 
 async function confirmRequirement(reqId, revision, confirmed) {
@@ -519,7 +603,7 @@ async function confirmRequirement(reqId, revision, confirmed) {
     });
     log(`要求 #${reqId} 已${confirmed ? "确认" : "拒绝"}（${r.confirm_status}）`, "ok");
     loadRequirements();
-  } catch (e) { log(`确认失败（注意 expected_revision CAS）：${e}`, "err"); }
+  } catch (e) { log(`确认失败（注意 expected_revision CAS）：${errMsg(e)}`, "err"); }
 }
 
 async function correctSelected() {
@@ -534,50 +618,138 @@ async function correctSelected() {
     log(`要求 #${selectedReq.id} 已修正 → r${r.revision}`, "ok");
     selectedReq = null;
     loadRequirements();
-  } catch (e) { log(`修正失败：${e}`, "err"); }
+  } catch (e) { log(`修正失败：${errMsg(e)}`, "err"); }
 }
 
 async function matchMaterials() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "material_match", payload: {}, idempotency_key: `mm-${Date.now()}` } });
-    pollTask(t.task_id);
-  } catch (e) { log(`资料匹配失败：${e}`, "err"); }
+    pollTask(t.task_id, "material_match");
+  } catch (e) { log(`资料匹配失败：${errMsg(e)}`, "err"); }
 }
 
-/* ---------- 成果 ---------- */
+/* ---------- 成果（Issue #11.4/5/6/7/8：状态横幅 + 正文可视化 + 明确操作顺序 + 防重复生成） ---------- */
+const DELIVERABLE_TYPE_NAMES = { 1: "商务标", 2: "技术标", 3: "报价单" };
+
 function panelDeliverable() {
   $("panel").innerHTML = `
-    <h3>成果与版本</h3>
-    <div class="row"><button onclick="createDeliverables()">创建三份成果</button>
-      <button class="ghost" onclick="generateBid()">生成标书(bid_generate)</button>
-      <button class="ghost" onclick="reviewBid()">校核(bid_review)</button></div>
-    <div class="row"><textarea id="d-json" placeholder='{"nodes":[{"id":"n1","type":"paragraph","text":"内容"}]}'></textarea></div>
-    <div class="row"><select id="d-sel"></select><button onclick="saveVersion()">保存新版本</button>
-      <button class="ghost" onclick="aiEdit()">AI 修改选区</button></div>
+    <h3>成果（生成与查看）</h3>
+    <div id="d-status" class="banner muted">正在读取成果状态…</div>
+    <div class="row">
+      <button id="d-gen" onclick="generateBid()">① 生成标书（正式成果）</button>
+      <button class="ghost" onclick="reviewBid()">② 校核（质量评审）</button>
+      <button class="ghost" onclick="createDeliverables()">创建空成果记录（演示）</button>
+    </div>
+    <div class="muted" style="margin-bottom:8px">操作顺序：① 生成标书（产出三份正式成果正文）→ ② 校核 → 点击各行【查看正文】→ 导出页终检。
+    生成期间按钮会禁用并提示任务号，重复点击不会产生重复成果。</div>
+    <div id="d-view" class="doc-view"></div>
+    <table><thead><tr><th>ID</th><th>类型</th><th>标题</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody id="d-rows"></tbody></table>
     <div id="d-versions" class="muted"></div>
-    <div class="row"><button class="ghost" onclick="createEditorSession()">创建编辑会话</button>
+    <h4>可选：在线协作编辑（先在上表选成果，正文以【查看正文】为准）</h4>
+    <div class="row">
+      <select id="d-sel"></select>
+      <button class="ghost" onclick="createEditorSession()">创建编辑会话</button>
       <button class="ghost" onclick="saveCheckpoint()">保存检查点</button>
       <button class="ghost" onclick="completeEditorSession()">完成编辑</button>
-      <button class="ghost" onclick="cancelEditorSession()">取消会话</button></div>
-    <table><thead><tr><th>ID</th><th>类型</th><th>标题</th><th>当前版本</th><th>版本列表</th></tr></thead><tbody id="d-rows"></tbody></table>`;
+      <button class="ghost" onclick="cancelEditorSession()">取消会话</button>
+      <button class="ghost" onclick="aiEdit()">AI 修改选区</button>
+    </div>
+    <textarea id="d-json" placeholder='{"nodes":[{"id":"n1","type":"paragraph","text":"内容"}]}'></textarea>`;
   refreshDeliverables();
 }
 
+function renderDeliverableStatus() {
+  const el = $("d-status");
+  if (!el) return;
+  if (!projectId) { el.innerHTML = ""; return; }
+  if (generatingTaskId) {
+    el.innerHTML = `<b>正在生成：</b>任务 #${generatingTaskId} 执行中，完成后自动刷新并打开正文（进度见底部日志）`;
+    return;
+  }
+  if (!deliverables.length) {
+    el.innerHTML = `<b>尚未生成：</b>请点击【① 生成标书】产出三份正式成果；【创建空成果记录】只建记录、不含正文（演示用）。`;
+    return;
+  }
+  const withContent = deliverables.filter((d) => d.current_version_no > 0);
+  const empty = deliverables.length - withContent.length;
+  if (!withContent.length) {
+    el.innerHTML = `<b>仅有成果记录（无正文）：</b>${deliverables.length} 条记录都没有正文，请点击【① 生成标书】。`;
+    return;
+  }
+  let extra = "";
+  if (lastGenQuality && lastGenQuality.deliverables_ready === false) {
+    extra = `；<b style="color:#b26a00">质量门禁未通过：为“正式成果草稿（待人工校核）”，请到评审页处理缺失项</b>`;
+  }
+  el.innerHTML = `<b>已生成：</b>${withContent.length} 份成果可查看正文（点击各行【查看正文】）${empty ? `；另有 ${empty} 条空记录` : ""}${extra}。`;
+}
+
 async function refreshDeliverables() {
-  if (!$("d-rows")) return;  // 非成果页时跳过渲染
-  if (!projectId) { $("d-rows").innerHTML = "<tr><td colspan=5>先选用项目</td></tr>"; return; }
+  if (!$("d-rows")) return;  // 面板未挂载时跳过（任务完成后台刷新，Issue #11 噪声修复）
+  if (!projectId) { setHtml("d-rows", "<tr><td colspan=6>先选用项目</td></tr>"); setHtml("d-status", ""); return; }
   try {
     deliverables = await api(`/deliverables?project_id=${projectId}`);
-    $("d-rows").innerHTML = deliverables.map((d) => `
-      <tr><td>${d.deliverable_id}</td><td>${d.deliverable_type}</td><td>${esc(d.title)}</td><td>${d.current_version_no}</td>
-      <td><button class="ghost" onclick="listVersions(${d.deliverable_id})">版本</button></td></tr>`).join("");
-    $("d-sel").innerHTML = deliverables.map((d) => `<option value="${d.deliverable_id}">#${d.deliverable_id} ${esc(d.title)}</option>`).join("");
-  } catch (e) { log(`成果列表失败：${e}`, "err"); }
+    setHtml("d-rows", deliverables.map((d) => {
+      const v = d.current_version_no;
+      const st = v > 0 ? "已生成（可查看）" : "仅记录（无正文）";
+      return `<tr><td>${d.deliverable_id}</td><td>${DELIVERABLE_TYPE_NAMES[d.deliverable_type] || d.deliverable_type}</td>
+        <td>${esc(d.title)}</td><td>${v || "—"}</td><td>${st}</td>
+        <td><button class="ghost d-view-btn" data-id="${d.deliverable_id}">查看正文</button>
+            <button class="ghost" onclick="listVersions(${d.deliverable_id})">版本</button></td></tr>`;
+    }).join("") || "<tr><td colspan=6>暂无成果：点击上方【① 生成标书】</td></tr>");
+    document.querySelectorAll("#d-rows .d-view-btn").forEach((b) => {
+      b.onclick = () => renderDeliverableContent(Number(b.dataset.id));
+    });
+    setHtml("d-sel", deliverables.map((d) => `<option value="${d.deliverable_id}">#${d.deliverable_id} ${esc(d.title)}</option>`).join(""));
+    if (deliverables.some((d) => d.current_version_no > 0)) markStep("deliverable");
+    renderDeliverableStatus();
+    refreshSteps();
+  } catch (e) { log(`成果列表失败：${errMsg(e)}`, "err"); }
+}
+
+async function renderDeliverableContent(id) {
+  try {
+    const data = await api(`/deliverables/${id}/content`);
+    const view = $("d-view");
+    if (!view) return;
+    const model = data.model || {};
+    const nodes = model.nodes || [];
+    if (!nodes.length) {
+      view.innerHTML = `<div class="banner warn-banner">成果 #${id} 尚无正文（仅成果记录）：请点击【① 生成标书】产出正文。</div>`;
+      return;
+    }
+    let html = "";
+    let textLen = 0;
+    let allText = "";
+    for (const n of nodes) {
+      const t = String(n.text || "");
+      textLen += t.length;
+      allText += t;
+      if (n.type === "heading" || n.type === "title") html += `<h4>${esc(t)}</h4>`;
+      else html += `<p>${esc(t)}</p>`;
+    }
+    if (model.sheets && model.sheets.length) {
+      for (const s of model.sheets) {
+        html += `<h4>${esc(s.name || "表格")}</h4><table>`;
+        for (const row of s.rows || []) {
+          html += "<tr>" + row.map((cell) => `<td>${esc(String(cell ?? ""))}</td>`).join("") + "</tr>";
+        }
+        html += "</table>";
+      }
+    }
+    const stub = allText.includes("草稿由 BidVolt 确定性生成");
+    view.innerHTML = `<div class="banner ${stub ? "warn-banner" : "ok-banner"}">成果 #${id}（v${data.version_no || "?"}）正文 ${textLen} 字${
+      stub ? "——仍是占位草稿（真实生成未生效，请重试【① 生成标书】）" : ""
+    }</div>` + html;
+    log(`已查看成果 #${id} 正文（${textLen} 字）${stub ? "，注意：仍是占位草稿" : ""}`, stub ? "warn" : "ok");
+  } catch (e) { log(`读取成果正文失败：${errMsg(e)}`, "err"); }
 }
 
 async function createDeliverables() {
   if (!projectId) return log("先选用项目", "err");
+  if (deliverables.length >= 3 && deliverables.every((d) => d.current_version_no > 0)) {
+    return log("三份成果已存在且有正文，无需重复创建（如需重建请归档后重试）", "warn");
+  }
   try {
     for (const [dtype, title, model] of [[1, "商务标", { nodes: [{ id: "n1", type: "paragraph", text: "商务响应" }] }],
       [2, "技术标", { nodes: [{ id: "n1", type: "paragraph", text: "技术方案" }] }],
@@ -585,47 +757,34 @@ async function createDeliverables() {
       const d = await api("/deliverables", { method: "POST", body: { project_id: projectId, deliverable_type: dtype, title } });
       await api(`/deliverables/${d.deliverable_id}/versions`, { method: "POST", body: { content: model, version_type: 2 } });
     }
-    log("三份成果已创建", "ok");
+    log("三份空成果记录已创建（仅记录，正文需点【① 生成标书】产出）", "ok");
     refreshDeliverables();
-  } catch (e) { log(`创建成果失败：${e}`, "err"); }
-}
-
-async function saveVersion() {
-  const id = $("d-sel").value;
-  if (!id) return log("先创建成果", "err");
-  try {
-    const content = JSON.parse($("d-json").value || '{"nodes":[]}');
-    const v = await api(`/deliverables/${id}/versions`, { method: "POST", body: { content, version_type: 4 } });
-    log(`成果 ${id} 新版本 v${v.version_no}`, "ok");
-    refreshDeliverables();
-  } catch (e) { log(`保存失败：${e}`, "err"); }
+  } catch (e) { log(`创建成果失败：${errMsg(e)}`, "err"); }
 }
 
 async function listVersions(id) {
   try {
     const rows = await api(`/deliverables/${id}/versions`);
-    $("d-versions").innerHTML = rows.map((v) =>
+    setHtml("d-versions", rows.map((v) =>
       `v${v.version_no}(type${v.version_type}) <a href="#" onclick="downloadVersion(${id},${v.version_no});return false">下载</a>`
-    ).join(" · ");
+    ).join(" · "));
     log(`成果 ${id} 版本：` + rows.map((v) => `v${v.version_no}(type${v.version_type})`).join(", "), "ok");
-  } catch (e) { log(e, "err"); }
+  } catch (e) { log(`版本列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function downloadVersion(id, no) {
   await authedDownload(`/deliverables/${id}/versions/${no}/download`, `deliverable_${id}_v${no}.docx`);
 }
 
-let editorSession = null;
-
 async function createEditorSession() {
   const id = $("d-sel").value;
-  if (!id) return log("先创建成果", "err");
+  if (!id) return log("先创建/选择成果", "err");
   try {
     const s = await api(`/deliverables/${id}/editor-sessions`, { method: "POST", body: {} });
     editorSession = { id: s.session_id, lease: s.lease_token, base: s.base_version_no };
     $("d-json").value = JSON.stringify(s.content, null, 2);
     log(`编辑会话 #${s.session_id} 已创建（base v${s.base_version_no}）`, "ok");
-  } catch (e) { log(`创建会话失败：${e}`, "err"); }
+  } catch (e) { log(`创建会话失败：${errMsg(e)}`, "err"); }
 }
 
 async function saveCheckpoint() {
@@ -638,7 +797,7 @@ async function saveCheckpoint() {
       body: { lease_token: editorSession.lease, content },
     });
     log("检查点已保存", "ok");
-  } catch (e) { log(`检查点失败：${e}`, "err"); }
+  } catch (e) { log(`检查点失败：${errMsg(e)}`, "err"); }
 }
 
 async function completeEditorSession() {
@@ -653,7 +812,7 @@ async function completeEditorSession() {
     log(`编辑完成 → v${r.version_no}`, "ok");
     editorSession = null;
     refreshDeliverables();
-  } catch (e) { log(`完成编辑失败：${e}`, "err"); }
+  } catch (e) { log(`完成编辑失败：${errMsg(e)}`, "err"); }
 }
 
 async function cancelEditorSession() {
@@ -666,28 +825,36 @@ async function cancelEditorSession() {
     });
     log("会话已取消", "ok");
     editorSession = null;
-  } catch (e) { log(`取消失败：${e}`, "err"); }
+  } catch (e) { log(`取消失败：${errMsg(e)}`, "err"); }
 }
 
 async function generateBid() {
   if (!projectId) return log("先选用项目", "err");
+  if (generatingTaskId) return log(`正在生成中（任务 #${generatingTaskId}），请勿重复提交；进度见底部日志`, "warn");
+  const btn = $("d-gen");
   try {
     const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "bid_generate", payload: { material_ref: "CABLE-YJV-3x95", cost: 100 }, idempotency_key: `bg-${Date.now()}` } });
-    pollTask(t.task_id);
-  } catch (e) { log(e, "err"); }
+    generatingTaskId = t.task_id;
+    if (btn) { btn.disabled = true; btn.textContent = "生成中…（请勿重复点击）"; }
+    renderDeliverableStatus();
+    pollTask(t.task_id, "bid_generate");
+  } catch (e) {
+    log(`生成提交失败：${errMsg(e)}`, "err");
+    if (btn) { btn.disabled = false; btn.textContent = "① 生成标书（正式成果）"; }
+  }
 }
 
 async function reviewBid() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "bid_review", payload: {}, idempotency_key: `br-${Date.now()}` } });
-    pollTask(t.task_id);
-  } catch (e) { log(e, "err"); }
+    pollTask(t.task_id, "bid_review");
+  } catch (e) { log(`校核提交失败：${errMsg(e)}`, "err"); }
 }
 
 async function aiEdit() {
   const id = $("d-sel").value;
-  if (!id) return log("先创建成果", "err");
+  if (!id) return log("先创建/选择成果", "err");
   try {
     const d = await api(`/deliverables/${id}/content`);
     const node = d.model.nodes?.[0];
@@ -696,26 +863,48 @@ async function aiEdit() {
     const applied = await api(`/deliverables/${id}/ai-edit/${diff.diff_id}/apply`, { method: "POST" });
     log(`AI 修改已应用 → v${applied.version_no}`, "ok");
     refreshDeliverables();
-  } catch (e) { log(`AI 修改失败：${e}`, "err"); }
+  } catch (e) { log(`AI 修改失败：${errMsg(e)}`, "err"); }
 }
 
-/* ---------- 任务/评标 ---------- */
+/* ---------- 评审（Issue #11.8：任务状态表 + 评标闭环；生成/校核入口统一在成果页） ---------- */
+const TASK_TYPE_NAMES = { tender_parse: "招标解析", material_match: "资料匹配", bid_generate: "生成标书", bid_review: "校核" };
+const TASK_STATUS_NAMES = { 1: "排队", 2: "运行中", 3: "完成", 4: "失败(将重试)", 5: "取消", 6: "失败" };
+
 function panelTask() {
   $("panel").innerHTML = `
-    <h3>任务与模拟评标</h3>
-    <div class="row">
-      <button onclick="submitTask('tender_parse')">招标解析</button>
-      <button onclick="submitTask('material_match')">资料匹配</button>
-      <button onclick="submitTask('bid_generate')">生成标书</button>
-      <button onclick="submitTask('bid_review')">校核</button>
+    <h3>评审中心（任务状态 + 模拟评标）</h3>
+    <div class="muted" style="margin-bottom:8px">正式成果统一在【成果】页生成与校核；本页查看所有任务的真实状态、失败原因与评审问题闭环。</div>
+    <h4>任务状态</h4>
+    <table><thead><tr><th>task_id</th><th>类型</th><th>状态</th><th>进度</th><th>结果/错误摘要</th></tr></thead><tbody id="t-tasks"></tbody></table>
+    <div class="row" style="margin-top:8px">
+      <button class="ghost" onclick="refreshTasks()">刷新任务列表</button>
       <button onclick="doEvaluate()">模拟评标</button>
     </div>
-    <div class="row"><span class="muted">任务结果与评分会显示在下方日志；评标项：</span></div>
+    <h4>评标项（逐条建议）</h4>
     <table><thead><tr><th>item_id</th><th>分类</th><th>问题</th><th>得分/满分</th><th>可提升</th><th>状态</th><th>建议</th></tr></thead><tbody id="t-items"></tbody></table>
     <div class="row"><input id="s-item-id" placeholder="item_id"><input id="s-suggestion" placeholder="修改后的建议">
       <button class="ghost" onclick="saveSuggestionOverride()">保存建议修改</button></div>
     <div class="row"><button class="ghost" onclick="confirmAll()">确认全部建议</button>
       <button class="ghost" onclick="reEvaluate()">重审受影响项</button></div>`;
+  refreshTasks();
+}
+
+async function refreshTasks() {
+  if (!$("t-tasks")) return;  // 面板未挂载时跳过
+  if (!projectId) { setHtml("t-tasks", "<tr><td colspan=5>先选用项目</td></tr>"); return; }
+  try {
+    const data = await api(`/projects/${projectId}/tasks`);
+    setHtml("t-tasks", data.items.map((t) => {
+      const prog = t.progress || {};
+      const err = t.error ? (t.error.message || JSON.stringify(t.error)) : "";
+      const res = t.result ? (JSON.stringify(t.result) || "") : "";
+      const summary = err ? esc(err).slice(0, 140) : esc(res).slice(0, 140);
+      return `<tr><td>${t.task_id}</td><td>${TASK_TYPE_NAMES[t.task_type] || t.task_type}</td>
+        <td>${TASK_STATUS_NAMES[t.status] ?? ("状态" + t.status)}</td>
+        <td>${prog.percent != null ? prog.percent + "%" : "—"}${prog.current_work ? " " + esc(prog.current_work) : ""}</td>
+        <td>${summary}</td></tr>`;
+    }).join("") || "<tr><td colspan=5>暂无任务</td></tr>");
+  } catch (e) { log(`任务列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function saveSuggestionOverride() {
@@ -729,30 +918,23 @@ async function saveSuggestionOverride() {
       body: { suggestion },
     });
     log(`建议已保存：item#${r.item_id} 生效建议=${esc(r.effective_suggestion)}`, "ok");
-  } catch (e) { log(`保存建议失败：${e}`, "err"); }
+  } catch (e) { log(`保存建议失败：${errMsg(e)}`, "err"); }
 }
 
-async function submitTask(taskType) {
-  if (!projectId) return log("先选用项目", "err");
-  try {
-    const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: taskType, payload: {}, idempotency_key: `${taskType}-${Date.now()}` } });
-    pollTask(t.task_id);
-  } catch (e) { log(`${taskType} 提交失败：${e}`, "err"); }
-}
-
-let scoreCtx = null;
 async function doEvaluate() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const ev = await api(`/projects/${projectId}/evaluate`, { method: "POST", body: {} });
     scoreCtx = ev;
+    reviewDone = true;
+    markStep("task");
     log(`评标完成：总分 ${ev.total_score}，缺失 ${ev.missing_count}`, "ok");
     const items = await api(`/projects/${projectId}/scores/${ev.score_id}/items`);
-    $("t-items").innerHTML = items.map((i) => `
+    setHtml("t-items", items.map((i) => `
       <tr><td>${i.item_id}</td><td>${esc(i.category)}</td><td>${esc(i.problem_description)}</td>
       <td>${i.got ?? "-"}/${i.full ?? "-"}</td><td>${i.improvable ?? "-"}</td><td>${i.status}</td>
-      <td>${esc(i.effective_suggestion || "")}</td></tr>`).join("");
-  } catch (e) { log(`评标失败：${e}`, "err"); }
+      <td>${esc(i.effective_suggestion || "")}</td></tr>`).join(""));
+  } catch (e) { log(`评标失败：${errMsg(e)}`, "err"); }
 }
 
 async function confirmAll() {
@@ -761,7 +943,7 @@ async function confirmAll() {
     const items = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items`);
     const r = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items/confirm`, { method: "POST", body: { item_ids: items.map((i) => i.item_id), expected_version: scoreCtx.snapshot_id } });
     log(`确认结果：${JSON.stringify(r.results)}`, "ok");
-  } catch (e) { log(`确认失败：${e}`, "err"); }
+  } catch (e) { log(`确认失败：${errMsg(e)}`, "err"); }
 }
 
 async function reEvaluate() {
@@ -770,70 +952,94 @@ async function reEvaluate() {
     const items = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items`);
     const r = await api(`/projects/${projectId}/re-evaluate`, { method: "POST", body: { item_ids: items.map((i) => i.item_id) } });
     log(`重审完成：总分 ${r.total_score}，提升 ${r.improved_count} 项`, "ok");
-  } catch (e) { log(`重审失败：${e}`, "err"); }
+  } catch (e) { log(`重审失败：${errMsg(e)}`, "err"); }
 }
 
-async function pollTask(taskId) {
-  /* Issue #10 P1.10/P1.12：优先 SSE 流（含进度与断线回退），持久化任务 id，刷新可恢复 */
+/* ---------- 任务跟踪（Issue #11.11/12：SSE 健壮 + 结果/错误/降级显式展示，绝不静默失败） ---------- */
+async function pollTask(taskId, taskType) {
   activeTaskId = taskId;
+  activeTaskType = taskType || "";
   localStorage.setItem(TASK_KEY(), String(taskId));
-  log(`任务 ${taskId} 已提交，等待执行…`);
+  log(`任务 ${taskId} 已提交（${TASK_TYPE_NAMES[taskType] || taskType || "任务"}），等待执行…`, "info");
+  let reachedEnd = false;
   try {
     const resp = await rawFetch(`/tasks/${taskId}/stream`);
-    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        let payload = null;
-        try { payload = JSON.parse(line.slice(5).trim()); } catch { continue; }
-        const p = payload.progress || {};
-        const status = payload.status;
-        if (p.phase) log(`任务 ${taskId}：${p.phase} ${p.status || ""} ${p.percent != null ? p.percent + "%" : ""} ${p.current_work || ""}`);
-        if (status === 3 || status === "done") {
-          log(`任务 ${taskId} 完成：${JSON.stringify(payload.result).slice(0, 240)}`, "ok");
-          localStorage.removeItem(TASK_KEY());
-          activeTaskId = null;
-          refreshDeliverables(); refreshProjects();
-          return;
-        }
-        if (status === 4 || status === 6 || status === "failed" || status === "cancelled") {
-          log(`任务 ${taskId} 终态：${status}`, "err");
-          localStorage.removeItem(TASK_KEY());
-          activeTaskId = null;
-          return;
+    if (resp.ok && resp.body) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          let payload = null;
+          try { payload = JSON.parse(line.slice(5).trim()); } catch { continue; }  // 非 JSON 心跳行直接忽略
+          if (!payload) continue;
+          const p = payload.progress || {};
+          if (payload.status === 3 || payload.status === "done") { reachedEnd = true; finishTask(taskId, taskType, payload, true); return; }
+          if (payload.status === 6 || payload.status === 4 || payload.status === 5 || payload.status === "failed" || payload.status === "cancelled") { reachedEnd = true; finishTask(taskId, taskType, payload, false); return; }
+          if (p.phase) log(`任务 ${taskId}：${p.phase} ${p.status || ""} ${p.percent != null ? p.percent + "%" : ""} ${p.current_work || ""}`, "info");
         }
       }
+    } else {
+      log(`任务流不可用（HTTP ${resp.status}），自动改用轮询跟踪（任务仍在正常执行）`, "warn");
     }
   } catch (e) {
-    log(`SSE 中断（${e}），回退轮询`, "err");
+    if (!reachedEnd) log(`任务流读取中断，自动改用轮询继续跟踪（不影响任务执行）`, "warn");
   }
-  // 轮询回退：长任务预算 300s，不再 30s 误报超时
-  for (let i = 0; i < 300; i++) {
+  // 轮询回退：长任务预算 300s（Issue #10 P1.10）
+  for (let i = 0; i < 300 && !reachedEnd; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     try {
       const st = await api(`/tasks/${taskId}`);
-      if (st.status === 3) {
-        log(`任务 ${taskId} 完成：${JSON.stringify(st.result).slice(0, 240)}`, "ok");
-        localStorage.removeItem(TASK_KEY()); activeTaskId = null;
-        refreshDeliverables(); refreshProjects();
-        return;
-      }
-      if (st.status === 6 || st.status === 4) {
-        log(`任务 ${taskId} 终态：${st.status}`, "err");
-        localStorage.removeItem(TASK_KEY()); activeTaskId = null;
-        return;
-      }
-    } catch { /* 网络抖动继续 */ }
+      if (st.status === 3) { finishTask(taskId, taskType, st, true); return; }
+      if (st.status === 6 || st.status === 4 || st.status === 5) { finishTask(taskId, taskType, st, false); return; }
+    } catch { /* 网络抖动，继续轮询 */ }
   }
-  log(`任务 ${taskId} 仍在执行（超 5 分钟），可在“任务/评标”页查看状态；刷新页面会自动恢复跟踪`, "err");
+  log(`任务 ${taskId} 仍在执行（已等待 5 分钟），可在“评审”页任务列表查看实时状态`, "warn");
+}
+
+function finishTask(taskId, taskType, payload, ok) {
+  const result = payload && payload.result;
+  const resultText = result != null ? (JSON.stringify(result) || "") : "";
+  if (ok) {
+    log(`任务 ${taskId} 完成：${resultText.slice(0, 200)}`, "ok");
+    if (result && result.note) log(`任务说明（降级提示）：${result.note}`, "warn");
+    const q = result && result.quality;
+    if (q) {
+      if (q.deliverables_ready === false) {
+        log(`质量门禁未通过：成果为“正式成果草稿（待人工校核）”——要求 ${q.requirements_count || 0} 条、问题 ${q.issue_count ?? 0} 条、错误 ${q.error_count ?? 0} 条；请到评审页处理缺失项`, "warn");
+      } else {
+        log(`质量门禁通过：要求 ${q.requirements_count || 0} 条、问题 ${q.issue_count ?? 0} 条、错误 ${q.error_count ?? 0} 条（deliverables_ready=true）`, "ok");
+      }
+    }
+  } else {
+    const err = payload && payload.error;
+    const errText = (err && err.message) || err || resultText.slice(0, 160) || "未知错误";
+    log(`任务 ${taskId} 失败：${errText}`, "err");
+  }
+  localStorage.removeItem(TASK_KEY());
+  activeTaskId = null;
+  if (taskType === "bid_generate") {
+    lastGenQuality = (result && result.quality) || null;
+    generatingTaskId = null;
+    const btn = $("d-gen");
+    if (btn) { btn.disabled = false; btn.textContent = "① 生成标书（正式成果）"; }
+    refreshDeliverables().then(() => {
+      if (ok) { const first = deliverables.find((d) => d.current_version_no > 0); if (first) renderDeliverableContent(first.deliverable_id); }
+    });
+  } else if (taskType === "bid_review" && ok) {
+    reviewDone = true;
+    markStep("task");
+  }
+  refreshProjects();
+  refreshTasks();
+  activeTaskType = "";
+  refreshSteps();
 }
 
 /* ---------- 报价 ---------- */
@@ -858,9 +1064,11 @@ async function calcQuote() {
   try {
     const data = await api("/quotes/calculate", { method: "POST", body: { material_ref: $("q-material").value, cost: Number($("q-cost").value), min_profit_rate: 0.1, project_id: projectId } });
     calcId = data.calc_id;
+    quoteDone = true;
+    markStep("quote");
     $("q-result").textContent = JSON.stringify(data.result, null, 2);
     log(`测算完成 calc#${calcId} 建议价 ${data.result.suggested}`, "ok");
-  } catch (e) { $("q-result").textContent = String(e); log(`测算失败：${e}`, "err"); }
+  } catch (e) { setText("q-result", errMsg(e)); log(`测算失败：${errMsg(e)}`, "err"); }
 }
 
 async function strategy(name) {
@@ -869,7 +1077,7 @@ async function strategy(name) {
     const data = await api("/quotes/strategies", { method: "POST", body: { calc_id: calcId, strategy: name } });
     $("q-result").textContent = JSON.stringify(data, null, 2);
     log(`策略 ${name}：${data.suggested_price}`, "ok");
-  } catch (e) { log(`策略失败：${e}`, "err"); }
+  } catch (e) { log(`策略失败：${errMsg(e)}`, "err"); }
 }
 
 async function loadCalcHistory() {
@@ -885,7 +1093,7 @@ async function loadCalcHistory() {
       created_at: c.created_at,
     })), null, 2);
     log(`测算记录 ${data.items.length} 条`, "ok");
-  } catch (e) { log(`历史测算失败：${e}`, "err"); }
+  } catch (e) { log(`历史测算失败：${errMsg(e)}`, "err"); }
 }
 
 async function loadTrend() {
@@ -894,7 +1102,7 @@ async function loadTrend() {
     const data = await api(`/quotes/history/${encodeURIComponent(ref)}/trend`);
     $("q-result").textContent = JSON.stringify(data, null, 2);
     log(`样本趋势：${data.sample_count} 条，中位数 ${data.median_price}`, "ok");
-  } catch (e) { log(`趋势失败：${e}`, "err"); }
+  } catch (e) { log(`趋势失败：${errMsg(e)}`, "err"); }
 }
 
 async function aiSuggest() {
@@ -907,7 +1115,7 @@ async function aiSuggest() {
     } else {
       log(`AI 参考区间（策略建议，非最终报价）：${JSON.stringify(data.price_range)}`, "ok");
     }
-  } catch (e) { log(`AI 建议失败：${e}`, "err"); }
+  } catch (e) { log(`AI 建议失败：${errMsg(e)}`, "err"); }
 }
 
 async function applyQuote() {
@@ -921,7 +1129,7 @@ async function applyQuote() {
     const data = await api("/quotes/apply", { method: "POST", body: { calc_id: calcId, deliverable_id: quote.deliverable_id, expected_version_no: quote.current_version_no } });
     log(`报价已应用 → 报价单 v${data.new_version_no}`, "ok");
     refreshDeliverables();
-  } catch (e) { log(`应用失败：${e}`, "err"); }
+  } catch (e) { log(`应用失败：${errMsg(e)}`, "err"); }
 }
 
 /* ---------- 导出 ---------- */
@@ -946,8 +1154,10 @@ async function finalCheck() {
   try {
     const data = await api(`/projects/${projectId}/check`, { method: "POST", body: {} });
     $("e-result").textContent = JSON.stringify(data, null, 2);
+    exportDone = true;
+    markStep("export");
     log(`终检 ${data.passed ? "通过" : "未通过"}`, data.passed ? "ok" : "err");
-  } catch (e) { log(`终检失败：${e}`, "err"); }
+  } catch (e) { log(`终检失败：${errMsg(e)}`, "err"); }
 }
 
 async function doExport() {
@@ -955,8 +1165,10 @@ async function doExport() {
   try {
     const data = await api(`/projects/${projectId}/export`, { method: "POST", body: { formats: ["docx", "xlsx"], with_manifest: true } });
     $("e-result").textContent = JSON.stringify(data, null, 2);
+    exportDone = true;
+    markStep("export");
     log(`导出完成：${data.files.length} 个文件（可在下方“下载交付包”获取）`, "ok");
-  } catch (e) { log(`导出失败：${e}`, "err"); }
+  } catch (e) { log(`导出失败：${errMsg(e)}`, "err"); }
 }
 
 /* ---------- 搜索/对话 ---------- */
@@ -978,7 +1190,7 @@ async function doKnowledge() {
     const data = await api("/knowledge/search", { method: "POST", body: { query: $("k-query").value, project_id: projectId } });
     $("k-result").textContent = JSON.stringify(data, null, 2);
     log(`知识检索命中 ${data.items.length} 条（来源可追溯）`, "ok");
-  } catch (e) { $("k-result").textContent = String(e); log(`知识检索失败：${e}`, "err"); }
+  } catch (e) { setText("k-result", errMsg(e)); log(`知识检索失败：${errMsg(e)}`, "err"); }
 }
 
 async function doSearch() {
@@ -986,20 +1198,21 @@ async function doSearch() {
     const data = await api("/searches", { method: "POST", body: { query: $("s-query").value } });
     $("s-result").textContent = JSON.stringify(data, null, 2);
     log(`搜索返回 ${data.results.length} 条`, "ok");
-  } catch (e) { $("s-result").textContent = String(e); log(`搜索失败：${e}`, "err"); }
+  } catch (e) { setText("s-result", errMsg(e)); log(`搜索失败：${errMsg(e)}`, "err"); }
 }
 
 async function loadConversations() {
-  if (!projectId) { $("c-sel").innerHTML = "<option>先选用项目</option>"; return; }
+  if (!$("c-sel")) return;
+  if (!projectId) { setHtml("c-sel", "<option>先选用项目</option>"); return; }
   try {
     const data = await api(`/projects/${projectId}/conversations`);
-    $("c-sel").innerHTML = data.items.map((c) =>
-      `<option value="${c.conversation_id}">#${c.conversation_id} ${esc(c.title)}</option>`).join("") || "<option>暂无会话</option>";
+    setHtml("c-sel", data.items.map((c) =>
+      `<option value="${c.conversation_id}">#${c.conversation_id} ${esc(c.title)}</option>`).join("") || "<option>暂无会话</option>");
     if (data.items.length) {
       $("c-sel").value = String(data.items[data.items.length - 1].conversation_id);
       showMessages();
     }
-  } catch (e) { log(`会话列表失败：${e}`, "err"); }
+  } catch (e) { log(`会话列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function newConversation() {
@@ -1010,7 +1223,7 @@ async function newConversation() {
     await loadConversations();
     $("c-sel").value = String(c.conversation_id);  // 新建后立即选中，用户可直接提问（公网修复：原实现未等待列表加载，发送被静默拦截）
     showMessages();
-  } catch (e) { log(`创建会话失败：${e}`, "err"); }
+  } catch (e) { log(`创建会话失败：${errMsg(e)}`, "err"); }
 }
 
 async function showMessages() {
@@ -1018,9 +1231,9 @@ async function showMessages() {
   if (!/^\d+$/.test(cid) || !projectId) return;  // 占位选项不作为真实会话 ID（Issue #10 P1.11）
   try {
     const data = await api(`/projects/${projectId}/conversations/${cid}/messages`);
-    $("c-history").textContent = data.items.map((m) =>
-      `${m.role === "user" ? "用户" : "助手"}: ${m.content}`).join("\n\n");
-  } catch (e) { log(`消息列表失败：${e}`, "err"); }
+    setText("c-history", data.items.map((m) =>
+      `${m.role === "user" ? "用户" : "助手"}: ${m.content}`).join("\n\n"));
+  } catch (e) { log(`消息列表失败：${errMsg(e)}`, "err"); }
 }
 
 async function sendMessage() {
@@ -1037,7 +1250,7 @@ async function sendMessage() {
     $("c-msg").value = "";
     log(`助手（${data.mode}）：${data.reply}`, "ok");
     showMessages();
-  } catch (e) { log(`发送失败：${e}`, "err"); }
+  } catch (e) { log(`发送失败：${errMsg(e)}`, "err"); }
 }
 
 /* ---------- 设置 / 连接测试（Issue #5 测试客户端） ---------- */
@@ -1104,6 +1317,7 @@ function addEnv() {
   envs.push({ name, base });
   saveEnvs(envs);
   _switchEnv(name, base);
+  markStep("settings");
   log(`已保存并切换环境：${name} → ${base || "同源"}（已退出登录，请重新登录）`, "ok");
   panelSettings();
 }
@@ -1113,6 +1327,7 @@ function selectEnv(i) {
   const env = envs[i];
   if (!env) return;
   _switchEnv(env.name, env.base);
+  markStep("settings");
   log(`已切换环境：${env.name} → ${env.base || "同源"}（已退出登录，请重新登录）`, "ok");
   panelSettings();
 }
@@ -1152,8 +1367,9 @@ async function testConnection() {
       allOk = false;
     }
   }
-  $("env-result").textContent = `测试目标：${base || "同源（本页）"}\n` + out.join("\n");
+  setText("env-result", `测试目标：${base || "同源（本页）"}\n` + out.join("\n"));
   log(`连接测试：${allOk ? "全部通过" : "存在失败项"}`, allOk ? "ok" : "err");  // 两项都 200 才算通过（Issue #10 P2）
+  if (allOk) markStep("settings");
 }
 
 /* 供 E2E/调试读取当前会话（不暴露 refresh token） */
@@ -1161,8 +1377,10 @@ window.getBidvoltToken = () => token;
 
 /* ---------- 初始化（Issue #10 P1.12：刷新恢复项目/任务上下文，并校验会话有效性） ---------- */
 async function initApp() {
+  loadEvidence();
   renderTabs();
   renderAuth();
+  refreshSteps();
   if (!token) {
     renderPanel("auth");
     return;
@@ -1182,6 +1400,7 @@ async function initApp() {
   const savedProject = localStorage.getItem(PROJECT_KEY());
   if (savedProject) {
     projectId = Number(savedProject);
+    loadEvidence();  // 项目级步骤证据随项目恢复
     const savedTask = localStorage.getItem(TASK_KEY());
     renderPanel("project");
     log(`已恢复项目 #${projectId}（刷新恢复）`, "ok");

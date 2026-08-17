@@ -7,9 +7,11 @@ nav#tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 20px 0; }
 nav#tabs button { border: 1px solid #ccd; background: #fff; color: #1f3a5f; padding: 6px 12px; cursor: pointer; border-radius: 4px 4px 0 0; }
 nav#tabs button.active { background: #1f3a5f; color: #fff; }
 #steps { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px 0; font-size: 12px; color: #567; }
-#steps .step { padding: 3px 10px; border: 1px dashed #b8c4d4; border-radius: 10px; background: #f2f5f9; }
+#steps .step { padding: 3px 10px; border: 1px dashed #b8c4d4; border-radius: 10px; background: #f2f5f9; cursor: pointer; }
+#steps .step:hover { border-style: solid; border-color: #1f3a5f; }
 #steps .step.done { border-style: solid; border-color: #1a7f37; color: #1a7f37; background: #e8f6ec; }
 #steps .step.now { border-style: solid; border-color: #1f3a5f; background: #1f3a5f; color: #fff; }
+#steps .step.done.now { border-color: #1f3a5f; background: #1f3a5f; color: #fff; }
 .form-hint { display: block; color: #c62828; font-size: 12px; min-height: 16px; margin: 2px 0 6px; }
 .field-row { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
 main#panel { background: #fff; margin: 0 20px 20px; padding: 18px; min-height: 420px; border: 1px solid #dde3ea; border-top: none; }
@@ -20,9 +22,19 @@ button { padding: 6px 14px; border: 1px solid #1f3a5f; background: #1f3a5f; colo
 button.ghost { background: #fff; color: #1f3a5f; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
-th, td { border: 1px solid #dde3ea; padding: 6px 8px; text-align: left; }
+th, td { border: 1px solid #dde3ea; padding: 6px 8px; text-align: left; vertical-align: top; }
 th { background: #eef2f7; }
 .muted { color: #777; font-size: 12px; }
-#log { background: #10151c; color: #b7f0b7; padding: 10px; overflow: auto; max-height: 180px; font-size: 12px; margin: 0 20px 20px; border-radius: 4px; }
-.ok { color: #1a7f37; font-weight: bold; }
-.err { color: #c62828; font-weight: bold; }
+/* 成果状态横幅与正文渲染区（Issue #11.5/6） */
+.banner { padding: 10px 12px; margin: 6px 0 12px; border: 1px solid #dde3ea; border-radius: 4px; background: #f2f6fb; font-size: 13px; }
+.banner.ok-banner { border-color: #1a7f37; background: #e8f6ec; }
+.banner.warn-banner { border-color: #d68a1c; background: #fdf3e0; }
+.doc-view { border: 1px solid #dde3ea; border-radius: 4px; padding: 14px 18px; margin: 4px 0 14px; background: #fff; max-height: 460px; overflow: auto; font-size: 14px; line-height: 1.7; }
+.doc-view h4 { margin: 12px 0 6px; color: #1f3a5f; }
+.doc-view p { margin: 6px 0; white-space: pre-wrap; }
+/* 日志分级（Issue #11.12：成功/失败/警告/信息一目了然） */
+#log { background: #10151c; color: #9fb3c8; padding: 10px; overflow: auto; max-height: 180px; font-size: 12px; margin: 0 20px 20px; border-radius: 4px; }
+#log .ok { color: #4cc66b; }
+#log .err { color: #ff6b6b; }
+#log .warn { color: #ffb74d; }
+#log .info { color: #9fb3c8; }
