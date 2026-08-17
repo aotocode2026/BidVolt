@@ -312,11 +312,12 @@ async function refreshProjects() {
   if (!$("p-rows")) return;  // 面板未挂载时跳过（任务完成后台刷新不产生噪声，Issue #11.9）
   try {
     const data = await api("/projects?size=50");
-    /* Issue #10 P0.2：不再把用户数据拼入内联 onclick，改用 data-* 绑定 */
-    $("p-rows").innerHTML = data.items.map((p) => `
+    /* Issue #10 P0.2：不再把用户数据拼入内联 onclick，改用 data-* 绑定；
+       空安全写入：await 之后面板可能已切换（公网延迟下并发刷新），setHtml 二次校验 */
+    setHtml("p-rows", data.items.map((p) => `
       <tr><td>${p.project_id}</td><td>${esc(p.name)}</td><td>${esc(p.tender_no || "")}</td><td>${p.status}</td>
       <td><button class="row-use" data-id="${p.project_id}" data-name="${esc(p.name)}">选用</button>
-          <button class="ghost row-archive" data-id="${p.project_id}">归档</button></td></tr>`).join("");
+          <button class="ghost row-archive" data-id="${p.project_id}">归档</button></td></tr>`).join(""));
     document.querySelectorAll("#p-rows .row-use").forEach((b) => {
       b.onclick = () => selectProject(Number(b.dataset.id), b.dataset.name);
     });
