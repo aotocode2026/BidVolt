@@ -283,10 +283,19 @@ def main() -> int:
                 "() => { const el = document.getElementById('d-rows'); return el ? el.innerText.includes('已生成（可查看）') : false; }"
             )
             page.wait_for_selector("#d-rows .d-view-btn", timeout=15000)
-            page.click("#d-rows .d-view-btn")
+            # 点击技术标行的【查看正文】（报价单为 sheet 内容字数少，断言需针对正文类成果）
+            page.evaluate(
+                """() => {
+              const rows = [...document.querySelectorAll('#d-rows tr')];
+              const tech = rows.find(r => r.children[1] && r.children[1].innerText.includes('技术标'));
+              const btn = tech && tech.querySelector('.d-view-btn');
+              if (btn) btn.click();
+              return !!btn;
+            }"""
+            )
             page.wait_for_function(
-                "() => { const el = document.getElementById('d-view'); return el && el.innerText.includes('正文'); }",
-                timeout=15000,
+                "() => { const el = document.getElementById('d-view'); const t = el ? el.innerText : ''; return t.includes('正文') && t.length >= 100; }",
+                timeout=20000,
             )
             view_len = page.evaluate("document.getElementById('d-view').innerText.length")
             view_not_json = page.evaluate(
