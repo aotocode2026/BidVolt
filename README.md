@@ -246,14 +246,15 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
-当前基线（2026-08-17）：本地 **233 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
+当前基线（2026-08-18）：本地 **233 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
 Issue #4/#5/#6 用例与 Issue #12 回归——用产品真实 docx 作测试夹具的解析质量/去重、重解析清旧块、
-空要求生成拦截、无 payload 报价单不编造、终检识别占位草稿等）；
+空要求生成拦截、无 payload 报价单不编造、终检识别占位草稿、分章深度生成等）；
 本地浏览器全流程 E2E **25/25 PASS**（含 Issue #11/#12 专项回归：成果正文可视化+状态判断、步骤条证据、
 日志无矛盾误报、资料页项目隔离列、校核结果面板、正文无 Markdown 残留、终检统计面板）；
 公网生产环境 E2E（`scripts/e2e_browser_demo.py --base http://47.100.182.3:28123`）**25/25 PASS**
-（用产品同款真实招标 docx：解析抽取 14 条、技术标 2387 字/商务标 1092 字、无占位无 Markdown 残留、
-`quality.deliverables_ready=true`、ReviewRun/ScoreRecord 绑定成果版本；终检覆盖完整性/要求覆盖/文档质量）；
+（用产品同款真实招标 docx：解析抽取 10–14 条、**技术标 12031 字/商务标 4698 字**（8+3 章分章深度生成）、
+无占位无 Markdown 残留、`quality.deliverables_ready=true`、ReviewRun/ScoreRecord 绑定成果版本；
+终检覆盖完整性/要求覆盖/文档质量）；
 服务器容器（PG+RLS）204 passed（3 个用例为环境交互问题：2 个因生产 .env 与用例 dev 假设冲突——
 已由 `run_container_tests.sh` 固定 `BIDVOLT_ENV=dev` 解决，1 个 capability 终态用例与线上 worker
 竞争任务队列，建议停 worker 后复跑）；线上冒烟 `smoke_all` 4/4 PASS（真实 OFD / AnySearch /
