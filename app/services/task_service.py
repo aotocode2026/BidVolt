@@ -456,6 +456,13 @@ async def _llm_extract_structure(
     try:
         reply = await LLMClient().chat(_STRUCTURE_SYSTEM, f"招标材料：\n{text}")
         parsed = _parse_structure_reply(reply)
+        if not parsed.get("business") or not parsed.get("technical"):
+            # 结构抽取为空重试一次（更严格的纯 JSON 指令，与要求抽取同策略）
+            reply = await LLMClient().chat(
+                _STRUCTURE_SYSTEM + "只输出 JSON 本身，禁止任何解释或 Markdown 围栏。",
+                f"招标材料：\n{text[:16000]}",
+            )
+            parsed = _parse_structure_reply(reply)
     except Exception:  # noqa: BLE001
         return 0
     count = 0
@@ -766,12 +773,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         structure_summary = [t for t, _ in biz_chapters] + [t for t, _ in tech_chapters]
     else:
         structure_source = "fallback"
-        structure_summary: list[str] = []
         biz_chapters = list(DEFAULT_BUSINESS_CHAPTERS)
         tech_chapters = list(DEFAULT_TECH_CHAPTERS)
+        structure_summary = [t for t, _ in biz_chapters] + [t for t, _ in tech_chapters]
     agent_meta: dict = {
         "plan_sections": len(biz_chapters) + len(tech_chapters),
         "knowledge_refs": 0,
+        "rounds": 0,
+        "closed": None,
         "self_check": {"parse_ok": False, "missing": 0, "conflicts": 0},
         "refined": [],
     }
@@ -915,55 +924,69 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             enhanced.append("technical")
 
         # —— Agent 自检闭环（Hermes bid-generate skill 的 V1 内嵌实现）——
-        # 起草完成后对照全部要求自检，未覆盖的要求回注到对应成果补写章节。
+        # 语义（用户要求）：服务内部自检→补缺→再检，迭代直至闭环；
+        # 达上限仍未闭环的，不得当作完成交付（deliverables_ready=False + 明确草稿标注）。
         agent_meta["plan_sections"] = len(biz_chapters) + len(tech_chapters)
+        MAX_SELF_CHECK_ROUNDS = 3
+        self_check_closed: bool | None = None
         try:
-            biz_text = "\n".join(n.get("text", "") for n in models[1].get("nodes", []))
-            tech_text = "\n".join(n.get("text", "") for n in models[2].get("nodes", []))
-            check_reply = await client.chat(
-                "你是标书自检助手。对照全部招标要求检查已生成标书正文，输出 JSON："
-                '{"missing": [{"req": "未被响应的要求原文", "target": "技术标或商务标"}], '
-                '"conflicts": [{"desc": "矛盾描述", "target": "技术标或商务标"}]}。'
-                "只输出 JSON；无问题输出 {\"missing\": [], \"conflicts\": []}。",
-                f"要求列表：\n{biz_reqs}\n{tech_req_text}\n\n商务标正文：\n{biz_text[:8000]}\n\n技术标正文：\n{tech_text[:12000]}",
-            )
-            _parsed_check = None
-            try:
-                from app.services.llm import extract_json as _extract_json
+            from app.services.llm import extract_json as _extract_json
 
-                _parsed_check = _extract_json(check_reply) if check_reply.strip() else None
-            except Exception:  # noqa: BLE001
-                _parsed_check = None
-            if isinstance(_parsed_check, dict):
+            for _round in range(1, MAX_SELF_CHECK_ROUNDS + 1):
+                biz_text = "\n".join(n.get("text", "") for n in models[1].get("nodes", []))
+                tech_text = "\n".join(n.get("text", "") for n in models[2].get("nodes", []))
+                check_reply = await client.chat(
+                    "你是标书自检助手。对照全部招标要求检查已生成标书正文（含补充响应章节），输出 JSON："
+                    '{"missing": [{"req": "未被响应的要求原文", "target": "技术标或商务标"}], '
+                    '"conflicts": [{"desc": "矛盾描述", "target": "技术标或商务标"}]}。'
+                    "只输出 JSON；无问题输出 {\"missing\": [], \"conflicts\": []}。",
+                    f"要求列表：\n{biz_reqs}\n{tech_req_text}\n\n商务标正文：\n{biz_text[:8000]}\n\n技术标正文：\n{tech_text[:12000]}",
+                )
+                try:
+                    _parsed_check = _extract_json(check_reply) if check_reply.strip() else None
+                except Exception:  # noqa: BLE001
+                    _parsed_check = None
+                if not isinstance(_parsed_check, dict):
+                    agent_meta["self_check"] = {"parse_ok": False, "missing": 0, "conflicts": 0}
+                    self_check_closed = None  # 无法自检：闭环状态未知，交由内置评审兜底
+                    break
                 missing = [m for m in (_parsed_check.get("missing") or []) if isinstance(m, dict) and m.get("req")]
                 conflicts = [c for c in (_parsed_check.get("conflicts") or []) if isinstance(c, dict)]
                 agent_meta["self_check"] = {"parse_ok": True, "missing": len(missing), "conflicts": len(conflicts)}
-                if missing:
-                    missing_by_doc: dict[str, list[str]] = {"商务标": [], "技术标": []}
-                    for m in missing:
-                        target = str(m.get("target") or "")
-                        doc_name = "技术标" if "技术" in target else "商务标"
-                        missing_by_doc[doc_name].append(str(m["req"]))
-                    for doc_name, miss_reqs in missing_by_doc.items():
-                        if not miss_reqs:
-                            continue
-                        try:
-                            refine_reply = await client.chat(
-                                f"你是投标文件撰写助手。已生成的《{doc_name}》缺少对以下要求的响应，"
-                                "请撰写补充章节（### 补充响应）逐条覆盖这些要求；只依据给定要求，禁止编造；直接输出 Markdown。",
-                                "缺失要求：\n" + "\n".join(f"- {r}" for r in miss_reqs) + f"\n\n{common_context}",
-                            )
-                        except Exception:  # noqa: BLE001
-                            refine_reply = ""
-                        if refine_reply and refine_reply.strip():
-                            dtype = 2 if doc_name == "技术标" else 1
-                            models[dtype]["nodes"].append(
-                                {"id": f"llm-{doc_name}-refine", "type": "heading", "text": "补充响应（自检补缺）"}
-                            )
-                            models[dtype]["nodes"].extend(_split_nodes(refine_reply.strip()))
+                agent_meta["rounds"] = _round
+                if not missing and not conflicts:
+                    self_check_closed = True
+                    break
+                self_check_closed = False  # 本轮未闭环：补缺后进入下一轮
+                missing_by_doc: dict[str, list[str]] = {"商务标": [], "技术标": []}
+                for m in missing:
+                    target = str(m.get("target") or "")
+                    doc_name = "技术标" if "技术" in target else "商务标"
+                    missing_by_doc[doc_name].append(str(m["req"]))
+                for doc_name, miss_reqs in missing_by_doc.items():
+                    if not miss_reqs:
+                        continue
+                    try:
+                        refine_reply = await client.chat(
+                            f"你是投标文件撰写助手。已生成的《{doc_name}》缺少对以下要求的响应，"
+                            "请撰写补充章节逐条覆盖这些要求；只依据给定要求，禁止编造；直接输出 Markdown。",
+                            "缺失要求：\n" + "\n".join(f"- {r}" for r in miss_reqs) + f"\n\n{common_context}",
+                        )
+                    except Exception:  # noqa: BLE001
+                        refine_reply = ""
+                    if refine_reply and refine_reply.strip():
+                        dtype = 2 if doc_name == "技术标" else 1
+                        models[dtype]["nodes"].append(
+                            {"id": f"llm-{doc_name}-refine-{_round}", "type": "heading",
+                             "text": f"补充响应（第{_round}轮自检补缺）"}
+                        )
+                        models[dtype]["nodes"].extend(_split_nodes(refine_reply.strip()))
+                        if doc_name not in agent_meta["refined"]:
                             agent_meta["refined"].append(doc_name)
+            # 迭代上限仍未闭环（self_check_closed=False 已由循环置位）→ 交付语义降级
         except Exception:  # noqa: BLE001  自检失败不阻塞生成
             pass
+        agent_meta["closed"] = self_check_closed
     agent_meta["knowledge_refs"] = len(knowledge_refs)
     versions: dict[int, int] = {}
     for dtype, model in models.items():
@@ -1000,7 +1023,17 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     issues = await _review_issues(session, enterprise_id=task.enterprise_id, project_id=project_id)
     error_count = sum(1 for i in issues if i.get("severity") == "error")
     requirement_count = len(requirements)
-    deliverables_ready = requirement_count > 0 and error_count == 0
+    # 交付语义（用户要求）：Agent 自检未闭环（达到迭代上限仍有缺失/矛盾）时，
+    # 绝不能当作完成交付——deliverables_ready 必须为 False 并显式标注草稿。
+    self_check = agent_meta.get("self_check") or {}
+    sc_missing = int(self_check.get("missing") or 0)
+    sc_conflicts = int(self_check.get("conflicts") or 0)
+    sc_closed = agent_meta.get("closed")
+    deliverables_ready = (
+        requirement_count > 0
+        and error_count == 0
+        and sc_closed is not False
+    )
     quality = {
         "requirements_count": requirement_count,
         "pre_extracted": pre_extracted,
@@ -1008,13 +1041,25 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         "score_id": review_info["score_id"],
         "issue_count": len(issues),
         "error_count": error_count,
+        "self_check": {
+            "missing": sc_missing,
+            "conflicts": sc_conflicts,
+            "closed": sc_closed,
+            "rounds": agent_meta.get("rounds", 0),
+        },
         "deliverables_ready": deliverables_ready,
     }
+    not_closed_note = (
+        f"自检未闭环：仍有 {sc_missing} 项要求未响应、{sc_conflicts} 项矛盾（已迭代 {agent_meta.get('rounds', 0)} 轮）"
+        if sc_closed is False
+        else ""
+    )
     if llm_enabled():
         task.result = {
             **versions,
             "note": (
-                ("正式成果草稿（待人工校核）" if not deliverables_ready else "确定性草稿 + LLM 全文生成")
+                (("正式成果草稿（待人工校核）" if not deliverables_ready else "确定性草稿 + LLM 全文生成")
+                 + (f"；{not_closed_note}" if not_closed_note else ""))
                 + (f"（增强：{','.join(enhanced)}）" if enhanced else ("（LLM 不可用，草稿回退）" if not deliverables_ready else "") )
             ),
             "quality": quality,

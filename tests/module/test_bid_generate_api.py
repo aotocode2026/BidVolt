@@ -156,16 +156,68 @@ def test_bid_generate_agent_self_check_and_refine(client, monkeypatch):
     task = _drain_one_task()
     assert task.status == 3
     assert task.result["structure_source"] == "tender"
+    # 闭环语义：fake 每轮都报告同一缺失 → 迭代 3 轮仍未闭环 → 交付语义降级
     assert task.result["agent"]["self_check"]["parse_ok"] is True
     assert task.result["agent"]["self_check"]["missing"] == 1
+    assert task.result["agent"]["rounds"] == 3
+    assert task.result["agent"]["closed"] is False
     assert "技术标" in task.result["agent"]["refined"]
+    assert task.result["quality"]["self_check"]["missing"] == 1
+    assert task.result["quality"]["deliverables_ready"] is False
+    assert "自检未闭环" in task.result["note"]
 
     deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
     tech = next(d for d in deliverables if d["deliverable_type"] == 2)
     content = client.get(f"/api/v1/deliverables/{tech['deliverable_id']}/content", headers=h).json()
     tech_text = "\n".join(n.get("text", "") for n in content["model"]["nodes"])
-    assert "补充响应（自检补缺）" in tech_text
+    assert "补充响应（第3轮自检补缺）" in tech_text
     assert "抗短路能力 30kA" in tech_text
+
+
+def test_bid_generate_agent_closes_loop(client, monkeypatch):
+    """闭环成功路径：第二轮自检无缺失 → closed=True → deliverables_ready=True。"""
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+    calls = {"check": 0}
+
+    async def fake_chat(self, system, user):
+        if "结构解析" in system:
+            return ('{"business": [{"title": "一、应答函", "guide": "应答函"}], '
+                    '"technical": [{"title": "一、技术参数响应表", "guide": "逐条响应"}], "notes": ""}')
+        if "自检助手" in system:
+            calls["check"] += 1
+            if calls["check"] == 1:
+                return '{"missing": [{"req": "抗短路能力 30kA", "target": "技术标"}], "conflicts": []}'
+            return '{"missing": [], "conflicts": []}'
+        if "缺失要求" in user:
+            return "### 补充响应\n抗短路能力 30kA：本公司产品满足该要求，提供型式试验报告。"
+        if "技术" in user:
+            return "### 参数响应\n电压等级 10kV：满足。"
+        return "### 应答内容\n本公司承诺响应全部商务条款，无偏离。"
+
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [
+            {"req_type": "tech_requirement", "content": "电压等级 10kV", "coordinates": [{"file_id": 1}]},
+            {"req_type": "tech_requirement", "content": "抗短路能力 30kA", "coordinates": [{"file_id": 1}]},
+        ]},
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-closed"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["agent"]["rounds"] == 2
+    assert task.result["agent"]["closed"] is True
+    assert task.result["quality"]["deliverables_ready"] is True
+    assert "自检未闭环" not in task.result["note"]
 
 
 def test_bid_generate_requires_requirements(client):
