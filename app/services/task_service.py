@@ -319,6 +319,7 @@ async def _llm_extract_requirements(
         "你是投标文件解析助手。从招标材料中抽取资格要求、评分细则、否决条款、技术要求、报价规则、材料清单，"
         "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
         "每条 content 必须是完整的整句要求（含主语与要求内容），禁止只输出表头、字段名、单位或孤立数字。"
+        "如要求为限价/最高限价，structured 必须含 {\"price_limit\": {\"amount\": 数值, \"unit\": \"万元\"}}。"
         "只依据给定材料，禁止编造。"
     )
     reply = await LLMClient().chat(system, f"招标材料：\n{text}")
@@ -387,6 +388,95 @@ def _dedup_block_texts(blocks, limit: int = 30000) -> str:
     return "\n".join(lines)[:limit]
 
 
+_STRUCTURE_SYSTEM = (
+    "你是投标文件结构解析助手。从招标文件材料中提取应答/响应文件的组成与章节要求，输出 JSON："
+    '{"business": [{"title": "...", "guide": "该部分内容与写作要求"}], '
+    '"technical": [...], "price": [...], "notes": "..."}。'
+    "依据：第五章响应文件格式、响应供应商须知、技术规范书；如材料明确给出格式/组成要求，"
+    "必须严格照搬其章节名称与顺序；如材料未给出明确格式要求，返回 {\"business\": [], \"technical\": []}。"
+    "只依据给定材料，禁止编造。"
+)
+
+
+def _parse_structure_reply(reply: str) -> dict[str, list[tuple[str, str]]]:
+    """把结构解析的 LLM 输出规整为 {business: [(title, guide)], technical: [...], price: [...]}。"""
+    from app.services.llm import extract_json as _extract_json
+
+    if not reply or not reply.strip():
+        return {}
+    try:
+        parsed = _extract_json(reply)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    def _norm(chapters: list) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for c in chapters or []:
+            if isinstance(c, dict) and c.get("title"):
+                title = str(c["title"]).strip()
+                guide = str(c.get("guide") or "按招标文件该部分要求撰写，内容详实").strip()
+                out.append((title, guide))
+        return out
+
+    return {
+        "business": _norm(parsed.get("business") or []),
+        "technical": _norm(parsed.get("technical") or []),
+        "price": _norm(parsed.get("price") or []),
+    }
+
+
+async def _llm_extract_structure(
+    session: AsyncSession,
+    *,
+    enterprise_id: int,
+    project_id: int,
+    file_ids: list[int],
+) -> int:
+    """解析阶段确认标书结构：从招标材料提取响应文件格式要求，
+    落库为 req_type=doc_structure 的要求（structured 携带 role/guide/order），返回条数。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.doc import DocBlock
+    from app.services import requirement_service
+    from app.services.llm import LLMClient, llm_enabled
+
+    if not llm_enabled():
+        return 0
+    file_ids = [int(i) for i in file_ids]
+    if not file_ids:
+        return 0
+    blocks = (
+        await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
+    ).all()
+    text = _dedup_block_texts(blocks, limit=20000)
+    if not text.strip():
+        return 0
+    try:
+        reply = await LLMClient().chat(_STRUCTURE_SYSTEM, f"招标材料：\n{text}")
+        parsed = _parse_structure_reply(reply)
+    except Exception:  # noqa: BLE001
+        return 0
+    count = 0
+    order = 0
+    for role in ("price", "business", "technical"):
+        for title, guide in parsed.get(role, []):
+            await requirement_service.upsert_requirement(
+                session,
+                enterprise_id=enterprise_id,
+                project_id=project_id,
+                req_type="doc_structure",
+                content=title,
+                structured={"role": role, "guide": guide, "order": order},
+                coordinates=[],
+                confidence=None,
+            )
+            order += 1
+            count += 1
+    return count
+
+
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     """解析项目材料：doc_block + （门禁内）LLM 语义抽取 requirement。"""
     from app.services.file_service import reparse_file
@@ -412,7 +502,19 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         file_ids=file_ids,
         task_id=task.id,
     )
-    result: dict = {"parsed_file_ids": [int(i) for i in file_ids], "requirements_extracted": extracted}
+    # 流程化确认标书结构（用户反馈）：解析阶段即从招标文件提取响应文件格式要求，
+    # 落库为 req_type=doc_structure 的要求，生成任务直接消费（不用通用模板拍脑袋）。
+    structure_extracted = await _llm_extract_structure(
+        session,
+        enterprise_id=task.enterprise_id,
+        project_id=task.project_id,
+        file_ids=file_ids,
+    )
+    result: dict = {
+        "parsed_file_ids": [int(i) for i in file_ids],
+        "requirements_extracted": extracted,
+        "structure_extracted": structure_extracted,
+    }
     from app.services.llm import llm_enabled
 
     if not llm_enabled():
@@ -439,9 +541,24 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 Requirement.enterprise_id == task.enterprise_id,
                 Requirement.project_id == project_id,
                 Requirement.current.is_(True),
+                Requirement.req_type != "doc_structure",  # 标书结构是生成编排依据，不是招标要求本身
             )
         )
     ).all()
+    # 解析阶段确认的标书结构（doc_structure 要求，structured.role ∈ price/business/technical）
+    structure_rows = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == task.enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+                Requirement.req_type == "doc_structure",
+            )
+        )
+    ).all()
+    structure_rows = sorted(
+        structure_rows, key=lambda r: (r.structured or {}).get("order", 0)
+    )
     req_by_type: dict[str, list[Requirement]] = {}
     for req in requirements:
         req_by_type.setdefault(req.req_type, []).append(req)
@@ -478,6 +595,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                         Requirement.enterprise_id == task.enterprise_id,
                         Requirement.project_id == project_id,
                         Requirement.current.is_(True),
+                        Requirement.req_type != "doc_structure",
                     )
                 )
             ).all()
@@ -617,6 +735,47 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         rows.append(["说明", "", "", "确定性测算草稿，用户确认后生效"])
         return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
 
+    # —— 标书结构（流程化：解析阶段已确认并落库 doc_structure；与 LLM 门禁无关）——
+    DEFAULT_BUSINESS_CHAPTERS = [
+        ("一、企业基本情况", "结合企业事实介绍公司概况、资质能力、经营状况，300-600 字，无企业事实处标【待补充】"),
+        ("二、商务条款逐项响应", "对每条资格/商务要求逐条编号响应（要求原文→我方响应承诺→是否偏离），全部条款不得遗漏，500-1200 字"),
+        ("三、商务偏离表与承诺", "无偏离声明或逐项偏离说明；对投标保证金、履约、付款方式、报价有效期等条款给出明确承诺，300-600 字"),
+    ]
+    DEFAULT_TECH_CHAPTERS = [
+        ("一、技术方案总体说明", "项目理解、总体思路、重点难点分析与对策、技术路线，600-1000 字"),
+        ("二、技术和服务要求逐项响应", "对每条技术要求逐条编号响应（要求原文→我方响应→是否偏离），全部条款不得遗漏，无依据处标【待补充】，800-1500 字"),
+        ("三、分项实施方案", "按采购范围分项说明工作内容、实施步骤、技术措施、进度安排，600-1200 字"),
+        ("四、质量保障措施", "质量管理体系、过程控制、检验与验收标准，400-800 字"),
+        ("五、安全与应急预案", "安全措施、应急预案、保密与信息安全措施，300-600 字"),
+        ("六、人员配置与组织机构", "项目组织架构、岗位职责、人员投入计划，300-600 字"),
+        ("七、售后服务承诺", "服务内容、响应时限、备品备件、培训与技术支持，400-800 字"),
+        ("八、进度与交付", "里程碑计划、交付物清单、验收标准与方式，300-600 字"),
+    ]
+
+    def _chapters_from_rows(rows: list, role: str) -> list[tuple[str, str]]:
+        return [
+            (r.content, (r.structured or {}).get("guide") or "按招标文件该部分要求撰写，内容详实")
+            for r in rows
+            if (r.structured or {}).get("role") == role
+        ]
+
+    biz_chapters = _chapters_from_rows(structure_rows, "business")
+    tech_chapters = _chapters_from_rows(structure_rows, "technical")
+    if biz_chapters and tech_chapters:
+        structure_source = "requirement"
+        structure_summary = [t for t, _ in biz_chapters] + [t for t, _ in tech_chapters]
+    else:
+        structure_source = "fallback"
+        structure_summary: list[str] = []
+        biz_chapters = list(DEFAULT_BUSINESS_CHAPTERS)
+        tech_chapters = list(DEFAULT_TECH_CHAPTERS)
+    agent_meta: dict = {
+        "plan_sections": len(biz_chapters) + len(tech_chapters),
+        "knowledge_refs": 0,
+        "self_check": {"parse_ok": False, "missing": 0, "conflicts": 0},
+        "refined": [],
+    }
+
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
     enhanced: list[str] = []
     if llm_enabled():
@@ -713,21 +872,21 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 except Exception:  # noqa: BLE001
                     return ""
 
-        business_chapters = [
-            ("一、企业基本情况", "结合企业事实介绍公司概况、资质能力、经营状况，300-600 字，无企业事实处标【待补充】"),
-            ("二、商务条款逐项响应", "对每条资格/商务要求逐条编号响应（要求原文→我方响应承诺→是否偏离），全部条款不得遗漏，500-1200 字"),
-            ("三、商务偏离表与承诺", "无偏离声明或逐项偏离说明；对投标保证金、履约、付款方式、报价有效期等条款给出明确承诺，300-600 字"),
-        ]
-        tech_chapters = [
-            ("一、技术方案总体说明", "项目理解、总体思路、重点难点分析与对策、技术路线，600-1000 字"),
-            ("二、技术和服务要求逐项响应", "对每条技术要求逐条编号响应（要求原文→我方响应→是否偏离），全部条款不得遗漏，无依据处标【待补充】，800-1500 字"),
-            ("三、分项实施方案", "按采购范围分项说明工作内容、实施步骤、技术措施、进度安排，600-1200 字"),
-            ("四、质量保障措施", "质量管理体系、过程控制、检验与验收标准，400-800 字"),
-            ("五、安全与应急预案", "安全措施、应急预案、保密与信息安全措施，300-600 字"),
-            ("六、人员配置与组织机构", "项目组织架构、岗位职责、人员投入计划，300-600 字"),
-            ("七、售后服务承诺", "服务内容、响应时限、备品备件、培训与技术支持，400-800 字"),
-            ("八、进度与交付", "里程碑计划、交付物清单、验收标准与方式，300-600 字"),
-        ]
+        # 结构优先级：解析落库（requirement）→ 生成时再解析材料（tender）→ 通用章节（fallback，已在门禁外确定）
+        if structure_source == "fallback":
+            try:
+                structure_reply = await client.chat(
+                    _STRUCTURE_SYSTEM,
+                    f"招标材料：\n{material_text[:20000]}",
+                )
+                parsed_structure = _parse_structure_reply(structure_reply)
+                nb, nt = parsed_structure.get("business", []), parsed_structure.get("technical", [])
+                if nb and nt:
+                    biz_chapters, tech_chapters = nb, nt
+                    structure_source = "tender"
+                    structure_summary = [t for t, _ in biz_chapters] + [t for t, _ in tech_chapters]
+            except Exception:  # noqa: BLE001  结构解析失败按通用章节回退
+                pass
 
         async def _gen_doc(doc_name: str, chapters: list[tuple[str, str]], reqs_text: str) -> dict | None:
             replies = await asyncio.gather(
@@ -745,7 +904,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             return {"nodes": _dedup_headings(nodes)}
 
         biz_doc, tech_doc = await asyncio.gather(
-            _gen_doc("商务标", business_chapters, biz_reqs),
+            _gen_doc("商务标", biz_chapters, biz_reqs),
             _gen_doc("技术标", tech_chapters, tech_req_text),
         )
         if biz_doc is not None:
@@ -754,6 +913,58 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         if tech_doc is not None:
             models[2] = tech_doc
             enhanced.append("technical")
+
+        # —— Agent 自检闭环（Hermes bid-generate skill 的 V1 内嵌实现）——
+        # 起草完成后对照全部要求自检，未覆盖的要求回注到对应成果补写章节。
+        agent_meta["plan_sections"] = len(biz_chapters) + len(tech_chapters)
+        try:
+            biz_text = "\n".join(n.get("text", "") for n in models[1].get("nodes", []))
+            tech_text = "\n".join(n.get("text", "") for n in models[2].get("nodes", []))
+            check_reply = await client.chat(
+                "你是标书自检助手。对照全部招标要求检查已生成标书正文，输出 JSON："
+                '{"missing": [{"req": "未被响应的要求原文", "target": "技术标或商务标"}], '
+                '"conflicts": [{"desc": "矛盾描述", "target": "技术标或商务标"}]}。'
+                "只输出 JSON；无问题输出 {\"missing\": [], \"conflicts\": []}。",
+                f"要求列表：\n{biz_reqs}\n{tech_req_text}\n\n商务标正文：\n{biz_text[:8000]}\n\n技术标正文：\n{tech_text[:12000]}",
+            )
+            _parsed_check = None
+            try:
+                from app.services.llm import extract_json as _extract_json
+
+                _parsed_check = _extract_json(check_reply) if check_reply.strip() else None
+            except Exception:  # noqa: BLE001
+                _parsed_check = None
+            if isinstance(_parsed_check, dict):
+                missing = [m for m in (_parsed_check.get("missing") or []) if isinstance(m, dict) and m.get("req")]
+                conflicts = [c for c in (_parsed_check.get("conflicts") or []) if isinstance(c, dict)]
+                agent_meta["self_check"] = {"parse_ok": True, "missing": len(missing), "conflicts": len(conflicts)}
+                if missing:
+                    missing_by_doc: dict[str, list[str]] = {"商务标": [], "技术标": []}
+                    for m in missing:
+                        target = str(m.get("target") or "")
+                        doc_name = "技术标" if "技术" in target else "商务标"
+                        missing_by_doc[doc_name].append(str(m["req"]))
+                    for doc_name, miss_reqs in missing_by_doc.items():
+                        if not miss_reqs:
+                            continue
+                        try:
+                            refine_reply = await client.chat(
+                                f"你是投标文件撰写助手。已生成的《{doc_name}》缺少对以下要求的响应，"
+                                "请撰写补充章节（### 补充响应）逐条覆盖这些要求；只依据给定要求，禁止编造；直接输出 Markdown。",
+                                "缺失要求：\n" + "\n".join(f"- {r}" for r in miss_reqs) + f"\n\n{common_context}",
+                            )
+                        except Exception:  # noqa: BLE001
+                            refine_reply = ""
+                        if refine_reply and refine_reply.strip():
+                            dtype = 2 if doc_name == "技术标" else 1
+                            models[dtype]["nodes"].append(
+                                {"id": f"llm-{doc_name}-refine", "type": "heading", "text": "补充响应（自检补缺）"}
+                            )
+                            models[dtype]["nodes"].extend(_split_nodes(refine_reply.strip()))
+                            agent_meta["refined"].append(doc_name)
+        except Exception:  # noqa: BLE001  自检失败不阻塞生成
+            pass
+    agent_meta["knowledge_refs"] = len(knowledge_refs)
     versions: dict[int, int] = {}
     for dtype, model in models.items():
         deliverable = await session.scalar(
@@ -808,13 +1019,24 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             ),
             "quality": quality,
             "issues": issues,
+            "structure_source": structure_source,
+            "structure": structure_summary,
+            "agent": agent_meta,
             "knowledge_refs": [
                 {"file_name": i["file_name"], "project_id": i["project_id"], "source_type": i["source_type"]}
                 for i in knowledge_refs
             ],
         }
     else:
-        task.result = {**versions, "note": "确定性草稿（云模型门禁关闭）", "quality": quality, "issues": issues}
+        task.result = {
+            **versions,
+            "note": "确定性草稿（云模型门禁关闭）",
+            "quality": quality,
+            "issues": issues,
+            "structure_source": structure_source,
+            "structure": structure_summary,
+            "agent": agent_meta,
+        }
 
 
 async def _material_match_handler(session: AsyncSession, task: Task) -> None:
@@ -831,6 +1053,7 @@ async def _material_match_handler(session: AsyncSession, task: Task) -> None:
                 Requirement.enterprise_id == task.enterprise_id,
                 Requirement.project_id == task.project_id,
                 Requirement.current.is_(True),
+                Requirement.req_type != "doc_structure",  # 标书结构不参与资料匹配
             )
         )
     ).all()

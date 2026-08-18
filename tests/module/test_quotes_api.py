@@ -25,6 +25,33 @@ def _setup(client):
     return headers, pid, did
 
 
+def test_apply_rejects_price_over_tender_limit(client):
+    """举一反三：招标限价（报价规则 structured.price_limit）必须约束报价应用。"""
+    h, pid, did = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [
+            {"req_type": "quote_rule", "content": "报价限价 50 万元",
+             "structured": {"price_limit": {"amount": 50, "unit": "万元"}},
+             "coordinates": [{"file_id": 1}]},
+        ]},
+        headers=h,
+    )
+    calc = client.post(
+        "/api/v1/quotes/calculate",
+        json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1, "project_id": pid},
+        headers=h,
+    )
+    calc_id = calc.json()["calc_id"]
+    applied = client.post(
+        "/api/v1/quotes/apply",
+        json={"calc_id": calc_id, "deliverable_id": did, "expected_version_no": 0},
+        headers=h,
+    )
+    assert applied.status_code == 422
+    assert "限价" in applied.json()["detail"]
+
+
 def test_history_readonly_and_snapshot(client):
     h, _, _ = _setup(client)
     r = client.get("/api/v1/quotes/history", headers=h)

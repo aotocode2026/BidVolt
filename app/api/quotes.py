@@ -265,6 +265,31 @@ async def apply_quote(
     if deliverable.project_id != calc.project_id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="测算与报价单成果不属于同一项目")
     suggested = (calc.strategy_results or {}).get("win", {}).get("suggested_price", calc.result["suggested"])
+    # 招标限价校验（Issue #12 举一反三）：报价规则要求中解析出的限价必须约束应用
+    from app.models.requirement import Requirement
+
+    price_limits = (
+        await session.scalars(
+            select(Requirement).where(
+                Requirement.enterprise_id == user.enterprise_id,
+                Requirement.project_id == calc.project_id,
+                Requirement.current.is_(True),
+                Requirement.req_type == "quote_rule",
+            )
+        )
+    ).all()
+    for r in price_limits:
+        limit = (r.structured or {}).get("price_limit") if isinstance(r.structured, dict) else None
+        if limit:
+            amount = limit.get("amount")
+            try:
+                if amount is not None and float(suggested) > float(amount):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"报价 {suggested} 超过招标限价 {amount}（{r.content}），请调整成本或策略后再应用",
+                    )
+            except (TypeError, ValueError):
+                continue
     sheet_model = {
         "type": "sheet",
         "sheets": [

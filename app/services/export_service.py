@@ -37,15 +37,17 @@ def xlsx_bytes(model: dict) -> bytes:
     return buf.getvalue()
 
 
-def run_final_check(deliverables, requirements=None, contents=None) -> dict:
-    """终检（Issue #12 / 产品验收）：完整性 + 要求覆盖 + 文档质量。
+def run_final_check(deliverables, requirements=None, contents=None, structure=None) -> dict:
+    """终检（Issue #12 / 产品验收）：完整性 + 结构合规 + 要求覆盖 + 文档质量。
 
     - deliverables: Deliverable 列表（必填）
     - requirements: Requirement 列表或含 content 字段的 dict 列表（可选；提供时检查要求覆盖）
     - contents: {deliverable_id: {"version_no": n, "model": dict}}（可选；提供时检查正文质量）
+    - structure: [{"role": "business|technical|price", "title": 章节名}]（可选；提供时检查结构合规）
     """
     import re
 
+    role_type = {"business": 1, "technical": 2, "price": 3}
     existing = {d.deliverable_type for d in deliverables}
     issues: list[dict] = []
     for dtype, name in DELIVERABLE_NAMES.items():
@@ -54,6 +56,7 @@ def run_final_check(deliverables, requirements=None, contents=None) -> dict:
 
     # 文档质量：仅记录/无正文、占位草稿、Markdown 残留、正文过短
     stub_marker = "草稿由 BidVolt 确定性生成"
+    doc_texts: dict[int, str] = {}
     for d in deliverables:
         name = DELIVERABLE_NAMES.get(d.deliverable_type, f"成果{d.deliverable_type}")
         content = (contents or {}).get(d.id)
@@ -69,6 +72,7 @@ def run_final_check(deliverables, requirements=None, contents=None) -> dict:
             for row in sh.get("rows") or []
             for c in row
         )
+        doc_texts[d.deliverable_type] = text + sheet_text
         if d.deliverable_type in (1, 2):  # 商务标/技术标按正文检查
             if stub_marker in text:
                 issues.append({"type": "文档质量", "severity": "error", "message": f"{name}：仍为占位草稿（未经真实生成）", "locate": d.id})
@@ -81,6 +85,24 @@ def run_final_check(deliverables, requirements=None, contents=None) -> dict:
                 issues.append({"type": "文档质量", "severity": "error", "message": f"{name}：仍为占位草稿", "locate": d.id})
             if "待报价测算" in sheet_text:
                 issues.append({"type": "文档质量", "severity": "warning", "message": f"{name}：尚未录入真实成本（请到报价页测算并应用）", "locate": d.id})
+
+    # 结构合规：招标文件要求的章节必须逐章出现在对应成果中
+    if structure:
+        for item in structure:
+            title = str(item.get("title") or "").strip()
+            role = item.get("role")
+            if not title or role not in role_type:
+                continue
+            text = doc_texts.get(role_type[role], "")
+            if title not in text:
+                issues.append(
+                    {
+                        "type": "结构合规",
+                        "severity": "error",
+                        "message": f"{DELIVERABLE_NAMES.get(role_type[role], role)}缺少招标文件要求的章节：{title}",
+                        "locate": None,
+                    }
+                )
 
     # 要求覆盖：有要求但成果整体无正文/占位时，必须拦截
     if requirements is not None:

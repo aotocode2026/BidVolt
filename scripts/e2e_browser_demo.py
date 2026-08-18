@@ -300,6 +300,36 @@ def main() -> int:
             record("成果内容质量", False, str(e)[:120])
         shot(page, tag, "06b-内容质量")
 
+        # ---------- 4b2. 流程化结构确认 + Agent 自检闭环（Hermes V1 内嵌） ----------
+        try:
+            meta = page.evaluate(
+                """async () => {
+              const base = location.origin;
+              const h = { Authorization: 'Bearer ' + (window.getBidvoltToken ? window.getBidvoltToken() : '') };
+              const tPayload = await (await fetch(base + '/api/v1/projects/' + projectId + '/tasks', { headers: h })).json();
+              const tasks = Array.isArray(tPayload) ? tPayload : (tPayload.items || []);
+              const gen = tasks.filter(t => t.task_type === 'bid_generate' && t.status === 3).pop();
+              const reqs = await (await fetch(base + '/api/v1/requirements?project_id=' + projectId, { headers: h })).json();
+              return {
+                structure_source: gen && gen.result ? gen.result.structure_source : null,
+                structure_len: gen && gen.result && gen.result.structure ? gen.result.structure.length : 0,
+                agent: gen && gen.result ? !!gen.result.agent : false,
+                self_check: gen && gen.result && gen.result.agent ? gen.result.agent.self_check : null,
+                doc_structure_rows: (Array.isArray(reqs) ? reqs : []).filter(r => r.req_type === 'doc_structure').length,
+              };
+            }"""
+            )
+            record(
+                "结构来自招标文件+Agent自检",
+                meta["structure_source"] in ("requirement", "tender")
+                and meta["structure_len"] >= 4
+                and meta["agent"] is True
+                and meta["doc_structure_rows"] >= 2,
+                str(meta),
+            )
+        except Exception as e:  # noqa: BLE001
+            record("结构来自招标文件+Agent自检", False, str(e)[:120])
+
         # ---------- 4c. Issue #11：成果正文可视化 + 状态判断 + 步骤条证据 ----------
         try:
             tab(page, "成果")

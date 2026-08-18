@@ -86,6 +86,88 @@ def test_bid_generate_creates_three_deliverables(client):
     assert all(d["current_version_no"] == 1 for d in deliverables)
 
 
+def test_bid_generate_uses_requirement_structure(client):
+    """流程化结构确认（用户反馈）：解析落库的 doc_structure 结构必须被生成消费。"""
+    h, pid = _setup(client)
+    for role, titles in [
+        ("business", ["一、应答函", "二、商务偏离表"]),
+        ("technical", ["一、技术参数响应表", "二、技术方案"]),
+    ]:
+        for i, t in enumerate(titles):
+            client.post(
+                f"/api/v1/projects/{pid}/requirements/upsert",
+                json={"requirements": [{"req_type": "doc_structure", "content": t,
+                                        "structured": {"role": role, "order": i},
+                                        "coordinates": [{"source": "manual"}]}]},
+                headers=h,
+            )
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [{"req_type": "tech_requirement", "content": "电压等级 10kV",
+                                "coordinates": [{"file_id": 1}]}]},
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-struct"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["structure_source"] == "requirement"
+    assert len(task.result["structure"]) == 4
+    assert task.result["agent"]["plan_sections"] == 4  # 规划阶段记录结构章节数（与 LLM 门禁无关）
+
+
+def test_bid_generate_agent_self_check_and_refine(client, monkeypatch):
+    """Hermes 式 Agent 自检闭环：自检发现未覆盖要求 → 回注补写章节。"""
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+
+    async def fake_chat(self, system, user):
+        if "结构解析" in system:
+            return ('{"business": [{"title": "一、应答函", "guide": "应答函"}], '
+                    '"technical": [{"title": "一、技术参数响应表", "guide": "逐条响应"}], "notes": ""}')
+        if "自检助手" in system:
+            return '{"missing": [{"req": "抗短路能力 30kA", "target": "技术标"}], "conflicts": []}'
+        if "缺失要求" in user:
+            return "### 补充响应\n抗短路能力 30kA：本公司产品满足该要求，提供型式试验报告。"
+        if "技术" in user:
+            return "### 参数响应\n电压等级 10kV：满足。"
+        return "### 应答内容\n本公司承诺响应全部商务条款，无偏离。"
+
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [
+            {"req_type": "tech_requirement", "content": "电压等级 10kV", "coordinates": [{"file_id": 1}]},
+            {"req_type": "tech_requirement", "content": "抗短路能力 30kA", "coordinates": [{"file_id": 1}]},
+        ]},
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-agent"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["structure_source"] == "tender"
+    assert task.result["agent"]["self_check"]["parse_ok"] is True
+    assert task.result["agent"]["self_check"]["missing"] == 1
+    assert "技术标" in task.result["agent"]["refined"]
+
+    deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
+    tech = next(d for d in deliverables if d["deliverable_type"] == 2)
+    content = client.get(f"/api/v1/deliverables/{tech['deliverable_id']}/content", headers=h).json()
+    tech_text = "\n".join(n.get("text", "") for n in content["model"]["nodes"])
+    assert "补充响应（自检补缺）" in tech_text
+    assert "抗短路能力 30kA" in tech_text
+
+
 def test_bid_generate_requires_requirements(client):
     """Issue #12 问题三：要求为 0 不得生成并标记完成——任务必须失败并给出明确指引。"""
     h, pid = _setup(client)
