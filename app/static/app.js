@@ -390,7 +390,7 @@ function panelMaterial() {
     <div class="row"><input id="n-url" placeholder="招标公告 URL（安全导入，SSRF 防护）">
       <button onclick="importNotice()">导入公告</button>
       <button class="ghost" onclick="loadNotices()">公告列表</button></div>
-    <h4>文件</h4><table><thead><tr><th>ID</th><th>名称</th><th>归属</th><th>状态</th><th>解析</th></tr></thead><tbody id="m-files"></tbody></table>
+    <h4>文件（仅当前项目材料，跨项目不混显）</h4><table><thead><tr><th>ID</th><th>名称</th><th>所属项目</th><th>状态</th><th>解析</th></tr></thead><tbody id="m-files"></tbody></table>
     <h4>企业资料</h4><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="m-assets"></tbody></table>
     <pre id="m-extra" class="muted"></pre>`;
   refreshFiles(); refreshAssets();
@@ -415,11 +415,13 @@ async function uploadFile() {
 
 async function refreshFiles() {
   if (!$("m-files")) return;  // 面板未挂载时跳过（Issue #11.10 噪声修复）
+  if (!projectId) { setHtml("m-files", "<tr><td colspan=5>先选用项目（资料按当前项目隔离展示）</td></tr>"); materialCount = 0; return; }
   try {
-    const data = await api("/files?size=50");
-    materialCount = data.items.filter((f) => f.project_id).length;
+    // Issue #12 问题一：资料页必须只显示当前项目材料，并展示项目归属，不再混显历史项目文件
+    const data = await api(`/files?target=project&project_id=${projectId}&size=100`);
+    materialCount = data.items.length;
     setHtml("m-files", data.items.map((f) => `
-      <tr><td>${f.file_id}</td><td>${esc(f.name)}</td><td>${f.project_id ? "项目" : "企业"}</td><td>${f.status}</td>
+      <tr><td>${f.file_id}</td><td>${esc(f.name)}</td><td>#${f.project_id ?? "—"}</td><td>${f.status}</td>
       <td><button class="ghost" onclick="authedDownload('/files/${f.file_id}/download','文件')">下载</button> ·
           <button class="ghost" onclick="viewBlocks(${f.file_id})">文本块</button></td></tr>`).join(""));
     refreshSteps();
@@ -639,10 +641,11 @@ function panelDeliverable() {
     <div id="d-status" class="banner muted">正在读取成果状态…</div>
     <div class="row">
       <button id="d-gen" onclick="generateBid()">① 生成标书（正式成果）</button>
-      <button class="ghost" onclick="reviewBid()">② 校核（质量评审）</button>
+      <button class="ghost" id="d-review-btn" onclick="reviewBid()">② 校核（质量评审）</button>
       <button class="ghost" onclick="createDeliverables()">创建空成果记录（演示）</button>
     </div>
-    <div class="muted" style="margin-bottom:8px">操作顺序：① 生成标书（产出三份正式成果正文）→ ② 校核 → 点击各行【查看正文】→ 导出页终检。
+    <div id="d-review"></div>
+    <div class="muted" style="margin-bottom:8px">操作顺序：① 生成标书（产出三份正式成果正文）→ ② 校核（问题清单显示在下方）→ 点击各行【查看正文】→ 导出页终检。
     生成期间按钮会禁用并提示任务号，重复点击不会产生重复成果。</div>
     <div id="d-view" class="doc-view"></div>
     <table><thead><tr><th>ID</th><th>类型</th><th>标题</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody id="d-rows"></tbody></table>
@@ -829,12 +832,19 @@ async function cancelEditorSession() {
   } catch (e) { log(`取消失败：${errMsg(e)}`, "err"); }
 }
 
+let reviewTaskId = null;
+let lastReviewIssues = null;
+
 async function generateBid() {
   if (!projectId) return log("先选用项目", "err");
   if (generatingTaskId) return log(`正在生成中（任务 #${generatingTaskId}），请勿重复提交；进度见底部日志`, "warn");
   const btn = $("d-gen");
   try {
-    const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "bid_generate", payload: { material_ref: "CABLE-YJV-3x95", cost: 100 }, idempotency_key: `bg-${Date.now()}` } });
+    if (!reqCount) {
+      log("当前项目暂无要求：生成任务会先尝试自动解析材料；若仍无要求，任务将以明确原因失败（不再产出与招标无关的通用内容）", "warn");
+    }
+    // Issue #12 问题三：payload 不再写死演示物料/成本；报价单将提示到报价页录入真实成本
+    const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "bid_generate", payload: {}, idempotency_key: `bg-${Date.now()}` } });
     generatingTaskId = t.task_id;
     if (btn) { btn.disabled = true; btn.textContent = "生成中…（请勿重复点击）"; }
     renderDeliverableStatus();
@@ -847,10 +857,31 @@ async function generateBid() {
 
 async function reviewBid() {
   if (!projectId) return log("先选用项目", "err");
+  if (reviewTaskId) return log(`校核进行中（任务 #${reviewTaskId}），完成后结果显示在下方校核结果区`, "warn");
+  const btn = $("d-review-btn");
   try {
     const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "bid_review", payload: {}, idempotency_key: `br-${Date.now()}` } });
+    reviewTaskId = t.task_id;
+    if (btn) { btn.disabled = true; btn.textContent = "校核中…（请稍候）"; }
+    setHtml("d-review", `<div class="banner">校核任务 #${t.task_id} 执行中…（结果将在此展示）</div>`);
     pollTask(t.task_id, "bid_review");
-  } catch (e) { log(`校核提交失败：${errMsg(e)}`, "err"); }
+  } catch (e) {
+    log(`校核提交失败：${errMsg(e)}`, "err");
+    if (btn) { btn.disabled = false; btn.textContent = "② 校核（质量评审）"; }
+  }
+}
+
+function renderReviewResult() {
+  const el = $("d-review");
+  if (!el) return;
+  if (!lastReviewIssues) { el.innerHTML = ""; return; }
+  const errs = lastReviewIssues.filter((i) => i.severity === "error");
+  const warns = lastReviewIssues.filter((i) => i.severity !== "error");
+  const lines = [...errs, ...warns].map(
+    (i) => `<li>【${i.severity === "error" ? "问题" : "提醒"}】${esc(i.message || "")}</li>`
+  );
+  el.innerHTML = `<div class="banner ${errs.length ? "warn-banner" : "ok-banner"}">校核结果：共 ${lastReviewIssues.length} 项（问题 ${errs.length} / 提醒 ${warns.length}）</div>` +
+    (lines.length ? `<ul style="font-size:13px">${lines.join("")}</ul>` : "<div class='muted'>无问题</div>");
 }
 
 async function aiEdit() {
@@ -1033,9 +1064,21 @@ function finishTask(taskId, taskType, payload, ok) {
     refreshDeliverables().then(() => {
       if (ok) { const first = deliverables.find((d) => d.current_version_no > 0); if (first) renderDeliverableContent(first.deliverable_id); }
     });
-  } else if (taskType === "bid_review" && ok) {
-    reviewDone = true;
-    markStep("task");
+  } else if (taskType === "bid_review") {
+    // Issue #12 问题四：校核结果必须可见——恢复按钮、在成果页展示问题清单
+    const btn = $("d-review-btn");
+    if (btn) { btn.disabled = false; btn.textContent = "② 校核（质量评审）"; }
+    reviewTaskId = null;
+    if (ok) {
+      reviewDone = true;
+      markStep("task");
+      lastReviewIssues = (result && Array.isArray(result.issues)) ? result.issues : [];
+      renderReviewResult();
+      log(`校核完成：共 ${lastReviewIssues.length} 项问题/提醒（已显示在成果页校核结果区，详情见评审页）`, lastReviewIssues.length ? "warn" : "ok");
+    } else {
+      lastReviewIssues = [{ severity: "error", message: `校核任务失败：${payload && payload.error ? (payload.error.message || JSON.stringify(payload.error)) : "未知错误"}` }];
+      renderReviewResult();
+    }
   }
   refreshProjects();
   refreshTasks();
@@ -1154,10 +1197,17 @@ async function finalCheck() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const data = await api(`/projects/${projectId}/check`, { method: "POST", body: {} });
-    $("e-result").textContent = JSON.stringify(data, null, 2);
+    // Issue #12：终检结果必须可读——展示完整性/文档质量/要求覆盖的逐条结论与统计
+    const stats = data.stats || {};
+    const issues = data.issues || [];
+    const lines = issues.map((i) => `[${i.severity === "error" ? "问题" : "提醒"}]（${i.type || ""}）${i.message || ""}`);
+    setText("e-result",
+      `终检结果：${data.passed ? "通过" : "未通过"}\n` +
+      `统计：要求 ${stats.requirements ?? "?"} 条 / 成果 ${stats.deliverables ?? "?"} 份 / 问题 ${stats.error_count ?? "?"} / 提醒 ${stats.warning_count ?? "?"}\n` +
+      `检查项：${issues.length ? "\n- " + lines.join("\n- ") : "（无）"}`);
     exportDone = true;
     markStep("export");
-    log(`终检 ${data.passed ? "通过" : "未通过"}`, data.passed ? "ok" : "err");
+    log(`终检 ${data.passed ? "通过" : "未通过"}：问题 ${stats.error_count ?? 0}、提醒 ${stats.warning_count ?? 0}（明细见右侧）`, data.passed ? "ok" : "err");
   } catch (e) { log(`终检失败：${errMsg(e)}`, "err"); }
 }
 

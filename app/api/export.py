@@ -39,7 +39,34 @@ async def final_check(
             )
         )
     ).all()
-    result = export_service.run_final_check(deliverables)
+    # Issue #12：终检必须覆盖“成果是否逐条响应招标要求 + 文档质量”，而不仅是三类成果齐全。
+    from app.models.requirement import Requirement
+
+    requirements = (
+        await session.scalars(
+            select(Requirement).where(
+                Requirement.enterprise_id == user.enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+            )
+        )
+    ).all()
+    contents: dict[int, dict] = {}
+    for d in deliverables:
+        if d.current_version_no == 0:
+            continue
+        try:
+            _, model = await deliverable_service.get_version_content(
+                session, d.id, d.current_version_no
+            )
+            contents[d.id] = {"version_no": d.current_version_no, "model": model}
+        except Exception:  # noqa: BLE001 单个成果读取失败不阻塞终检
+            contents[d.id] = {}
+    result = export_service.run_final_check(
+        deliverables,
+        requirements=[{"content": r.content, "req_type": r.req_type} for r in requirements],
+        contents=contents,
+    )
     row = FinalCheck(
         enterprise_id=user.enterprise_id,
         project_id=project_id,
@@ -49,7 +76,17 @@ async def final_check(
     )
     session.add(row)
     await session.commit()
-    return {"check_id": row.id, "passed": result["passed"], "issues": result["issues"]}
+    return {
+        "check_id": row.id,
+        "passed": result["passed"],
+        "issues": result["issues"],
+        "stats": {
+            "requirements": len(requirements),
+            "deliverables": len(deliverables),
+            "error_count": sum(1 for i in result["issues"] if i["severity"] == "error"),
+            "warning_count": sum(1 for i in result["issues"] if i["severity"] == "warning"),
+        },
+    }
 
 
 @router.get("/{project_id}/check/{check_id}")

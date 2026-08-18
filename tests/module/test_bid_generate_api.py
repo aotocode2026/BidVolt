@@ -86,6 +86,49 @@ def test_bid_generate_creates_three_deliverables(client):
     assert all(d["current_version_no"] == 1 for d in deliverables)
 
 
+def test_bid_generate_requires_requirements(client):
+    """Issue #12 问题三：要求为 0 不得生成并标记完成——任务必须失败并给出明确指引。"""
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-noreq"},
+        headers=h,
+    )
+    task = None
+    for _ in range(3):  # MAX_RETRIES=3：三轮后 FAILED_TERMINAL
+        task = _drain_one_task()
+    assert task is not None
+    assert task.status == 6
+    assert "要求" in (task.error or {}).get("message", "")
+
+
+def test_bid_generate_without_payload_quote_is_placeholder(client):
+    """Issue #12 问题三：payload 不带物料/成本时，报价单不得编造演示物料（CABLE-YJV）。"""
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={
+            "requirements": [
+                {"req_type": "tech_requirement", "content": "电压等级 10kV", "coordinates": [{"file_id": 1}]},
+            ]
+        },
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-nopayload"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
+    quote = next(d for d in deliverables if d["deliverable_type"] == 3)
+    content = client.get(f"/api/v1/deliverables/{quote['deliverable_id']}/content", headers=h).json()
+    sheet_text = str(content["model"])
+    assert "待报价测算" in sheet_text
+    assert "CABLE-YJV-3x95" not in sheet_text
+
+
 def test_material_match_task(client):
     h, pid = _setup(client)
     client.post(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext
@@ -74,6 +74,9 @@ async def _parse_file(session: AsyncSession, fobj: FileObject) -> None:
                 return
             raise ValueError("视觉模型门禁关闭（P1），图片解析不可用")
         blocks = parser.parse_to_blocks(path, fobj.ext or "")
+        # Issue #12 根因：重解析前必须清除旧块。此前 upload 时解析 1 次 + 每轮任务重解析又追加，
+        # 同一文件 6 次解析累积 2370 块（6 倍重复文本），污染 LLM 抽取提示词导致要求碎片化。
+        await session.execute(delete(DocBlock).where(DocBlock.file_id == fobj.id))
         for block in blocks:
             session.add(
                 DocBlock(

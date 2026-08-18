@@ -162,7 +162,7 @@ def main() -> int:
             record("创建项目", False, str(e)[:80])
         shot(page, tag, "02-项目")
 
-        # ---------- 3. 上传材料 + 招标解析（真实 LLM 抽取） ----------
+        # ---------- 3. 上传材料 + 招标解析（真实 LLM 抽取；优先用产品复测的真实材料作测试用例） ----------
         try:
             tender = Path(__file__).resolve().parent.parent / "output" / "e2e_tender.txt"
             tender.parent.mkdir(parents=True, exist_ok=True)
@@ -172,12 +172,29 @@ def main() -> int:
                 "三、商务要求：投标保证金 2 万元，履约保证金 5%。\n",
                 encoding="utf-8",
             )
+            product_docx = Path(__file__).resolve().parent.parent / "product-review-issue12" / "中国电力科学研究院2026变电站土建工程谈判采购-一次性采购结果.docx"
+            upload_path = product_docx if product_docx.exists() else tender
             tab(page, "资料")
-            page.set_input_files("#m-file", str(tender))
+            page.set_input_files("#m-file", str(upload_path))
             page.click("button:has-text('上传')")
-            ok_up = wait_log(page, "上传 e2e_tender.txt")
+            ok_up = wait_log(page, f"上传 {upload_path.name}")
+            # Issue #12 问题一：资料页只显示当前项目材料 + 展示项目归属列
+            page.wait_for_function(
+                "() => { const el = document.getElementById('m-files'); "
+                "return el && el.innerText.includes('所属项目') && el.querySelectorAll('tr').length >= 1; }",
+                timeout=20000,
+            )
+            proj_cells_ok = page.evaluate(
+                """() => {
+              const el = document.getElementById('m-files');
+              const pid = String(projectId);
+              const rows = [...el.querySelectorAll('tr')];
+              return rows.length >= 1 && rows.every(r => r.children.length >= 3 && r.children[2].innerText.trim() === '#' + pid);
+            }"""
+            )
             shot(page, tag, "03-上传")
-            record("上传+招标解析", ok_up and submit_and_wait(page, base, "触发招标解析任务", "招标解析任务", args.task_timeout))
+            record("上传+招标解析", ok_up and bool(proj_cells_ok) and submit_and_wait(page, base, "触发招标解析任务", "招标解析任务", args.task_timeout),
+                   f"upload={ok_up} project_col={proj_cells_ok}")
         except Exception as e:  # noqa: BLE001
             record("上传+招标解析", False, str(e)[:80])
         shot(page, tag, "04-解析完成")
@@ -215,6 +232,15 @@ def main() -> int:
             ok_gen = submit_and_wait(page, base, "生成标书", "生成标书", args.task_timeout)
             ok_review = submit_and_wait(page, base, "校核", "校核", args.task_timeout)
             shot(page, tag, "05-成果")
+            # Issue #12 问题四：校核结果必须显示在成果页（问题清单面板）
+            page.wait_for_function(
+                "() => { const el = document.getElementById('d-review'); "
+                "return el && el.innerText.includes('校核结果'); }",
+                timeout=20000,
+            )
+            ok_review_panel = page.evaluate(
+                "() => { const el = document.getElementById('d-review'); return el ? el.innerText.includes('项') : false; }"
+            )
             # 等待成果下拉就绪（前端 SSE 完成后的刷新存在时差）
             page.wait_for_function(
                 "() => { const el = document.getElementById('d-sel'); return el && /^\\d+$/.test(el.value); }",
@@ -226,7 +252,8 @@ def main() -> int:
             ok_ckpt = wait_log(page, "检查点已保存")
             page.click("button:has-text('完成编辑')")
             ok_done = wait_log(page, "编辑完成 →")
-            record("成果/校核/在线编辑", ok_create and ok_gen and ok_review and ok_ses and ok_ckpt and ok_done)
+            record("成果/校核/在线编辑", ok_create and ok_gen and ok_review and ok_ses and ok_ckpt and ok_done and ok_review_panel,
+                   f"review_panel={ok_review_panel}")
         except Exception as e:  # noqa: BLE001
             record("成果/校核/在线编辑", False, str(e)[:80])
         shot(page, tag, "06-编辑完成")
@@ -252,6 +279,8 @@ def main() -> int:
                 blen: b.length,
                 techStub: t.includes('草稿由 BidVolt 确定性生成'),
                 bizStub: b.includes('草稿由 BidVolt 确定性生成'),
+                techMd: t.includes('##') || t.includes('**'),
+                bizMd: b.includes('##') || b.includes('**'),
                 techHead: t.slice(0, 80),
               };
             }"""
@@ -261,7 +290,10 @@ def main() -> int:
             assert not quality["techStub"], "技术标仍是确定性占位草稿（产品反馈回归未修复）"
             assert quality["blen"] >= 100, f"商务标正文过短（{quality['blen']} 字）"
             assert not quality["bizStub"], "商务标仍是确定性占位草稿"
-            record("成果内容质量", True, f"技术标 {quality['tlen']} 字 / 商务标 {quality['blen']} 字，均非占位草稿")
+            # Issue #12：正式成果正文不得残留 Markdown 标记（此前实测出现 "## ## 技术方案总体说明"）
+            assert not quality["techMd"], "技术标正文残留 Markdown 标记（##/**）"
+            assert not quality["bizMd"], "商务标正文残留 Markdown 标记（##/**）"
+            record("成果内容质量", True, f"技术标 {quality['tlen']} 字 / 商务标 {quality['blen']} 字，均非占位草稿且无 Markdown 残留")
         except Exception as e:  # noqa: BLE001
             record("成果内容质量", False, str(e)[:120])
         shot(page, tag, "06b-内容质量")
@@ -431,14 +463,23 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             record("公告导入（SSRF 防护）", False, str(e)[:80])
 
-        # ---------- 8. 终检与导出 ----------
+        # ---------- 8. 终检与导出（Issue #12：终检必须覆盖要求/文档质量并可读展示） ----------
         try:
             tab(page, "导出")
             page.click("button:has-text('终稿检查')")
             ok_check = wait_log(page, "终检")
+            # 终检结果面板：显示统计（要求/成果/问题/提醒）与逐条检查项
+            page.wait_for_function(
+                "() => { const el = document.getElementById('e-result'); "
+                "return el && el.innerText.includes('终检结果') && el.innerText.includes('统计') && el.innerText.includes('检查项'); }",
+                timeout=20000,
+            )
+            ok_detail = page.evaluate(
+                "() => { const el = document.getElementById('e-result'); return el ? el.innerText.includes('要求') : false; }"
+            )
             page.click("button:has-text('导出 DOCX/XLSX')")
             ok_export = wait_log(page, "导出完成", timeout_ms=120000)
-            record("终检与导出", ok_check and ok_export)
+            record("终检与导出", ok_check and ok_detail and ok_export, f"check_detail={ok_detail}")
         except Exception as e:  # noqa: BLE001
             record("终检与导出", False, str(e)[:80])
         shot(page, tag, "11-导出")
