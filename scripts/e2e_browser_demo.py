@@ -181,7 +181,8 @@ def main() -> int:
             # Issue #12 问题一：资料页只显示当前项目材料 + 展示项目归属列
             page.wait_for_function(
                 "() => { const el = document.getElementById('m-files'); "
-                "return el && el.innerText.includes('所属项目') && el.querySelectorAll('tr').length >= 1; }",
+                "const ths = [...document.querySelectorAll('#panel th')]; "
+                "return el && el.querySelectorAll('tr').length >= 1 && ths.some(t => t.innerText.includes('所属项目')); }",
                 timeout=20000,
             )
             proj_cells_ok = page.evaluate(
