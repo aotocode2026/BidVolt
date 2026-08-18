@@ -228,20 +228,30 @@ def test_bid_review_detects_coverage_and_name(client):
 
 
 def test_bid_generate_llm_generates_business_and_technical(client, monkeypatch):
-    """回归（产品反馈）：技术标必须由 LLM 生成实质正文，不得只剩确定性 stub。"""
+    """回归（产品反馈）：技术标必须由 LLM 生成实质正文，不得只剩确定性 stub。
+    新流程（用户反馈"标书太短"）：分章并行深度生成，逐条响应全部技术要求。"""
     monkeypatch.setattr(settings, "data_classification_confirmed", 1)
     monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
     monkeypatch.setattr(settings, "minimax_api_key", "test-key")
 
     async def fake_chat(self, system, user):
-        if "技术要求" in user:
+        if "技术和服务要求逐项响应" in user:
             return (
-                "## 一、技术方案总体说明\n本项目技术方案依据招标要求编制，涵盖设备选型、制造、试验与交付全流程，"
-                "确保各项技术指标满足招标文件要求。\n## 二、主要技术参数及响应\n- 电压等级 10kV\n- 抗短路能力 30kA\n"
-                "## 三、质量保障\n建立健全质量保证体系，从原材料进厂检验到出厂试验全过程受控。\n"
-                "## 四、售后服务\n提供质保期内免费技术服务与备品备件支持。"
+                "### 逐项响应明细\n本部分对全部技术要求逐条响应：\n"
+                "1. 电压等级 10kV——完全满足招标要求，无偏离。\n"
+                "2. 抗短路能力 30kA——完全满足招标要求，无偏离。\n"
+                "其余条款均完全响应招标文件要求，无负偏离，并提供出厂试验报告作为证明。"
             )
-        return "润色后的正式商务标正文。"
+        if "技术" in user or "实施方案" in user:
+            return (
+                "### 分节一\n本章为技术标正式正文，针对采购范围给出具体实施步骤、技术措施与进度安排，"
+                "内容详实，达到给定字数要求，满足招标文件各项要求。\n"
+                "### 分节二\n针对重点难点提出对策，明确质量控制与验收标准，确保项目按期高质量交付。"
+            )
+        return (
+            "### 分节一\n本章为商务标正式投标语言正文，逐条响应商务条款并给出明确承诺，"
+            "无偏离声明完整，内容详实，达到给定字数要求。"
+        )
 
     monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
 
@@ -273,13 +283,17 @@ def test_bid_generate_llm_generates_business_and_technical(client, monkeypatch):
     deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
     biz = next(d for d in deliverables if d["deliverable_type"] == 1)
     biz_content = client.get(f"/api/v1/deliverables/{biz['deliverable_id']}/content", headers=h).json()
-    assert "润色后的正式商务标正文" in biz_content["model"]["nodes"][1]["text"]
+    biz_text = "\n".join(n.get("text", "") for n in biz_content["model"]["nodes"])
+    assert "商务条款逐项响应" in biz_text  # 新流程的章节标题
+    assert "无偏离声明" in biz_text
 
     tech = next(d for d in deliverables if d["deliverable_type"] == 2)
     tech_content = client.get(f"/api/v1/deliverables/{tech['deliverable_id']}/content", headers=h).json()
     tech_text = "\n".join(n.get("text", "") for n in tech_content["model"]["nodes"])
     assert "技术方案总体说明" in tech_text
+    assert "技术和服务要求逐项响应" in tech_text
     assert "电压等级 10kV" in tech_text
     assert "抗短路能力 30kA" in tech_text
     assert "草稿由 BidVolt 确定性生成" not in tech_text  # 关键回归：不得退回 stub
     assert len(tech_text) >= 100  # 实质正文，而非占位
+    assert "##" not in tech_text and "**" not in tech_text  # Issue #12：无 Markdown 残留

@@ -287,9 +287,10 @@ def main() -> int:
             }"""
             )
             assert quality.get("error") is None, quality
-            assert quality["tlen"] >= 200, f"技术标正文过短（{quality['tlen']} 字）: {quality.get('techHead')}"
+            # 篇幅门槛（真实标书惯例）：技术标分章深度生成应 >=2000 字，商务标 >=500 字
+            assert quality["tlen"] >= 2000, f"技术标正文过短（{quality['tlen']} 字）: {quality.get('techHead')}"
             assert not quality["techStub"], "技术标仍是确定性占位草稿（产品反馈回归未修复）"
-            assert quality["blen"] >= 100, f"商务标正文过短（{quality['blen']} 字）"
+            assert quality["blen"] >= 500, f"商务标正文过短（{quality['blen']} 字）"
             assert not quality["bizStub"], "商务标仍是确定性占位草稿"
             # Issue #12：正式成果正文不得残留 Markdown 标记（此前实测出现 "## ## 技术方案总体说明"）
             assert not quality["techMd"], "技术标正文残留 Markdown 标记（##/**）"

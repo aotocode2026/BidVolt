@@ -676,64 +676,83 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 out.append(n)
             return out
 
-        # 商务标：正式投标语言改写（禁止新增企业事实）
-        business_req_text = "\n".join(
+        # 章节化深度生成（用户反馈"标书太短"）：
+        # 按真实服务类投标文件惯例（政府采购评分要素：逐项响应表/偏离表 + 实施方案 + 人员 + 售后 + 应急等），
+        # 分章并行生成，每章给出明确字数与写作要求；要求逐条响应【全部】要求，不再只取前 10/20 条。
+
+        tech_req_text = "\n".join(
+            f"- {r.content}" for r in req_by_type.get("tech_requirement", [])
+        ) or "（未解析到技术要求，按当前材料内容组织）"
+        biz_reqs = "\n".join(
             f"- {r.content}"
             for key in req_by_type
-            if key not in ("tech_requirement", "quote_rule")
-            for r in req_by_type[key][:10]
+            if key != "tech_requirement"
+            for r in req_by_type[key]
         ) or "（未解析到资格/商务要求）"
-        business_draft = "\n".join(n.get("text", "") for n in models[1]["nodes"])
-        try:
-            business_reply = await client.chat(
-                "你是投标文件撰写助手。基于给定草稿与要求改写为正式投标语言，"
-                "只调整措辞与结构，禁止新增企业事实。直接输出正文。",
-                f"项目名称：{project_name}\n招标人：{project.buyer if project else '未提供'}\n"
-                f"企业事实：\n{fact_text}\n资格/商务要求：\n{business_req_text}\n草稿：\n{business_draft[:6000]}",
-            )
-        except Exception:  # noqa: BLE001  LLM 失败回退确定性草稿
-            business_reply = ""
-        if business_reply.strip():
-            models[1] = {
-                "nodes": _dedup_headings(
-                    [
-                        {"id": "llm-b0", "type": "heading", "text": "商务标"},
-                        *_split_nodes(business_reply.strip()),
-                    ]
-                )
-            }
-            enhanced.append("business")
 
-        # 技术标：全文生成（逐条响应技术要求 + 历史素材作专业写法参考）
-        tech_req_text = "\n".join(
-            f"- {r.content}" for r in req_by_type.get("tech_requirement", [])[:20]
-        ) or "（未解析到技术要求，按当前材料内容组织）"
-        try:
-            tech_reply = await client.chat(
-                "你是投标文件撰写助手，撰写《技术标》正式正文。要求：\n"
-                "1. 分章节组织（技术方案总体说明、主要技术参数及响应、生产与供货组织、质量保障、售后服务、进度与交付等，按招标要求取舍），用 ## 分章；\n"
-                "2. 逐条响应给定技术要求，禁止遗漏；\n"
-                "3. 只依据给定材料与历史参考素材中的通用专业写法，禁止编造企业事实、业绩、人员、证书；\n"
-                "4. 禁止沿用历史项目名称、招标人、金额、工期、人员姓名；\n"
-                "5. 资料不足处明确标注【待补充】；\n"
-                "6. 直接输出 Markdown 正文。",
-                f"项目名称：{project_name}\n招标人：{project.buyer if project else '未提供'}\n"
-                f"技术要求：\n{tech_req_text}\n"
-                f"当前招标材料摘录：\n{material_text[:12000]}\n"
-                f"历史参考素材（仅作专业写法参考，不得复制其中项目事实）：\n{knowledge_text[:4000]}\n"
-                f"企业产品/能力事实：\n{fact_text[:3000]}",
+        common_context = (
+            f"项目名称：{project_name}\n招标人：{project.buyer if project else '未提供'}\n"
+            f"企业产品/能力事实：\n{fact_text[:3000]}\n"
+            f"当前招标材料摘录：\n{material_text[:12000]}\n"
+            f"历史参考素材（仅作专业写法参考，不得复制其中项目事实）：\n{knowledge_text[:4000]}"
+        )
+
+        chapter_sem = asyncio.Semaphore(4)  # 控制并发，避免云模型限流/超时
+
+        async def _gen_chapter(doc_name: str, title: str, guide: str, reqs_text: str) -> str:
+            """生成一章正文；失败回退空串（该章跳过，其余章节保留）。"""
+            async with chapter_sem:
+                try:
+                    return await client.chat(
+                        f"你是投标文件撰写助手，为《{doc_name}》撰写一章正式正文。"
+                        "要求：只依据给定材料与要求，禁止编造企业事实、业绩、人员、证书；"
+                        "禁止沿用历史项目名称/招标人/金额/工期/人员姓名；资料不足处标注【待补充】；"
+                        "直接输出 Markdown 正文（可用 ### 分小节），务必达到给定字数。",
+                        f"章节：{title}\n写作要求：{guide}\n\n相关要求：\n{reqs_text}\n\n{common_context}",
+                    )
+                except Exception:  # noqa: BLE001
+                    return ""
+
+        business_chapters = [
+            ("一、企业基本情况", "结合企业事实介绍公司概况、资质能力、经营状况，300-600 字，无企业事实处标【待补充】"),
+            ("二、商务条款逐项响应", "对每条资格/商务要求逐条编号响应（要求原文→我方响应承诺→是否偏离），全部条款不得遗漏，500-1200 字"),
+            ("三、商务偏离表与承诺", "无偏离声明或逐项偏离说明；对投标保证金、履约、付款方式、报价有效期等条款给出明确承诺，300-600 字"),
+        ]
+        tech_chapters = [
+            ("一、技术方案总体说明", "项目理解、总体思路、重点难点分析与对策、技术路线，600-1000 字"),
+            ("二、技术和服务要求逐项响应", "对每条技术要求逐条编号响应（要求原文→我方响应→是否偏离），全部条款不得遗漏，无依据处标【待补充】，800-1500 字"),
+            ("三、分项实施方案", "按采购范围分项说明工作内容、实施步骤、技术措施、进度安排，600-1200 字"),
+            ("四、质量保障措施", "质量管理体系、过程控制、检验与验收标准，400-800 字"),
+            ("五、安全与应急预案", "安全措施、应急预案、保密与信息安全措施，300-600 字"),
+            ("六、人员配置与组织机构", "项目组织架构、岗位职责、人员投入计划，300-600 字"),
+            ("七、售后服务承诺", "服务内容、响应时限、备品备件、培训与技术支持，400-800 字"),
+            ("八、进度与交付", "里程碑计划、交付物清单、验收标准与方式，300-600 字"),
+        ]
+
+        async def _gen_doc(doc_name: str, chapters: list[tuple[str, str]], reqs_text: str) -> dict | None:
+            replies = await asyncio.gather(
+                *[_gen_chapter(doc_name, t, g, reqs_text) for t, g in chapters]
             )
-        except Exception:  # noqa: BLE001  LLM 失败回退确定性草稿
-            tech_reply = ""
-        if tech_reply.strip():
-            models[2] = {
-                "nodes": _dedup_headings(
-                    [
-                        {"id": "llm-t0", "type": "heading", "text": "技术标"},
-                        *_split_nodes(tech_reply.strip()),
-                    ]
-                )
-            }
+            nodes: list[dict] = [{"id": f"llm-{doc_name}-0", "type": "heading", "text": doc_name}]
+            idx = 1
+            for (ct, _g), reply in zip(chapters, replies):
+                if reply and reply.strip():
+                    nodes.append({"id": f"llm-{doc_name}-h{idx}", "type": "heading", "text": ct})
+                    idx += 1
+                    nodes.extend(_split_nodes(reply.strip()))
+            if len(nodes) <= 1:
+                return None  # 全部章节失败：回退确定性草稿
+            return {"nodes": _dedup_headings(nodes)}
+
+        biz_doc, tech_doc = await asyncio.gather(
+            _gen_doc("商务标", business_chapters, biz_reqs),
+            _gen_doc("技术标", tech_chapters, tech_req_text),
+        )
+        if biz_doc is not None:
+            models[1] = biz_doc
+            enhanced.append("business")
+        if tech_doc is not None:
+            models[2] = tech_doc
             enhanced.append("technical")
     versions: dict[int, int] = {}
     for dtype, model in models.items():
