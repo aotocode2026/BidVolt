@@ -111,6 +111,9 @@ async def list_project_tasks(
                 "retry_count": t.retry_count,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
                 "progress": public_event(t),
+                # Issue #12/评审页：列表必须带结果与错误摘要（此前评审页任务表摘要列恒为空）
+                "result": t.result,
+                "error": t.error,
             }
             for t in rows
         ]

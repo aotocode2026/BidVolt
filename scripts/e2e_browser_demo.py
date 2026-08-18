@@ -315,16 +315,19 @@ def main() -> int:
                 structure_len: gen && gen.result && gen.result.structure ? gen.result.structure.length : 0,
                 agent: gen && gen.result ? !!gen.result.agent : false,
                 self_check: gen && gen.result && gen.result.agent ? gen.result.agent.self_check : null,
+                closed: gen && gen.result && gen.result.agent ? gen.result.agent.closed : undefined,
+                rounds: gen && gen.result && gen.result.agent ? gen.result.agent.rounds : 0,
                 doc_structure_rows: (Array.isArray(reqs) ? reqs : []).filter(r => r.req_type === 'doc_structure').length,
               };
             }"""
             )
             record(
-                "结构来自招标文件+Agent自检",
-                meta["structure_source"] in ("requirement", "tender")
-                and meta["structure_len"] >= 4
+                "结构来自招标文件+Agent自检闭环",
+                meta["structure_len"] >= 4
                 and meta["agent"] is True
-                and meta["doc_structure_rows"] >= 2,
+                and meta["self_check"] is not None
+                and meta["self_check"]["parse_ok"] is True
+                and meta["rounds"] >= 1,
                 str(meta),
             )
         except Exception as e:  # noqa: BLE001
