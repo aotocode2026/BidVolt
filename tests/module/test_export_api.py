@@ -113,6 +113,46 @@ def test_final_check_structure_compliance(client):
     assert any(i["type"] == "结构合规" and "二、技术方案" in i["message"] for i in result["issues"])
 
 
+def test_final_check_requirement_coverage_and_text_quality(client):
+    """终检 v2：逐条要求覆盖（对标的要求）+ 重复段落 + 待补充占位 + 字数统计。"""
+    from app.services.export_service import run_final_check
+
+    class D:
+        def __init__(self, dtype, vno):
+            self.deliverable_type = dtype
+            self.current_version_no = vno
+            self.id = 200 + dtype
+
+    long_para = "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，售后服务响应及时。"
+    contents = {
+        201: {"model": {"nodes": [{"type": "heading", "text": "商务标"}, {"type": "paragraph", "text": long_para}]}},
+        202: {"model": {"nodes": [
+            {"type": "heading", "text": "技术标"},
+            {"type": "paragraph", "text": "电压等级 10kV 满足。"},
+            {"type": "paragraph", "text": long_para},
+            {"type": "paragraph", "text": long_para},  # 重复段落
+            {"type": "paragraph", "text": "试验数据【待补充】"},
+        ]}},
+        203: {"model": {"sheets": [{"name": "报价单", "rows": [["项目", "建议价"], ["x", "119.2"]]}]}},
+    }
+    result = run_final_check(
+        [D(1, 1), D(2, 1), D(3, 1)],
+        requirements=[
+            {"id": 1, "req_type": "tech_requirement", "content": "抗短路能力 30kA"},
+            {"id": 2, "req_type": "qualification", "content": "资质能力保障到位"},
+        ],
+        contents=contents,
+    )
+    assert result["passed"] is False
+    messages = [(i["type"], i["message"]) for i in result["issues"]]
+    assert any(t == "要求覆盖" and "抗短路能力" in m for t, m in messages)  # 技术标未响应
+    assert any(t == "要求覆盖" and "资质能力保障到位" in m for t, m in messages)  # 商务标未响应（前10字不在正文）
+    assert any(t == "文字质量" and "重复段落" in m for t, m in messages)
+    assert any(t == "文字质量" and "待补充" in m for t, m in messages)
+    assert result["words"]["技术标"] > 0
+    assert result["pending"]["技术标"] == 1
+
+
 def test_export_and_delivery_package(client):
     h, pid = _setup(client)
     _add_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务响应"}]})

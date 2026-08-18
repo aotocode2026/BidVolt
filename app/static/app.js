@@ -1201,17 +1201,23 @@ async function finalCheck() {
   if (!projectId) return log("先选用项目", "err");
   try {
     const data = await api(`/projects/${projectId}/check`, { method: "POST", body: {} });
-    // Issue #12：终检结果必须可读——展示完整性/文档质量/要求覆盖的逐条结论与统计
+    // Issue #12 终检 v2：完整性/结构合规/逐条要求覆盖/文字质量全部可读展示
     const stats = data.stats || {};
     const issues = data.issues || [];
     const lines = issues.map((i) => `[${i.severity === "error" ? "问题" : "提醒"}]（${i.type || ""}）${i.message || ""}`);
+    const words = stats.words || {};
+    const wordLine = Object.entries(words).map(([k, v]) => `${k} ${v} 字`).join(" / ") || "（无正文）";
+    const pending = stats.pending || {};
+    const pendingLine = Object.entries(pending).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${v} 处待补充`).join(" / ") || "无待补充";
     setText("e-result",
       `终检结果：${data.passed ? "通过" : "未通过"}\n` +
-      `统计：要求 ${stats.requirements ?? "?"} 条 / 成果 ${stats.deliverables ?? "?"} 份 / 问题 ${stats.error_count ?? "?"} / 提醒 ${stats.warning_count ?? "?"}\n` +
+      `统计：要求 ${stats.requirements ?? "?"} 条 / 结构章节 ${stats.structure ?? "?"} 个 / 成果 ${stats.deliverables ?? "?"} 份 / 问题 ${stats.error_count ?? "?"} / 提醒 ${stats.warning_count ?? "?"}\n` +
+      `正文字数：${wordLine}\n` +
+      `待补充占位：${pendingLine}\n` +
       `检查项：${issues.length ? "\n- " + lines.join("\n- ") : "（无）"}`);
     exportDone = true;
     markStep("export");
-    log(`终检 ${data.passed ? "通过" : "未通过"}：问题 ${stats.error_count ?? 0}、提醒 ${stats.warning_count ?? 0}（明细见右侧）`, data.passed ? "ok" : "err");
+    log(`终检 ${data.passed ? "通过" : "未通过"}：问题 ${stats.error_count ?? 0}、提醒 ${stats.warning_count ?? 0}（完整性/结构合规/逐条要求覆盖/文字质量，明细见右侧）`, data.passed ? "ok" : "err");
   } catch (e) { log(`终检失败：${errMsg(e)}`, "err"); }
 }
 

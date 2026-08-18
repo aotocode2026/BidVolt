@@ -69,7 +69,11 @@ async def final_check(
     ]
     result = export_service.run_final_check(
         deliverables,
-        requirements=[{"content": r.content, "req_type": r.req_type} for r in requirements if r.req_type != "doc_structure"],
+        requirements=[
+            {"id": r.id, "content": r.content, "req_type": r.req_type}
+            for r in requirements
+            if r.req_type != "doc_structure"
+        ],
         contents=contents,
         structure=structure,
     )
@@ -87,10 +91,13 @@ async def final_check(
         "passed": result["passed"],
         "issues": result["issues"],
         "stats": {
-            "requirements": len(requirements),
+            "requirements": sum(1 for r in requirements if r.req_type != "doc_structure"),
+            "structure": len(structure),
             "deliverables": len(deliverables),
             "error_count": sum(1 for i in result["issues"] if i["severity"] == "error"),
             "warning_count": sum(1 for i in result["issues"] if i["severity"] == "warning"),
+            "words": result.get("words", {}),
+            "pending": result.get("pending", {}),
         },
     }
 

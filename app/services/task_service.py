@@ -320,6 +320,7 @@ async def _llm_extract_requirements(
         "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
         "每条 content 必须是完整的整句要求（含主语与要求内容），禁止只输出表头、字段名、单位或孤立数字。"
         "如要求为限价/最高限价，structured 必须含 {\"price_limit\": {\"amount\": 数值, \"unit\": \"万元\"}}。"
+        "如要求为评分细则，structured 必须含 {\"score_rule\": {\"weight\": 分值, \"criterion\": \"评分标准\"}}。"
         "只依据给定材料，禁止编造。"
     )
     reply = await LLMClient().chat(system, f"招标材料：\n{text}")
@@ -529,6 +530,60 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     task.result = result
 
 
+async def _run_hermes_agent(task: Task) -> dict | None:
+    """通过部署的 Hermes Agent（hermes chat 无头模式 + bidvolt-bid-generate skill）生成成果。
+
+    任务级授权：签发 capability token（企业/项目/任务/工具白名单），以
+    BIDVOLT_CAPABILITY_TOKEN 注入 Hermes 进程环境，MCP 每次工具调用携带该 token，
+    后端逐调用校验（capability.verify_capability）。
+    不可用/失败/超时返回 None 或 ok=False（调用方回退内嵌闭环，不影响任务完成）。
+    """
+    import os
+    import shutil
+
+    hermes_bin = shutil.which("hermes") or "/data/hermes/venv/bin/hermes"
+    if not os.path.exists(hermes_bin):
+        return None
+    try:
+        from app.services.capability import issue_capability
+
+        cap = issue_capability(
+            enterprise_id=task.enterprise_id,
+            project_id=task.project_id,
+            task_id=task.id,
+            task_type=task.task_type,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    prompt = (
+        f"你是投标文件撰写 Agent。请使用 bidvolt-bid-generate skill 为项目 {task.project_id} 生成三份投标成果。"
+        "流程：先 list_requirements 建立要求基线、search_assets 取企业事实，再逐份撰写并调用 save_deliverable 保存新版本；"
+        "禁止编造企业事实（资质/业绩/人员/参数一律只允许来自工具查询结果）；无资料处标注【待补充】；"
+        "报价只调用 calculate_quote 生成建议，不得直接落库。任务 id=" + str(task.id) + "。"
+    )
+    env = dict(os.environ)
+    env["BIDVOLT_CAPABILITY_TOKEN"] = cap
+    env["HERMES_ACCEPT_HOOKS"] = "1"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            hermes_bin, "chat", "-q", prompt,
+            "-t", "bidvolt", "-s", "bidvolt-bid-generate",
+            "-Q", "--cli", "--max-turns", "60", "--no-restore-cwd",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+    except OSError:
+        return None
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=900)
+    except TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return {"ok": False, "error": "hermes 执行超时（900s）"}
+    log_tail = (out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace"))[-1500:]
+    return {"ok": proc.returncode == 0, "log": log_tail}
+
+
 async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     """生成/补全三份成果：确定性草稿（LLM 门禁内可选增强）。"""
     from sqlalchemy import select as sa_select
@@ -538,7 +593,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     from app.models.project import Project
     from app.models.requirement import Requirement
     from app.services import deliverable_service, quote_engine
-    from app.services.history_provider import MockHistoryPriceProvider
+    from app.services.history_provider import get_samples_with_fallback
     from app.services.llm import LLMClient, llm_enabled
 
     project_id = task.project_id
@@ -684,13 +739,24 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     ) or "（无历史参考素材）"
 
     def _business_model() -> dict:
+        buyer = (project.buyer or "") if project is not None else ""
         nodes = [
-            {"id": "n1", "type": "heading", "text": "商务标"},
-            {"id": "n2", "type": "paragraph", "text": f"项目名称：{project_name}"},
-            {"id": "n3", "type": "paragraph", "text": "一、企业基本情况"},
-            {"id": "n4", "type": "paragraph", "text": fact_text},
+            {"id": "n0", "type": "heading", "text": "商务标"},
+            {"id": "n1", "type": "heading", "text": "应答函"},
+            {"id": "n2", "type": "paragraph", "text": f"致：{buyer or '【招标人名称】'}"},
+            {"id": "n3", "type": "paragraph",
+             "text": f"我方【供应商名称】已仔细研究《{project_name}》采购文件（含全部澄清与修改），"
+                     "自愿参加本项目应答，并作如下承诺与声明："},
+            {"id": "n4", "type": "paragraph",
+             "text": "1. 应答报价：详见价格文件（报价单）。\n"
+                     "2. 本应答函有效期自递交截止日起 90 日历天【以采购文件为准】。\n"
+                     "3. 我方完全响应采购文件的资格要求、技术规范书与合同条款，无负偏离（详见商务偏离表）。\n"
+                     "4. 我方保证应答内容真实、完整、合法，并承担相应法律责任。"},
+            {"id": "n5", "type": "paragraph", "text": f"项目名称：{project_name}"},
+            {"id": "n6", "type": "heading", "text": "一、企业基本情况"},
+            {"id": "n7", "type": "paragraph", "text": fact_text},
         ]
-        idx = 5
+        idx = 8
         for req in req_by_type.get("basic_info", [])[:5]:
             nodes.append({"id": f"n{idx}", "type": "paragraph", "text": f"- {req.content}"})
             idx += 1
@@ -729,9 +795,9 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             min_profit_rate=float(task.payload.get("min_profit_rate", 0.05)),
         )
         try:
-            samples = await MockHistoryPriceProvider().get_material_samples(material_ref)
+            samples, sample_source = await get_samples_with_fallback(material_ref)
         except Exception:  # noqa: BLE001
-            samples = []
+            samples, sample_source = [], "none"
         try:
             result = quote_engine.calculate(params, samples)
             price = result["suggested"]
@@ -739,7 +805,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             price = None
         rows = [["材料", "数量", "单价", "小计"]]
         rows.append([material_ref, 1, price if price is not None else "待人工定价", price if price is not None else ""])
-        rows.append(["说明", "", "", "确定性测算草稿，用户确认后生效"])
+        rows.append(["说明", "", "", f"确定性测算草稿，用户确认后生效（样本来源：{sample_source}）"])
         return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
 
     # —— 标书结构（流程化：解析阶段已确认并落库 doc_structure；与 LLM 门禁无关）——
@@ -787,7 +853,27 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
 
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
     enhanced: list[str] = []
-    if llm_enabled():
+    # Hermes 真接入（用户要求）：payload.agent="hermes" 时由部署的 Hermes Agent
+    # 经 bidvolt MCP（携带任务级 capability token）执行 bid-generate skill 完成生成；
+    # 失败/不可用回退内嵌闭环（hermes_ok=False）。
+    hermes_ok = False
+    if task.payload.get("agent") == "hermes":
+        hermes_result = await _run_hermes_agent(task)
+        if hermes_result is None:
+            log_tail = "hermes 不可用（未安装或无法启动）"
+        else:
+            log_tail = hermes_result.get("error") or hermes_result.get("log", "")
+            hermes_ok = bool(hermes_result.get("ok"))
+        agent_meta["runtime"] = "hermes"
+        agent_meta["hermes"] = {"ok": hermes_ok, "log_tail": (log_tail or "")[-500:]}
+        if hermes_ok:
+            # Hermes 已保存成果版本：跳过内嵌起草/保存，直接走统一门禁（评审+终检语义）
+            agent_meta["plan_sections"] = len(biz_chapters) + len(tech_chapters)
+            task.progress = {
+                "phase": "bid_generate", "status": "running", "percent": 80,
+                "current_work": "Hermes Agent 已生成成果，进入评审与质量门禁",
+            }
+    if llm_enabled() and not hermes_ok:
         import re
 
         client = LLMClient()
@@ -917,7 +1003,16 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             _gen_doc("技术标", tech_chapters, tech_req_text),
         )
         if biz_doc is not None:
-            models[1] = biz_doc
+            # 应答函格式页（路线图项）：正式商务标首部必须含应答函（字段未知处【待补充】，禁止编造）
+            buyer_name = (project.buyer or "") if project is not None else ""
+            cover_nodes = [
+                {"id": "llm-cover-h", "type": "heading", "text": "应答函"},
+                {"id": "llm-cover-1", "type": "paragraph", "text": f"致：{buyer_name or '【招标人名称】'}"},
+                {"id": "llm-cover-2", "type": "paragraph",
+                 "text": f"我方【供应商名称】已仔细研究《{project_name}》采购文件（含全部澄清与修改），"
+                         "自愿参加本项目应答，并承诺完全响应采购文件要求（详见商务偏离表），应答报价详见价格文件。"},
+            ]
+            models[1] = {"nodes": [biz_doc["nodes"][0], *cover_nodes, *biz_doc["nodes"][1:]]}
             enhanced.append("business")
         if tech_doc is not None:
             models[2] = tech_doc
@@ -989,30 +1084,31 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         agent_meta["closed"] = self_check_closed
     agent_meta["knowledge_refs"] = len(knowledge_refs)
     versions: dict[int, int] = {}
-    for dtype, model in models.items():
-        deliverable = await session.scalar(
-            sa_select(Deliverable).where(
-                Deliverable.project_id == project_id,
-                Deliverable.deliverable_type == dtype,
+    if not hermes_ok:  # Hermes 已通过 MCP 保存版本，内嵌保存路径跳过
+        for dtype, model in models.items():
+            deliverable = await session.scalar(
+                sa_select(Deliverable).where(
+                    Deliverable.project_id == project_id,
+                    Deliverable.deliverable_type == dtype,
+                )
             )
-        )
-        if deliverable is None:
-            deliverable = await deliverable_service.create_deliverable(
+            if deliverable is None:
+                deliverable = await deliverable_service.create_deliverable(
+                    session,
+                    enterprise_id=task.enterprise_id,
+                    project_id=project_id,
+                    deliverable_type=dtype,
+                    title={1: "商务标", 2: "技术标", 3: "报价单"}[dtype],
+                )
+            version = await deliverable_service.save_version(
                 session,
-                enterprise_id=task.enterprise_id,
-                project_id=project_id,
-                deliverable_type=dtype,
-                title={1: "商务标", 2: "技术标", 3: "报价单"}[dtype],
+                deliverable,
+                model,
+                version_type=2,
+                idempotency_key=f"bidgen-{task.id}-{dtype}",
+                source_task_id=task.id,
             )
-        version = await deliverable_service.save_version(
-            session,
-            deliverable,
-            model,
-            version_type=2,
-            idempotency_key=f"bidgen-{task.id}-{dtype}",
-            source_task_id=task.id,
-        )
-        versions[dtype] = version.version_no
+            versions[dtype] = version.version_no
 
     # 评审闭环（Issue #8）：生成后自动执行内置评审 + 要求覆盖检查，评审结果绑定当前成果版本
     from app.services import review_service
@@ -1055,13 +1151,17 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         else ""
     )
     if llm_enabled():
+        base_note = (
+            ("正式成果草稿（待人工校核）" if not deliverables_ready else "确定性草稿 + LLM 全文生成")
+            + (f"；{not_closed_note}" if not_closed_note else "")
+        )
+        if agent_meta.get("runtime") == "hermes":
+            base_note = ("Hermes Agent 生成（bidvolt-bid-generate skill）"
+                         + ("" if deliverables_ready else "（正式成果草稿，待人工校核）"))
         task.result = {
             **versions,
-            "note": (
-                (("正式成果草稿（待人工校核）" if not deliverables_ready else "确定性草稿 + LLM 全文生成")
-                 + (f"；{not_closed_note}" if not_closed_note else ""))
-                + (f"（增强：{','.join(enhanced)}）" if enhanced else ("（LLM 不可用，草稿回退）" if not deliverables_ready else "") )
-            ),
+            "note": base_note
+                + (f"（增强：{','.join(enhanced)}）" if enhanced else ""),
             "quality": quality,
             "issues": issues,
             "structure_source": structure_source,
@@ -1210,6 +1310,18 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
     for req in requirements:
         target = "技术标" if req.req_type == "tech_requirement" else ("商务标" if req.req_type == "qualification" else None)
         if target is None:
+            # 评分细则（路线图项：评分细则驱动评审）：评分项必须在任一成果中体现，否则列入缺失评分点
+            if req.req_type == "score_rule":
+                if (not texts.get(1) or req.content[:10] not in texts[1]) and (
+                    not texts.get(2) or req.content[:10] not in texts[2]
+                ):
+                    issues.append(
+                        {
+                            "severity": "warning",
+                            "message": f"评分细则未在成果中体现：{req.content[:40]}",
+                            "locate": req.id,
+                        }
+                    )
             continue
         dtype = 2 if target == "技术标" else 1
         text = texts.get(dtype, "")

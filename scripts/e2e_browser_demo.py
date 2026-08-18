@@ -503,14 +503,16 @@ def main() -> int:
             tab(page, "导出")
             page.click("button:has-text('终稿检查')")
             ok_check = wait_log(page, "终检")
-            # 终检结果面板：显示统计（要求/成果/问题/提醒）与逐条检查项
+            # 终检结果面板：显示统计（要求/结构章节/成果/问题/提醒/正文字数/待补充）与逐条检查项
             page.wait_for_function(
                 "() => { const el = document.getElementById('e-result'); "
-                "return el && el.innerText.includes('终检结果') && el.innerText.includes('统计') && el.innerText.includes('检查项'); }",
+                "const t = el ? el.innerText : ''; "
+                "return t.includes('终检结果') && t.includes('统计') && t.includes('正文字数') && t.includes('检查项'); }",
                 timeout=20000,
             )
             ok_detail = page.evaluate(
-                "() => { const el = document.getElementById('e-result'); return el ? el.innerText.includes('要求') : false; }"
+                "() => { const el = document.getElementById('e-result'); "
+                "const t = el ? el.innerText : ''; return t.includes('要求') && t.includes('结构章节'); }"
             )
             page.click("button:has-text('导出 DOCX/XLSX')")
             ok_export = wait_log(page, "导出完成", timeout_ms=120000)

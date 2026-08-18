@@ -17,7 +17,7 @@ from app.models.quote import HistoryPriceSnapshot, QuoteCalc
 from app.services import deliverable_service
 from app.services.audit import write_audit
 from app.services.deliverable_service import VersionConflict
-from app.services.history_provider import MockHistoryPriceProvider, snapshot_samples
+from app.services.history_provider import MockHistoryPriceProvider, get_samples_with_fallback, snapshot_samples
 from app.services.quote_engine import (
     QuoteParams,
     calculate,
@@ -104,12 +104,14 @@ async def calculate_quote(
     user: UserContext = Depends(require_capability("calculate_quote")),
 ) -> dict:
     params = _quote_params(body)
-    samples = await provider.get_material_samples(params.material_ref)
+    # 真实数据源优先（AnySearch+LLM 抽取公开中标价），不足 3 条回退 Mock（路线图项）
+    samples, sample_source = await get_samples_with_fallback(params.material_ref)
     try:
         result = calculate(params, samples)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     snapshot_ids = await snapshot_samples(session, user.enterprise_id, samples)
+    result["sample_source"] = sample_source
     calc = QuoteCalc(
         enterprise_id=user.enterprise_id,
         project_id=body.get("project_id", 0),
