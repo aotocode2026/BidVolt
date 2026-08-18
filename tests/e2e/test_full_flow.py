@@ -90,11 +90,19 @@ def test_full_business_flow(live_server):
 
         pid = c.post("/api/v1/projects", json={"name": "E2E 项目"}, headers=headers).json()["project_id"]
 
-        # 三份成果
+        # 三份成果（终检质量门禁要求正文 >=100 字，使用真实长度正文）
         deliverable_ids = {}
+        long_text = (
+            "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，"
+            "售后服务响应及时，工期承诺满足招标要求，报价测算依据充分，愿承担相应法律责任。"
+            "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，"
+            "售后服务响应及时，工期承诺满足招标要求。"
+        )
         models = {
-            1: {"nodes": [{"id": "n1", "type": "paragraph", "text": "商务响应"}]},
-            2: {"nodes": [{"id": "n1", "type": "paragraph", "text": "技术方案"}]},
+            1: {"nodes": [{"id": "n1", "type": "heading", "text": "商务标"},
+                          {"id": "n2", "type": "paragraph", "text": long_text}]},
+            2: {"nodes": [{"id": "n1", "type": "heading", "text": "技术标"},
+                          {"id": "n2", "type": "paragraph", "text": long_text}]},
             3: {"type": "sheet", "sheets": [{"name": "报价单", "rows": [["材料", "价格"], ["电缆", "120"]]}]},
         }
         for dtype, model in models.items():

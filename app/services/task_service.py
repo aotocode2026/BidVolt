@@ -312,12 +312,13 @@ async def _llm_extract_requirements(
     blocks = (
         await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
     ).all()
-    text = "\n".join(b.text_content or "" for b in blocks)[:30000]
+    text = _dedup_block_texts(blocks, limit=30000)
     if not text.strip():
         return 0
     system = (
         "你是投标文件解析助手。从招标材料中抽取资格要求、评分细则、否决条款、技术要求、报价规则、材料清单，"
         "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
+        "每条 content 必须是完整的整句要求（含主语与要求内容），禁止只输出表头、字段名、单位或孤立数字。"
         "只依据给定材料，禁止编造。"
     )
     reply = await LLMClient().chat(system, f"招标材料：\n{text}")
@@ -341,7 +342,24 @@ async def _llm_extract_requirements(
             items = parsed
         else:
             items = []
+    # 碎片与重复过滤（Issue #12）：历史重复块会诱导 LLM 输出"报价限价(万元)"这类孤立碎片；
+    # 丢弃过短内容、纯数字/单位/表头碎片与重复条目，保证落库要求为完整整句。
+    import re as _re
+
+    kept: list[dict] = []
+    seen_norm: set[str] = set()
     for item in items:
+        content = str(item.get("content") or "").strip()
+        norm = _re.sub(r"\s+", "", content)
+        if len(content) < 5:
+            continue
+        if _re.fullmatch(r"[\d.，,、（）()元万元%|∶:：·\-—]+", content):
+            continue
+        if norm in seen_norm:
+            continue
+        seen_norm.add(norm)
+        kept.append(item)
+    for item in kept:
         await requirement_service.upsert_requirement(
             session,
             enterprise_id=enterprise_id,
@@ -353,7 +371,20 @@ async def _llm_extract_requirements(
             confidence=item.get("confidence"),
             source_task_id=task_id,
         )
-    return len(items)
+    return len(kept)
+
+
+def _dedup_block_texts(blocks, limit: int = 30000) -> str:
+    """把 DocBlock 列表拼成去重后的文本（Issue #12）：同一文本只保留一次，
+    历史重复解析块（旧数据 6 倍重复）不再污染 LLM 提示词。"""
+    seen: set[str] = set()
+    lines: list[str] = []
+    for b in blocks:
+        t = (b.text_content or "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            lines.append(t)
+    return "\n".join(lines)[:limit]
 
 
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
@@ -491,6 +522,18 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     ).all()
     material_text = "\n".join(b.text_content or "" for b in material_blocks)[:30000] or "（项目未上传招标材料）"
 
+    if not requirements:
+        # Issue #12 问题三：要求为 0 仍生成并标记完成 → 用户拿到与本次招标无关的内容。
+        # 空要求直接失败（带明确指引），不再产出“完成但不可用”的成果。
+        if material_file_ids:
+            raise ValueError(
+                "未从项目材料抽取出招标要求（已尝试自动解析）：请检查材料可读性后重新触发【招标解析】，"
+                "或到要求页手动录入要求，再发起成果生成"
+            )
+        raise ValueError(
+            "项目没有任何招标要求且未上传材料：请先上传并解析招标文件，或手动录入要求后再发起成果生成"
+        )
+
     # 历史知识检索（Issue #4）：为技术标提供专业写法素材（来源可追溯，结果仅入任务元数据）
     knowledge_refs: list[dict] = []
     if llm_enabled():
@@ -546,8 +589,15 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         return {"nodes": nodes}
 
     async def _quote_model() -> dict:
-        material_ref = task.payload.get("material_ref") or "CABLE-YJV-3x95"
-        cost = float(task.payload.get("cost", 100))
+        material_ref = str(task.payload.get("material_ref") or "").strip()
+        cost_raw = task.payload.get("cost")
+        # Issue #12：payload 未提供真实物料/成本时不得编造演示物料（此前硬编码 CABLE-YJV-3x95/100，
+        # 导致报价单与本次招标无关）。改为"待报价测算"占位，引导用户到报价页基于真实成本测算并应用。
+        if not material_ref or cost_raw is None:
+            rows = [["材料", "数量", "单价", "小计"]]
+            rows.append(["待报价测算", "", "", "请到【报价】页录入真实材料与成本，测算后【应用到报价单】"])
+            return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
+        cost = float(cost_raw)
         params = quote_engine.QuoteParams(
             material_ref=material_ref,
             cost=cost,
@@ -575,9 +625,11 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         client = LLMClient()
 
         def _clean_md(text: str) -> str:
-            """清洗 Markdown 标记（Issue #8）：正式成果节点应为纯文本，不出现 **/###/- 等符号。"""
-            cleaned = re.sub(r"[*_`]{1,3}", "", text)
-            cleaned = re.sub(r"^#{1,6}\s*", "", cleaned)
+            """清洗 Markdown 标记（Issue #8/#12）：正式成果节点应为纯文本。
+            逐行去除行首 #（LLM 输出常把 ## 标题留在段落缓冲里），并全局去除 **/` 等标记。"""
+            lines = [re.sub(r"^#{1,6}\s*", "", ln) for ln in text.splitlines()]
+            cleaned = "\n".join(lines)
+            cleaned = re.sub(r"[*_`]{1,3}", "", cleaned)
             return cleaned.strip()
 
         def _split_nodes(text: str) -> list[dict]:
@@ -610,6 +662,20 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             flush()
             return nodes or [{"id": "llm-n0", "type": "paragraph", "text": _clean_md(text.strip())}]
 
+        def _dedup_headings(nodes: list[dict]) -> list[dict]:
+            """去掉连续重复标题（LLM 输出首章常与预置标题重复，Issue #12 实测出现两次"技术标"）。"""
+            out: list[dict] = []
+            for n in nodes:
+                if (
+                    n.get("type") == "heading"
+                    and out
+                    and out[-1].get("type") == "heading"
+                    and out[-1].get("text") == n.get("text")
+                ):
+                    continue
+                out.append(n)
+            return out
+
         # 商务标：正式投标语言改写（禁止新增企业事实）
         business_req_text = "\n".join(
             f"- {r.content}"
@@ -629,10 +695,12 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             business_reply = ""
         if business_reply.strip():
             models[1] = {
-                "nodes": [
-                    {"id": "llm-b0", "type": "heading", "text": "商务标"},
-                    *_split_nodes(business_reply.strip()),
-                ]
+                "nodes": _dedup_headings(
+                    [
+                        {"id": "llm-b0", "type": "heading", "text": "商务标"},
+                        *_split_nodes(business_reply.strip()),
+                    ]
+                )
             }
             enhanced.append("business")
 
@@ -659,10 +727,12 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             tech_reply = ""
         if tech_reply.strip():
             models[2] = {
-                "nodes": [
-                    {"id": "llm-t0", "type": "heading", "text": "技术标"},
-                    *_split_nodes(tech_reply.strip()),
-                ]
+                "nodes": _dedup_headings(
+                    [
+                        {"id": "llm-t0", "type": "heading", "text": "技术标"},
+                        *_split_nodes(tech_reply.strip()),
+                    ]
+                )
             }
             enhanced.append("technical")
     versions: dict[int, int] = {}

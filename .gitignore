@@ -26,6 +26,9 @@ dist/
 .playwright-cli/
 .playwright/
 
+# 产品复测取证材料（Issue #12 定位用，不进入 git）
+product-review-issue12/
+
 # 数据库/备份制品（Issue #3：防止 dump/SQL 备份误提交）
 *.dump
 *.sql
