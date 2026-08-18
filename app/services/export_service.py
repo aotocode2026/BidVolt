@@ -113,9 +113,61 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
             issues.append({"type": "要求覆盖", "severity": "error", "message": f"已解析 {n} 条要求，但成果仍为占位草稿，未逐条响应", "locate": None})
         if not n:
             issues.append({"type": "要求覆盖", "severity": "warning", "message": "项目未解析出招标要求，成果可能无法逐条响应招标文件", "locate": None})
+        # 逐条要求覆盖（对标的要求）：技术要求→技术标、资格要求→商务标逐条核对
+        for req in requirements:
+            req_type = req.get("req_type")
+            content = str(req.get("content") or "").strip()
+            if not content:
+                continue
+            if req_type == "tech_requirement":
+                text = doc_texts.get(2, "")
+                target_name = "技术标"
+            elif req_type == "qualification":
+                text = doc_texts.get(1, "")
+                target_name = "商务标"
+            else:
+                continue
+            if not text or content[:10] not in text:
+                issues.append(
+                    {
+                        "type": "要求覆盖",
+                        "severity": "error",
+                        "message": f"{target_name}未响应要求：{content[:40]}",
+                        "locate": req.get("id"),
+                    }
+                )
+
+    # 文字质量（Issue #12 终检 v2）：重复段落与待补充占位统计
+    words: dict[str, int] = {}
+    pending_counts: dict[str, int] = {}
+    for d in deliverables:
+        name = DELIVERABLE_NAMES.get(d.deliverable_type, str(d.deliverable_type))
+        text = doc_texts.get(d.deliverable_type, "")
+        words[name] = len(text)
+        pending_counts[name] = text.count("【待补充】")
+        paras = [p.strip() for p in re.split(r"\n+", text) if len(p.strip()) >= 40]
+        dup = {p: paras.count(p) for p in set(paras) if paras.count(p) >= 2}
+        for p, cnt in list(dup.items())[:3]:
+            issues.append(
+                {
+                    "type": "文字质量",
+                    "severity": "error",
+                    "message": f"{name}存在重复段落（出现 {cnt} 次）：{p[:30]}…",
+                    "locate": d.id,
+                }
+            )
+        if pending_counts[name] > 0:
+            issues.append(
+                {
+                    "type": "文字质量",
+                    "severity": "warning",
+                    "message": f"{name}存在 {pending_counts[name]} 处【待补充】占位（资料不足处，需人工补齐）",
+                    "locate": d.id,
+                }
+            )
 
     passed = not any(i["severity"] == "error" for i in issues)
-    return {"passed": passed, "issues": issues}
+    return {"passed": passed, "issues": issues, "words": words, "pending": pending_counts}
 
 
 def build_manifest(project_id: int, files: list[dict], checks: dict) -> dict:

@@ -1,7 +1,8 @@
-"""HistoryPriceProvider：外部历史报价只读 Provider（V1 Mock）+ 快照。"""
+"""HistoryPriceProvider：历史报价只读 Provider（真实 AnySearch + Mock 兜底）+ 快照。"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, timedelta
 from hashlib import sha256
@@ -68,6 +69,94 @@ class MockHistoryPriceProvider(HistoryPriceProvider):
                 "readonly_verified": True,
             }
         ]
+
+
+class AnySearchHistoryPriceProvider(HistoryPriceProvider):
+    """真实数据源（路线图项）：AnySearch 检索公开中标/成交公告 + LLM 抽取成交价样本。
+
+    抽取不到/门禁关闭/调用失败返回空列表——由 get_samples_with_fallback 兜底 Mock。
+    """
+
+    provider_id = "anysearch_public"
+
+    async def get_material_samples(self, material_ref: str) -> list[dict]:
+        from app.services.llm import LLMClient, extract_json, llm_enabled
+        from app.services.search_service import AnySearchProvider
+
+        if not llm_enabled():
+            return []
+        query = f"{material_ref} 中标 成交价 元 中标结果公告"
+        try:
+            results = await asyncio.to_thread(AnySearchProvider().query, query, None, 6)
+        except Exception:  # noqa: BLE001 门禁/额度/网络失败→空
+            return []
+        if not results:
+            return []
+        snippets = "\n".join(f"- {r.get('title')}：{r.get('snippet')}" for r in results[:6])[:3000]
+        try:
+            reply = await LLMClient().chat(
+                "你是价格数据抽取助手。从给定检索结果中抽取与材料相关的成交/中标价格样本，输出 JSON 数组："
+                '[{"material_name": "...", "spec": "...", "region": "...", "win_price": 数值, '
+                '"unit": "元", "win_date": "YYYY-MM-DD", "url": "来源URL"}]。'
+                "只依据给定结果，抽不到输出 []；禁止编造。",
+                f"材料：{material_ref}\n检索结果：\n{snippets}",
+            )
+            parsed = extract_json(reply)
+        except Exception:  # noqa: BLE001
+            return []
+        if not isinstance(parsed, list):
+            return []
+        samples: list[dict] = []
+        for s in parsed[:10]:
+            if not isinstance(s, dict):
+                continue
+            price = s.get("win_price")
+            if not isinstance(price, (int, float)) or float(price) <= 0:
+                continue
+            try:
+                win_date = date.fromisoformat(str(s.get("win_date") or "")) if s.get("win_date") else date.today()
+            except ValueError:
+                win_date = date.today()
+            samples.append(
+                {
+                    "material_ref": material_ref,
+                    "material_name": str(s.get("material_name") or material_ref),
+                    "spec": str(s.get("spec") or ""),
+                    "region": str(s.get("region") or "公开信息"),
+                    "win_price": float(price),
+                    "win_date": win_date,
+                    "unit": str(s.get("unit") or "元"),
+                    "currency": "CNY",
+                    "tax_included": True,
+                    "source_url": str(s.get("url") or ""),
+                }
+            )
+        return samples
+
+    async def query_history(self, params: dict) -> list[dict]:
+        return await self.get_material_samples(params.get("material_ref") or "")
+
+    async def get_source_metadata(self) -> list[dict]:
+        return [
+            {
+                "provider_id": self.provider_id,
+                "source_name": "AnySearch 公开中标/成交公告",
+                "fetched_at": date.today().isoformat(),
+                "coverage": "公开采购信息检索",
+                "update_policy": "实时检索，LLM 抽取（可追溯 URL）",
+                "readonly_verified": True,
+            }
+        ]
+
+
+async def get_samples_with_fallback(material_ref: str) -> tuple[list[dict], str]:
+    """真实数据源优先：AnySearch+LLM 抽取 ≥3 条时采用；否则 Mock 兜底（V1 兼容）。
+    返回 (样本列表, provider_id)，调用方记录来源以保证可追溯。"""
+    real = await AnySearchHistoryPriceProvider().get_material_samples(material_ref)
+    if len(real) >= 3:
+        return real, "anysearch_public"
+    mock = await MockHistoryPriceProvider().get_material_samples(material_ref)
+    return mock, "mock_history"
 
 
 def _source_hash(sample: dict) -> str:
