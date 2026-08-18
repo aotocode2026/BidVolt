@@ -82,6 +82,37 @@ def test_final_check_rejects_stub_and_markdown(client):
     assert any("占位草稿" in m for m in messages)
 
 
+def test_final_check_structure_compliance(client):
+    """结构合规（用户反馈）：招标文件要求的章节缺失时必须拦截。"""
+    from app.services.export_service import run_final_check
+
+    class D:
+        def __init__(self, dtype, vno):
+            self.deliverable_type = dtype
+            self.current_version_no = vno
+            self.id = 100 + dtype
+
+    long_text = "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，售后服务响应及时。"
+    contents = {
+        101: {"model": {"nodes": [{"type": "heading", "text": "一、应答函"},
+                                {"type": "paragraph", "text": long_text}]}},
+        102: {"model": {"nodes": [{"type": "heading", "text": "一、技术参数响应表"},
+                                {"type": "paragraph", "text": long_text}]}},
+        103: {"model": {"sheets": [{"name": "报价单", "rows": [["项目", "建议价"], ["x", "119.2"]]}]}},
+    }
+    result = run_final_check(
+        [D(1, 1), D(2, 1), D(3, 1)],
+        contents=contents,
+        structure=[
+            {"role": "business", "title": "一、应答函"},
+            {"role": "technical", "title": "一、技术参数响应表"},
+            {"role": "technical", "title": "二、技术方案"},  # 缺失
+        ],
+    )
+    assert result["passed"] is False
+    assert any(i["type"] == "结构合规" and "二、技术方案" in i["message"] for i in result["issues"])
+
+
 def test_export_and_delivery_package(client):
     h, pid = _setup(client)
     _add_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务响应"}]})

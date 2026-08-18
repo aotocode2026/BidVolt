@@ -554,13 +554,17 @@ function panelRequirements() {
 
 async function loadRequirements() {
   if (!projectId) return log("先选用项目", "err");
+  const REQ_TYPE_LABELS = {
+    qualification: "资格要求", tech_requirement: "技术要求", quote_rule: "报价规则",
+    basic_info: "基本信息", doc_structure: "标书结构", other: "其他",
+  };
   try {
     const rows = await api(`/requirements?project_id=${projectId}`);
-    reqCount = rows.length;
+    reqCount = rows.filter((r) => r.req_type !== "doc_structure").length;  // 步骤证据按招标要求计，结构不计
     if (reqCount > 0) markStep("req");
     setHtml("r-rows", rows.map((r) => `
       <tr data-id="${r.req_id}" data-rev="${r.revision}">
-        <td>${r.req_id}</td><td>${esc(r.req_type)}</td><td>${esc(r.content)}</td><td>r${r.revision}</td>
+        <td>${r.req_id}</td><td>${esc(REQ_TYPE_LABELS[r.req_type] || r.req_type)}</td><td>${esc(r.content)}</td><td>r${r.revision}</td>
         <td>${esc(r.confirm_status)}</td>
         <td><button class="r-confirm" data-id="${r.req_id}" data-rev="${r.revision}">确认</button>
             <button class="ghost r-reject" data-id="${r.req_id}" data-rev="${r.revision}">拒绝</button>

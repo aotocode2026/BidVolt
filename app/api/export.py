@@ -62,10 +62,16 @@ async def final_check(
             contents[d.id] = {"version_no": d.current_version_no, "model": model}
         except Exception:  # noqa: BLE001 单个成果读取失败不阻塞终检
             contents[d.id] = {}
+    structure = [
+        {"role": (r.structured or {}).get("role"), "title": r.content}
+        for r in requirements
+        if r.req_type == "doc_structure" and (r.structured or {}).get("role") in ("business", "technical", "price")
+    ]
     result = export_service.run_final_check(
         deliverables,
-        requirements=[{"content": r.content, "req_type": r.req_type} for r in requirements],
+        requirements=[{"content": r.content, "req_type": r.req_type} for r in requirements if r.req_type != "doc_structure"],
         contents=contents,
+        structure=structure,
     )
     row = FinalCheck(
         enterprise_id=user.enterprise_id,

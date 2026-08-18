@@ -90,6 +90,52 @@ def test_tender_parse_with_llm_extracts_requirements(client, monkeypatch):
     assert types == {"qualification", "quote_rule"}
 
 
+def test_tender_parse_extracts_structure(client, monkeypatch):
+    """流程化结构确认：解析阶段抽取响应文件结构，落库 doc_structure 要求。"""
+    h, pid = _setup(client)
+    file_id = _upload_txt(client, h, pid)
+
+    async def fake_chat(self, system, user):
+        if "结构解析" in system:
+            return ('{"business": [{"title": "一、应答函", "guide": "应答函格式"}], '
+                    '"technical": [{"title": "一、技术参数响应表", "guide": "逐条响应"}, '
+                    '{"title": "二、技术方案", "guide": "方案"}], "notes": ""}')
+        return (
+            '{"requirements": ['
+            '{"req_type": "qualification", "content": "电力施工三级", "coordinates": [], "confidence": 0.9}'
+            "]}"
+        )
+
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "tender_parse", "payload": {"file_ids": [file_id]}, "idempotency_key": "parse-struct"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["structure_extracted"] == 3
+
+    reqs = client.get(f"/api/v1/requirements?project_id={pid}", headers=h).json()
+    structures = [r for r in reqs if r["req_type"] == "doc_structure"]
+    assert len(structures) == 3
+    assert {s["content"] for s in structures} == {"一、应答函", "一、技术参数响应表", "二、技术方案"}
+    # 生成任务应优先消费落库结构（structure_source=requirement）
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-after-parse"},
+        headers=h,
+    )
+    task2 = _drain_one_task()
+    assert task2.status == 3
+    assert task2.result["structure_source"] == "requirement"
+    assert len(task2.result["structure"]) == 3
+
+
 def test_upsert_supersedes_previous_revision(client):
     h, pid = _setup(client)
     upsert = client.post(
