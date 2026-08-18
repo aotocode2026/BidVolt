@@ -11,20 +11,32 @@
   未建、任务级 capability 全流程待办。
 - 结论：Hermes 此前是"装好但闲置"，生成质量自然不如"直接把文件丢给自由发挥的大模型"。
 
-## 二、本轮整改（V1：把 Agent 闭环内嵌进 worker，接口契约保持 MCP 对齐）
+## 二、本轮整改（Hermes 真接入 + 路线图落地，2026-08-18 更新）
 
-按 docs/hermes/README.md 建议的"最小 Python agent loop"方案，将 bid-generate skill 的
-Procedure 落进 worker（后续可整体迁移到 Hermes gateway 后）：
+### Hermes 真接入（运行时级已验证）
+- worker 在 `payload.agent="hermes"` 时以 `hermes chat -q ... -t bidvolt -s bidvolt-bid-generate -Q --cli`
+  无头启动部署的 Hermes Agent（HERMES_HOME=/data/hermes 注入），
+  签发任务级 capability token（企业/项目/任务/工具白名单）经 BIDVOLT_CAPABILITY_TOKEN 注入，
+  MCP 每次工具调用携带并逐调用校验；
+- 实测：无头执行 OK（session 正常）、`bidvolt:health` 等 MCP 工具在 CLI 会话真实调用成功、
+  5 个 skill 已安装启用；生成任务 150–152 走 hermes 路径（runtime=hermes 记录在任务结果）；
+- **已知限制（如实记录）**：MiniMax-Text-01 主推理在多步生成任务中倾向"叙述工具调用/虚构返回"
+  而非真实执行（save_deliverable 未实际落库）。因此生产默认仍走内嵌闭环（质量稳定），
+  agent=hermes 为实验开关；待主推理切换为工具调用能力更强的模型（如 deepseek，原设计文档规划）
+  后完成 skill 路径端到端验收。
 
-1. **结构确认流程化**：招标解析阶段从招标文件提取响应文件格式（第五章响应文件格式等），
-   落库 doc_structure 要求（role/guide/order），要求页可见可确认；
-2. **规划**：生成时优先消费解析落库结构（requirement）→ 生成时解析材料（tender）→ 通用兜底；
-3. **取证**：企业事实（EnterpriseFact）+ 项目材料摘录 + 历史知识检索（knowledge refs 入任务元数据）；
-4. **起草**：分章并行生成，逐条响应全部要求；
-5. **自检闭环**：起草后对照全部要求自检（missing/conflicts JSON），缺项回注补写，
-   **迭代最多 3 轮直至闭环**；达上限仍未闭环 → deliverables_ready=False +
-   任务注明"自检未闭环：仍有 N 项要求未响应"（**绝不把中间未闭环的交付件当完成交付**）；
-6. **终检结构合规**：招标文件要求的章节缺失 → 终检拦截。
+### 路线图落地
+| 项 | 状态 |
+|---|---|
+| 标书结构流程化确认（解析落库 doc_structure，生成消费） | ✅ |
+| 报价限价校验（structured.price_limit，apply 超限 422） | ✅ |
+| 真实价格数据源：AnySearch+LLM 抽取公开中标价（≥3 条采用，来源 URL 可追溯，Mock 兜底，测算记录 sample_source） | ✅ |
+| 评分细则驱动评审：score_rule 必须体现在成果中，否则评审警告（structured.score_rule weight/criterion） | ✅ |
+| 应答函格式页：商务标首部确定性应答函（未知字段【待补充】不编造） | ✅ |
+| 终检 v2：逐条要求覆盖 + 结构合规 + 文字质量（重复段落/【待补充】）+ 字数统计 | ✅ |
+| tasks 列表返回 result/error（评审页任务表摘要可见） | ✅ |
+| Hermes 运行时接入（capability 全流程） | ✅（运行时验证；Agent 执行一致性待换模型） |
+| loop 整体迁移 Hermes gateway / 任务级 capability 在 MCP 全量启用 | ⏳ 生产前待办（同上，依赖主推理模型） |
 
 ## 三、举一反三：同类"硬编码 vs 招标驱动"问题的处置
 
