@@ -557,20 +557,27 @@ async def _run_hermes_agent(task: Task) -> dict | None:
         return None
     prompt = (
         f"你是投标文件撰写 Agent。请使用 bidvolt-bid-generate skill 为项目 {task.project_id} 生成三份投标成果。"
-        "流程：先 list_requirements 建立要求基线、search_assets 取企业事实，再逐份撰写并调用 save_deliverable 保存新版本；"
-        "禁止编造企业事实（资质/业绩/人员/参数一律只允许来自工具查询结果）；无资料处标注【待补充】；"
-        "报价只调用 calculate_quote 生成建议，不得直接落库。任务 id=" + str(task.id) + "。"
+        "【硬性要求】每一步都必须真实调用 MCP 工具（工具名带 bidvolt: 前缀，如 bidvolt:list_requirements、"
+        "bidvolt:search_assets、bidvolt:save_deliverable、bidvolt:calculate_quote），等待工具真实返回后再继续；"
+        "严禁凭空虚构工具返回结果、严禁只输出计划或代码块。"
+        "流程：1) bidvolt:list_requirements 建立要求基线；2) bidvolt:search_assets 取企业事实；"
+        "3) 逐份撰写并调用 bidvolt:save_deliverable 保存新版本；"
+        "禁止编造企业事实；无资料处标注【待补充】；报价只建议不落库。任务 id=" + str(task.id) + "。"
     )
     env = dict(os.environ)
     env["BIDVOLT_CAPABILITY_TOKEN"] = cap
     env["HERMES_ACCEPT_HOOKS"] = "1"
+    # Hermes 配置/密钥/skills 均位于 HERMES_HOME（安装脚本约定 /data/hermes）；
+    # 缺省 HOME 下无配置会触发交互式 setup，必须显式指定。
+    hermes_home = os.environ.get("HERMES_HOME") or "/data/hermes"
+    env["HERMES_HOME"] = hermes_home
     try:
         proc = await asyncio.create_subprocess_exec(
             hermes_bin, "chat", "-q", prompt,
             "-t", "bidvolt", "-s", "bidvolt-bid-generate",
             "-Q", "--cli", "--max-turns", "60", "--no-restore-cwd",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            env=env,
+            env=env, cwd=hermes_home,
         )
     except OSError:
         return None
