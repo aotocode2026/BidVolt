@@ -24,10 +24,13 @@
   非决策）。M3 实测可用（HTTP 200）。切换后端 .env + config 默认 + install-hermes.sh 默认 + Hermes config，
   全服务重启验证。效果：内嵌闭环自检质量显著提升——公网 E2E **1 轮闭环（missing 0、closed=True）**、
   本地 2 轮闭环；Hermes Agent 亦由"叙述工具调用"转为真实调用 MCP 工具（已读到真实要求数据）；
+- **Hermes Agent 生成全链路闭环达成（2026-08-19，M3 + create_deliverable 工具 + 执行直达约束）**：
+  任务 171 实测由 Hermes 真实调用 `create_deliverable×3 → save_deliverable`，
+  三份成果 v1 落库（授权、CAS、白名单全部生效）；LLM 云接口偶发 529 限流时如实失败并回退；
+  生产默认仍走内嵌闭环（质量更稳、受控），`agent=hermes` 作为已验收的并行路径保留实验开关；
 - **已知限制（如实记录）**：Hermes 多步生成中 Agent 仍会在保存前输出 A/B/C/D 方案等待确认
   （headless 模式 skill 决策环待调，预期在 SKILL.md 增加"非交互模式必须直接执行"约束）；
   capability 已通过临时文件兜底通道（/tmp/bidvolt_cap_token，0600）传递并实测生效；
-  生产默认仍走内嵌闭环（质量稳定），agent=hermes 保持实验开关。
 
 ### 路线图落地
 | 项 | 状态 |
