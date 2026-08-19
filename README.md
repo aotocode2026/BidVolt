@@ -275,16 +275,20 @@ bash scripts/server_pg_tests.sh
 4. **验收关闭权归产品**：后端自测（含生产 E2E）全绿只代表"自测通过"，在 Issue 中提供样本标识
    （企业/项目/任务/成果号）供产品复测；Issue 由产品复测确认后关闭，后端不单方关闭验收类 Issue。
 
-当前基线（2026-08-19）：本地 **247 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
-Issue #4/#5/#6 用例与 Issue #12 回归——用产品真实 docx 作测试夹具的解析质量/去重、重解析清旧块、
+当前基线（2026-08-19）：本地 **255 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
+Issue #4/#5/#6 用例与 Issue #12/#13 回归——用产品真实 docx 作测试夹具的解析质量/去重、重解析清旧块、
 空要求生成拦截、无 payload 报价单不编造、终检识别占位草稿、分章深度生成、Hermes 默认路径质量门、
-评分细则权重化评审、真实价格源兜底等）；
+评分细则权重化评审、真实价格源兜底、pptx/无扩展名路径 xlsx 解析、多项目评分列表基数约束、
+SSE 终态事件携带 error 等）；
 本地浏览器全流程 E2E **26/26 PASS**（含 Issue #11/#12 专项回归：成果正文可视化+状态判断、步骤条证据、
 日志无矛盾误报、资料页项目隔离列、校核结果面板、正文无 Markdown 残留、终检统计面板、结构来自招标文件+Agent 生成路径）；
 公网生产环境 E2E（`scripts/e2e_browser_demo.py --base http://47.100.182.3:28123`）**26/26 PASS**
 （用产品同款真实招标 docx；主模型 MiniMax-M3；**Hermes 默认生成路径 + 质量门兜底**实测：
 Hermes 产出未达质量线自动回退内嵌闭环——技术标 11654 字/商务标 3917 字，无占位无 Markdown 残留；
 自检闭环本地 2 轮/公网 1 轮 closed=True；终检覆盖完整性/结构合规/逐条要求覆盖/文字质量/字数统计）；
+种子态回归 E2E（`scripts/e2e_seeded_regression.py`）**14/14 PASS**（历史账号多项目评分列表、
+6 格式输入矩阵、损坏文件错误路径无"未知错误"、SSE 错误透传、矩阵项目整体解析完成）；
+服务器 PostgreSQL 对等测试（`scripts/server_pg_tests.sh`，独立测试库）**31/31 PASS**；
 服务器容器（PG+RLS）204 passed（3 个用例为环境交互问题：2 个因生产 .env 与用例 dev 假设冲突——
 已由 `run_container_tests.sh` 固定 `BIDVOLT_ENV=dev` 解决，1 个 capability 终态用例与线上 worker
 竞争任务队列，建议停 worker 后复跑）；线上冒烟 `smoke_all` 4/4 PASS（真实 OFD / AnySearch /
