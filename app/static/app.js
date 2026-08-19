@@ -847,6 +847,15 @@ async function generateBid() {
     if (!reqCount) {
       log("当前项目暂无要求：生成任务会先尝试自动解析材料；若仍无要求，任务将以明确原因失败（不再产出与招标无关的通用内容）", "warn");
     }
+    // 生成前输入完整性预检（用户反馈"交付件大量待补充"）：企业资料库为空时显式提示，
+    // 避免生成后才在成果里发现一堆【待补充】
+    try {
+      const assets = await api("/enterprise/assets");
+      if (!assets.length) {
+        log("企业资料库为空：成果中企业事实（名称/资质/业绩/人员/报价）将标注【待补充】。建议先在资料页导入营业执照/资质/业绩等企业资料（P1 禁止编造）", "warn");
+        setHtml("d-status", "<b>输入缺口提示：</b>企业资料库为空，生成成果中的企业事实将以【待补充】标注；建议先到资料页导入企业资料。点击生成仍可继续（占位如实标注，不编造）。");
+      }
+    } catch { /* 预检失败不阻塞 */ }
     // Issue #12 问题三：payload 不再写死演示物料/成本；报价单将提示到报价页录入真实成本
     const t = await api(`/projects/${projectId}/tasks`, { method: "POST", body: { task_type: "bid_generate", payload: {}, idempotency_key: `bg-${Date.now()}` } });
     generatingTaskId = t.task_id;
