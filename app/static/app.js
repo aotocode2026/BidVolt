@@ -415,7 +415,13 @@ async function uploadFile() {
   fd.append("files", file);
   try {
     const data = await api("/files/upload", { method: "POST", body: fd });
-    log(`上传 ${file.name} → ${JSON.stringify(data.files[0])}`, "ok");
+    const f0 = data.files[0] || {};
+    log(`上传 ${file.name} → ${JSON.stringify(f0)}`, "ok");
+    // Issue #13：解析失败必须在上传时即说清原因（此前只显示"未知错误"）
+    if (f0.status === 4 && f0.parse_status) {
+      const ps = f0.parse_status;
+      log(`文件解析失败：${ps.message || ps.error_code || "未知原因"}（不影响上传，可下载核对；如为图片型/加密文档需人工处理）`, "err");
+    }
     if (target === "project") markStep("material");
     await refreshFiles(); await refreshAssets();
   } catch (e) { log(`上传失败：${errMsg(e)}`, "err"); }

@@ -157,13 +157,35 @@ async def task_stream(
 
     terminal_events = {3: "done", 5: "cancelled", 6: "failed"}
 
+    def _terminal_data(task: Task) -> dict:
+        """终态事件数据：必须带 error/result（Issue #13：此前只发 task_id/status，
+        前端失败提示只能显示"未知错误"，任务表里的真实 error 被白白丢弃）。"""
+        data = {"task_id": task.id, "status": task.status}
+        if task.error:
+            err = dict(task.error or {})
+            msg = err.get("message")
+            if isinstance(msg, str) and len(msg) > 1000:
+                err["message"] = msg[:1000] + "…（截断，完整信息见 GET /tasks/{id}）"
+            data["error"] = err
+        if task.result:
+            try:
+                dumped = json.dumps(task.result, ensure_ascii=False, default=str)
+            except Exception:  # noqa: BLE001
+                dumped = ""
+            data["result"] = (
+                task.result
+                if len(dumped) <= 16384
+                else {"note": "结果过大，请通过 GET /tasks/{id} 查看完整结果"}
+            )
+        return data
+
     async def generate():
         # 初始快照：支持刷新/断线重连后先拿到当前状态（#18）
         await session.refresh(task)
         snapshot = {"task_id": task.id, "status": task.status, "progress": public_event(task)}
         yield f"event: snapshot\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
         if task.status in terminal_events:
-            yield f"event: {terminal_events[task.status]}\ndata: {json.dumps({'task_id': task.id, 'status': task.status}, ensure_ascii=False)}\n\n"
+            yield f"event: {terminal_events[task.status]}\ndata: {json.dumps(_terminal_data(task), ensure_ascii=False)}\n\n"
             return
 
         last_event = snapshot["progress"]
@@ -174,7 +196,7 @@ async def task_stream(
                 yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 last_event = event
             if task.status in terminal_events:
-                yield f"event: {terminal_events[task.status]}\ndata: {json.dumps({'task_id': task.id, 'status': task.status}, ensure_ascii=False)}\n\n"
+                yield f"event: {terminal_events[task.status]}\ndata: {json.dumps(_terminal_data(task), ensure_ascii=False)}\n\n"
                 break
             await asyncio.sleep(1)
 

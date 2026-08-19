@@ -71,6 +71,8 @@ async def upload_files(
                 "mime": fobj.mime_type,
                 "status": fobj.status,
                 "document_role": fobj.document_role,
+                # Issue #13：解析失败原因随上传响应返回，前端即时提示（此前原因只落库不展示）
+                "parse_status": fobj.parse_status,
             }
             if target == "enterprise":
                 # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest
