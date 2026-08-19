@@ -17,12 +17,15 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
 - Requirement：提取/确认/修订/证据定位（文件坐标）；同类型多条要求共存（req_key 稳定身份），补遗用 key 覆盖并递增 revision；
   **用户确认/修正闭环**（confirm/correct，expected_revision CAS 409 + 审计）
 - 成果版本链：商务标/技术标/报价单生成、校核、CAS 版本冲突保护、**指定版本下载**（DOCX/XLSX）、**在线编辑会话**（租约/检查点/完成生成新版本）；AI 修改建议走真实 LLM；
-  **技术标/商务标由 LLM 全文生成**（逐条响应技术要求、历史素材作专业写法参考、不足处标注【待补充】）
-- 评审闭环：逐条 review_item、材料补充、单条/批量确认、重审、仅改受影响项；用户可修改并保存评审建议（override，保留原始建议）；按 run_id 恢复完整评审上下文
+  **标书生成默认走 Hermes Agent**（bid-generate skill 经 MCP 真实执行，质量门不达标自动回退内嵌闭环），
+  结构取自招标文件（解析落库 doc_structure）、分章深度生成、逐条响应全部要求、**自检闭环**（迭代至闭环，未闭环不交付）、应答函格式页、正文无 Markdown 残留
+- 评审闭环：逐条 review_item、材料补充、单条/批量确认、重审、仅改受影响项；用户可修改并保存评审建议（override，保留原始建议）；按 run_id 恢复完整评审上下文；
+  **评分细则权重化**：解析出的评分细则（weight/criterion）逐项打分（体现满分/未体现 0 分+建议），权重统计进 evaluate 响应与 ScoreRecord.detail
+- **终检**（导出前质量门）：完整性 + 结构合规（招标文件要求章节缺一即拦）+ 逐条要求覆盖（技术要求→技术标、资格要求→商务标）+ 文字质量（占位草稿/Markdown 残留/正文过短/重复段落/【待补充】统计）+ 字数统计
 - 企业资料：结构化 fact 确认/纠正（带修订记录）、资产 revision 列表、处理队列列表
 - 异步任务：SSE 白名单事件（snapshot/progress/done/cancelled/failed），支持刷新与断线重连取当前状态
-- 报价：历史价外部只读 Provider、确定性 QuoteEngine、冻结样本可复算、AI 只给参考区间；
-  测算历史/详情、单条样本详情、物料趋势（样本统计/分区汇总）；应用报价校验项目与成果类型
+- 报价：真实价格数据源优先（AnySearch 检索公开中标公告 + LLM 抽取成交价，来源 URL 可追溯，不足 3 条回退 Mock）、确定性 QuoteEngine、冻结样本可复算、AI 只给参考区间；
+  测算历史/详情、单条样本详情、物料趋势（样本统计/分区汇总）；应用报价校验项目与成果类型 + **招标限价拦截**（超限价 422）
 - 项目助手：会话 + 消息历史（刷新可恢复），LLM 回答带上下文入库
 - 搜索：AnySearch 真实接入（官方 JSON-RPC 端点），DLP 脱敏 + 域名 trust_level 分级，
   无 Key 走匿名额度（约 50 次/天），正式 Key 由运维在 Secret Manager 配置
@@ -30,8 +33,9 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
   来源可追溯（文件/项目/页码/块索引），租户隔离 + 默认排除当前项目，REST + MCP `search_knowledge`
 - **招标公告 URL 安全导入**（Issue #6）：逐跳 SSRF/DNS rebinding 防护、重定向/大小/类型限额，
   正文仅进入本项目材料（document_role=招标公告），失败落 error_code 留审计
-- 云模型：MiniMax 文本（LLM）、百炼 DashScope qwen-vl（视觉），受 P1 门禁控制
-- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（25 个工具）+ 5 个业务 Skill
+- 云模型：MiniMax **M3**（文本主推理，2026-08-19 由 Text-01 切换）、百炼 DashScope qwen-vl（视觉），受 P1 门禁控制
+- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（26 个工具）+ 5 个业务 Skill；
+  **标书生成默认路径**（质量门兜底内嵌闭环），任务级 capability token 逐调用授权
 - 测试客户端：`/demo/`（真实调用后端 API，多环境配置 + 连接测试，`scripts/build_test_client.py` 打包分发）
 
 ## 2. 架构
@@ -45,8 +49,9 @@ FastAPI（app.main，uvicorn :8123）
    ├─ Worker（app.services.worker，任务队列）            ← supervisor 守护
    ├─ ClamAV（病毒扫描，fail-closed）                    ← supervisor 守护
    ├─ Hermes Agent（/data/hermes，headless gateway :9119）← supervisor 守护
-   │    └─ bidvolt MCP（stdio，24 工具）→ 后端
-   └─ AnySearch / MiniMax / DashScope（出网，DLP 门禁）
+   │    └─ bidvolt MCP（stdio，26 工具，任务级 capability 授权）→ 后端
+   │         └─ Worker 以 hermes chat 无头模式驱动 bid-generate skill（默认路径，质量门兜底）
+   └─ AnySearch / MiniMax-M3 / DashScope（出网，DLP 门禁）
 ```
 
 单容器内由 **supervisord** 统一管理 postgres / app / worker / hermes / clamd / backup-cron，
@@ -63,7 +68,7 @@ FastAPI（app.main，uvicorn :8123）
 
 ```
 app/             FastAPI 应用（api/services/models/static demo）
-bidvolt_mcp/     MCP stdio server（OpenRPC IDL + 24 个工具）
+bidvolt_mcp/     MCP stdio server（OpenRPC IDL + 26 个工具）
 deploy/          容器部署脚本（install.sh / bidvolt-init.sh / bidvolt-boot.sh / supervisord.conf / install-hermes.sh / backup.sh / upgrade.sh / healthcheck.sh）
 docs/            架构/模块/威胁模型/数据分级授权清单/Hermes 契约与 Skill
 scripts/         冒烟与工具脚本（真实 OFD 样本、云能力线上冒烟、MCP 契约）
@@ -246,15 +251,16 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
 
-当前基线（2026-08-18）：本地 **233 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
+当前基线（2026-08-19）：本地 **247 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
 Issue #4/#5/#6 用例与 Issue #12 回归——用产品真实 docx 作测试夹具的解析质量/去重、重解析清旧块、
-空要求生成拦截、无 payload 报价单不编造、终检识别占位草稿、分章深度生成等）；
-本地浏览器全流程 E2E **25/25 PASS**（含 Issue #11/#12 专项回归：成果正文可视化+状态判断、步骤条证据、
-日志无矛盾误报、资料页项目隔离列、校核结果面板、正文无 Markdown 残留、终检统计面板）；
-公网生产环境 E2E（`scripts/e2e_browser_demo.py --base http://47.100.182.3:28123`）**25/25 PASS**
-（用产品同款真实招标 docx：解析抽取 10–14 条、**技术标 12031 字/商务标 4698 字**（8+3 章分章深度生成）、
-无占位无 Markdown 残留、`quality.deliverables_ready=true`、ReviewRun/ScoreRecord 绑定成果版本；
-终检覆盖完整性/要求覆盖/文档质量）；
+空要求生成拦截、无 payload 报价单不编造、终检识别占位草稿、分章深度生成、Hermes 默认路径质量门、
+评分细则权重化评审、真实价格源兜底等）；
+本地浏览器全流程 E2E **26/26 PASS**（含 Issue #11/#12 专项回归：成果正文可视化+状态判断、步骤条证据、
+日志无矛盾误报、资料页项目隔离列、校核结果面板、正文无 Markdown 残留、终检统计面板、结构来自招标文件+Agent 生成路径）；
+公网生产环境 E2E（`scripts/e2e_browser_demo.py --base http://47.100.182.3:28123`）**26/26 PASS**
+（用产品同款真实招标 docx；主模型 MiniMax-M3；**Hermes 默认生成路径 + 质量门兜底**实测：
+Hermes 产出未达质量线自动回退内嵌闭环——技术标 11654 字/商务标 3917 字，无占位无 Markdown 残留；
+自检闭环本地 2 轮/公网 1 轮 closed=True；终检覆盖完整性/结构合规/逐条要求覆盖/文字质量/字数统计）；
 服务器容器（PG+RLS）204 passed（3 个用例为环境交互问题：2 个因生产 .env 与用例 dev 假设冲突——
 已由 `run_container_tests.sh` 固定 `BIDVOLT_ENV=dev` 解决，1 个 capability 终态用例与线上 worker
 竞争任务队列，建议停 worker 后复跑）；线上冒烟 `smoke_all` 4/4 PASS（真实 OFD / AnySearch /
@@ -263,8 +269,11 @@ Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
 
 ## 11. 已知限制 / 路线图
 
-- Hermes 任务级授权：当前 MCP 调用使用服务账号 JWT；生产需接入"任务创建 → capability token →
-  Hermes 执行 → 白名单进度"完整闭环（后端 capability 校验已就绪）
+- Hermes 默认生成路径已落地（任务级 capability token → MCP 逐调用授权 → 质量门兜底内嵌闭环，
+  2026-08-19 实测）；遗留：Hermes 单次产出的篇幅受模型/会话预算影响，未达质量线时回退内嵌
+  （runtime=hermes-fallback 可追溯），Agent 产出质量随主推理模型升级持续优化
+- 评分细则权重化评审为 V1（正文体现判分）；评分细则的细分打分（按细则子项人工评审计分）
+  为后续增强
 - Issue #3 发布门禁：已全部落地——gitleaks/pre-commit/CI 全历史扫描、配置 fail-fast、worker 租约恢复、
   `bidvolt-upgrade` 升级回滚、备份恢复演练（2026-08-14 服务器实测）、容器重启自启动自举
   （sshd 包装器，2026-08-16 落地，见 §2/§5.3）
