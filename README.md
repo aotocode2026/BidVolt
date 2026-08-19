@@ -243,6 +243,18 @@ pre-commit install && pre-commit install --hook-type pre-push   # 可选：本�
 # 容器（PostgreSQL + RLS，加载 .env）
 bash /tmp/run_container_tests.sh -q
 
+# PostgreSQL 对等测试（服务器真实 PG，关键回归：SQLite 对"多行标量子查询"等 PG 严格性错误静默放行）
+# 自动重建独立测试库 bidvolt_pytest（不动生产库），跑完即清理
+bash scripts/server_pg_tests.sh
+
+# 浏览器 E2E
+.venv/bin/python scripts/e2e_browser_demo.py --base <服务地址> --tag <标签>          # 常规 26 步全流程（全新账号）
+.venv/bin/python scripts/e2e_seeded_regression.py --base <服务地址> --tag <标签>     # 种子态回归（Issue #13 复盘四缺口）
+#   种子态回归覆盖：① 历史账号种子态（多项目各有评分→列表回归，曾 PG 500）
+#   ② 多格式输入矩阵（txt/docx/xlsx/pptx/ofd/pdf + 损坏文件）
+#   ③ 错误路径断言（任务失败必须显示具体原因，禁止"未知错误"）
+#   ④ 存储路径差异（生产对象路径无扩展名，openpyxl 按文件名校验曾拒 xlsx）
+
 # 线上冒烟
 .venv/bin/python scripts/smoke_cloud_live.py            # AnySearch 匿名 + MiniMax LLM
 .venv/bin/python scripts/smoke_ofd_live.py --file <真实OFD>  # 真实 OFD 上传解析
@@ -250,6 +262,18 @@ bash /tmp/run_container_tests.sh -q
 .venv/bin/python scripts/smoke_pg_rls.py                # 真实 PG：RLS 隔离 + capability + IDOR
 .venv/bin/python scripts/smoke_all.py                   # 统一端到端入口（--skip 可跳过某项）
 ```
+
+## 10.1 测试与验收约定（Issue #13 复盘后确立）
+
+1. **本地测试绿 ≠ 生产绿**：SQLite 静默放行部分 PG 严格性错误（如多行标量子查询），关键回归必须跑
+   `server_pg_tests.sh`（真实 PG）；生产存储对象路径无扩展名（`.../<sha>/original`），与本地测试临时文件
+   命名不同，解析类变更须覆盖"无扩展名路径"用例；
+2. **E2E 必须含种子态与错误路径**：全新账号 26 步只覆盖快乐路径；`e2e_seeded_regression.py` 用
+   "多项目各有评分的历史账号 + 多格式输入矩阵 + 损坏文件" 补齐状态/输入/错误三缺口；
+3. **错误必须写具体原因**：任务失败的前端日志禁止出现"未知错误"（SSE 终态事件携带 error/result，
+   按事件名 done/failed/cancelled 判断终态）；上传解析失败在上传响应即时提示原因；
+4. **验收关闭权归产品**：后端自测（含生产 E2E）全绿只代表"自测通过"，在 Issue 中提供样本标识
+   （企业/项目/任务/成果号）供产品复测；Issue 由产品复测确认后关闭，后端不单方关闭验收类 Issue。
 
 当前基线（2026-08-19）：本地 **247 passed / 1 skipped**（含生产 fail-fast、任务租约、多企业评审回归、
 Issue #4/#5/#6 用例与 Issue #12 回归——用产品真实 docx 作测试夹具的解析质量/去重、重解析清旧块、

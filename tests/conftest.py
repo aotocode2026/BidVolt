@@ -1,7 +1,14 @@
-"""pytest 公共夹具：SQLite 测试库 + TestClient。"""
+"""pytest 公共夹具：SQLite 测试库 + TestClient。
+
+PG 对等模式（Issue #13 复盘缺口④）：
+    BIDVOLT_TEST_DATABASE_URL=postgresql+asyncpg://... 时，schema/client/clean_db 全部
+    使用该真实 PostgreSQL 测试库（会禁用其 RLS 策略——仅测试库，生产库不动）。
+    SQLite 对"多行标量子查询"等 PG 严格性错误静默放行，关键回归必须在 PG 上复跑。
+"""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import tempfile
@@ -15,7 +22,7 @@ os.environ["STORAGE_ROOT"] = os.path.join(tempfile.gettempdir(), "bidvolt_test_s
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401  注册全部模型
@@ -25,14 +32,28 @@ from app.main import app
 from app.models.base import Base
 
 TEST_DB = Path(__file__).resolve().parent.parent / ".test_bidvolt.db"
+TEST_DB_URL = os.environ.get("BIDVOLT_TEST_DATABASE_URL") or "sqlite+aiosqlite:///./.test_bidvolt.db"
+IS_PG = TEST_DB_URL.startswith("postgresql")
+
+
+def make_test_engine():
+    return create_async_engine(TEST_DB_URL, pool_pre_ping=True)
 
 
 def _sync_schema() -> None:
-    engine = create_engine(f"sqlite:///{TEST_DB}")
-    # 每次会话全量重建：模型列变更（如 task 租约列）无需手工删除 .test_bidvolt.db
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    engine.dispose()
+    async def _run() -> None:
+        engine = make_test_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+            if IS_PG:
+                # 仅测试库：禁用 RLS，让 clean_db 能跨租户清表；
+                # API 依赖里的 set_config 注入路径照常执行（无害），RLS 语义由生产验证。
+                for table in Base.metadata.sorted_tables:
+                    await conn.execute(text(f'ALTER TABLE "{table.name}" DISABLE ROW LEVEL SECURITY'))
+        await engine.dispose()
+
+    asyncio.run(_run())
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -42,7 +63,7 @@ def schema() -> None:
 
 @pytest.fixture(scope="session")
 def client(schema):
-    async_engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    async_engine = make_test_engine()
     testing_session = async_sessionmaker(async_engine, expire_on_commit=False)
 
     async def override_get_session():
@@ -53,17 +74,24 @@ def client(schema):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
-    async_engine.sync_engine.dispose()
+
+    async def _dispose():
+        await async_engine.dispose()
+
+    asyncio.run(_dispose())
 
 
 @pytest.fixture(autouse=True)
 def clean_db():
     """每个测试前清空全部表，保证用例隔离。"""
-    engine = create_engine(f"sqlite:///{TEST_DB}")
-    with engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
-    engine.dispose()
+    async def _run() -> None:
+        engine = make_test_engine()
+        async with engine.begin() as conn:
+            for table in reversed(Base.metadata.sorted_tables):
+                await conn.execute(table.delete())
+        await engine.dispose()
+
+    asyncio.run(_run())
     shutil.rmtree(os.environ["STORAGE_ROOT"], ignore_errors=True)
     yield
 

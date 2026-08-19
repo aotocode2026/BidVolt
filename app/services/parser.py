@@ -43,9 +43,15 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
         return blocks
 
     if ext == ".xlsx":
+        import io as _io
+
         from openpyxl import load_workbook
 
-        wb = load_workbook(str(path), read_only=True, data_only=True)
+        # 生产存储对象路径为内容寻址的 ".../<sha256>/original"（无扩展名）；
+        # openpyxl 会按“文件名扩展名”做格式校验并拒绝无扩展名路径
+        # （InvalidFileException: "does not support  file format"——格式位为空）。
+        # 从字节流加载可绕过文件名检查；本地测试用带扩展名临时文件，永远踩不到此差异。
+        wb = load_workbook(_io.BytesIO(Path(path).read_bytes()), read_only=True, data_only=True)
         blocks = []
         idx = 0
         for ws in wb.worksheets:

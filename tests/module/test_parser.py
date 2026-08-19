@@ -41,6 +41,26 @@ def test_parse_xlsx(tmp_path):
     assert any("电缆" in (b.get("text_content") or "") for b in blocks)
 
 
+def test_parse_xlsx_extensionless_storage_path(tmp_path):
+    """Issue #13 输入矩阵暴露：生产存储对象路径为内容寻址的 ".../<sha>/original"
+    （无扩展名），openpyxl 按文件名扩展名校验会拒绝该路径
+    （InvalidFileException: "does not support  file format"）。
+    本地测试此前用 a.xlsx 带扩展名临时文件，从未覆盖此差异。"""
+    from openpyxl import Workbook
+
+    p = tmp_path / "a.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["材料", "数量"])
+    ws.append(["电缆", "100"])
+    wb.save(str(p))
+
+    original = tmp_path / "original"  # 模拟 storage.save 的无扩展名对象路径
+    original.write_bytes(p.read_bytes())
+    blocks = parser.parse_to_blocks(original, ".xlsx")
+    assert any("电缆" in (b.get("text_content") or "") for b in blocks)
+
+
 def test_parse_pdf(tmp_path):
     try:
         import fitz  # pymupdf
