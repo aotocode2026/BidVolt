@@ -319,7 +319,7 @@ def test_bid_generate_hermes_gate_passes_with_good_deliverables(client, monkeypa
                                 "coordinates": [{"file_id": 1}]}]},
         headers=h,
     )
-    long_text = "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，售后服务响应及时。" * 10
+    long_text = "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，售后服务响应及时。" * 60
     for dtype in (1, 2, 3):
         did = client.post(
             "/api/v1/deliverables",

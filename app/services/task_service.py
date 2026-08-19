@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import TaskStatus, TaskType
@@ -1142,6 +1142,51 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             pass
         agent_meta["closed"] = self_check_closed
     agent_meta["knowledge_refs"] = len(knowledge_refs)
+
+    # —— 输入完整性（用户反馈"待补充太多"）：统计三类输入缺口 + 交付件末尾附填写说明 ——
+    from app.models.enterprise_domain import EnterpriseAsset
+
+    asset_count = (
+        await session.scalar(
+            sa_select(func.count()).select_from(EnterpriseAsset).where(
+                EnterpriseAsset.enterprise_id == task.enterprise_id,
+                EnterpriseAsset.is_deleted.is_(False),
+            )
+        )
+    ) or 0
+    input_gaps = {
+        "enterprise_assets": int(asset_count),
+        "requirements": len(requirements),
+        "materials": len(material_file_ids),
+    }
+
+    def _pending_notice_nodes(doc_name: str, text: str, gaps: dict) -> list[dict]:
+        """交付件末尾的【填写说明】（非投标正文，提交前删除）：向用户解释待补充的由来与补齐路径。
+        注意：说明文案本身不写"【待补充】"字样，避免终检待补充统计自增。"""
+        pending = text.count("【待补充】") + text.count("待补充")
+        lines = [
+            "本说明为非投标正文，正式提交前请删除本段。",
+            f"本《{doc_name}》中的待补充占位，是系统遵守“禁止编造企业事实”边界的结果："
+            "未取得真实来源的内容一律如实标注，绝不虚构资质、业绩、人员或数字。",
+            "待补充占位的补齐路径：",
+            f"1. 企业事实类（名称/资质/业绩/人员/报价）：当前企业资料库有 {gaps.get('enterprise_assets', 0)} 份资料，"
+            "请在资料页导入营业执照/资质证书/业绩合同并做“企业资料导入分类”后重新生成，将自动回填；",
+            "2. 招标信息类（技术条款/服务期限/验收标准）：请上传技术规范书及附件并重新触发招标解析；"
+            "多标包项目请确认所投标包；",
+            "3. 投标承诺类（人员投入/培训课时/保存年限等）：属于投标人自主承诺，请人工填写。",
+            f"本稿共 {pending} 处待补充。",
+        ]
+        return [
+            {"id": f"notice-{doc_name}-h", "type": "heading", "text": "填写说明（非投标正文，提交前删除）"},
+            *[{"id": f"notice-{doc_name}-{i}", "type": "paragraph", "text": ln} for i, ln in enumerate(lines)],
+        ]
+
+    if not hermes_ok:
+        for dtype in (1, 2):
+            text_now = "\n".join(n.get("text", "") for n in models[dtype].get("nodes", []))
+            models[dtype]["nodes"].extend(
+                _pending_notice_nodes({1: "商务标", 2: "技术标"}[dtype], text_now, input_gaps)
+            )
     versions: dict[int, int] = {}
     if not hermes_ok:  # Hermes 已通过 MCP 保存版本，内嵌保存路径跳过
         for dtype, model in models.items():
@@ -1203,6 +1248,12 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             "rounds": agent_meta.get("rounds", 0),
         },
         "deliverables_ready": deliverables_ready,
+        # 输入完整性（用户反馈"待补充太多"）：三类输入缺口统计 + 各成果待补充计数
+        "input_gaps": input_gaps,
+        "pending": {
+            "技术标": "\n".join(n.get("text", "") for n in models[2].get("nodes", [])).count("【待补充】"),
+            "商务标": "\n".join(n.get("text", "") for n in models[1].get("nodes", [])).count("【待补充】"),
+        },
     }
     not_closed_note = (
         f"自检未闭环：仍有 {sc_missing} 项要求未响应、{sc_conflicts} 项矛盾（已迭代 {agent_meta.get('rounds', 0)} 轮）"

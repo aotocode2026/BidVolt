@@ -847,13 +847,28 @@ async function generateBid() {
     if (!reqCount) {
       log("当前项目暂无要求：生成任务会先尝试自动解析材料；若仍无要求，任务将以明确原因失败（不再产出与招标无关的通用内容）", "warn");
     }
-    // 生成前输入完整性预检（用户反馈"交付件大量待补充"）：企业资料库为空时显式提示，
-    // 避免生成后才在成果里发现一堆【待补充】
+    // 生成前输入完整性打分（用户需求）：三类缺口清单 + 逐项引导入口，避免生成后才看到一堆待补充
     try {
       const assets = await api("/enterprise/assets");
-      if (!assets.length) {
-        log("企业资料库为空：成果中企业事实（名称/资质/业绩/人员/报价）将标注【待补充】。建议先在资料页导入营业执照/资质/业绩等企业资料（P1 禁止编造）", "warn");
-        setHtml("d-status", "<b>输入缺口提示：</b>企业资料库为空，生成成果中的企业事实将以【待补充】标注；建议先到资料页导入企业资料。点击生成仍可继续（占位如实标注，不编造）。");
+      const gaps = [
+        { name: "企业资料", ok: assets.length > 0, now: assets.length,
+          guide: "资料页上传营业执照/资质/业绩 → “企业资料导入分类”", action: () => renderPanel("material") },
+        { name: "招标要求", ok: reqCount > 0, now: reqCount,
+          guide: "上传招标文件并触发“招标解析”（技术规范书及附件一并上传）", action: () => renderPanel("material") },
+        { name: "项目材料", ok: materialCount > 0, now: materialCount,
+          guide: "在资料页上传当前项目的招标材料", action: () => renderPanel("material") },
+      ];
+      const missing = gaps.filter((g) => !g.ok);
+      const score = `${gaps.length - missing.length}/${gaps.length}`;
+      if (missing.length) {
+        const rows = gaps.map((g) =>
+          `<div style="margin:2px 0">${g.ok ? "✅" : "⚠️"} ${g.name}：${g.ok ? g.now : "0"}${g.ok ? "" : `（缺口）——${esc(g.guide)}`}</div>`).join("");
+        setHtml("d-status", `<b>输入完整性打分：${score}</b>（缺失 ${missing.length} 项，生成成果中相应内容将标注待补充并附填写说明，不会编造）<div style="margin-top:4px">${rows}</div>
+          <div style="margin-top:6px"><button class="ghost" onclick="renderPanel('material')">去补充输入</button>
+          <span class="muted">补齐后重新点击生成，可自动回填企业事实</span></div>`);
+        log(`输入完整性 ${score}：${missing.map((g) => g.name).join("、")} 为缺口（待补充会如实标注，见成果末尾填写说明）`, "warn");
+      } else {
+        setHtml("d-status", "<b>输入完整性：3/3</b> 企业资料/要求/材料齐全，生成质量最佳。");
       }
     } catch { /* 预检失败不阻塞 */ }
     // Issue #12 问题三：payload 不再写死演示物料/成本；报价单将提示到报价页录入真实成本
@@ -1060,6 +1075,12 @@ function finishTask(taskId, taskType, payload, ok) {
         log(`质量门禁未通过：成果为“正式成果草稿（待人工校核）”——要求 ${q.requirements_count || 0} 条、问题 ${q.issue_count ?? 0} 条、错误 ${q.error_count ?? 0} 条；请到评审页处理缺失项`, "warn");
       } else {
         log(`质量门禁通过：要求 ${q.requirements_count || 0} 条、问题 ${q.issue_count ?? 0} 条、错误 ${q.error_count ?? 0} 条（deliverables_ready=true）`, "ok");
+      }
+      // 输入完整性（用户反馈"待补充太多"）：显式告知待补充计数与补齐路径
+      const pend = q.pending || {};
+      const pendTotal = (pend["技术标"] || 0) + (pend["商务标"] || 0);
+      if (pendTotal > 0) {
+        log(`待补充 ${pendTotal} 处（技术标 ${pend["技术标"] || 0} / 商务标 ${pend["商务标"] || 0}）：企业资料 ${(q.input_gaps || {}).enterprise_assets ?? "?"} 份、要求 ${(q.input_gaps || {}).requirements ?? "?"} 条、材料 ${(q.input_gaps || {}).materials ?? "?"} 个。补齐路径见成果末尾“填写说明”，导入企业资料后重新生成可自动回填`, "warn");
       }
     }
   } else {
