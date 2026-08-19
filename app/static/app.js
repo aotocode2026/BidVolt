@@ -324,7 +324,15 @@ async function refreshProjects() {
     document.querySelectorAll("#p-rows .row-archive").forEach((b) => {
       b.onclick = () => archiveProject(Number(b.dataset.id));
     });
-  } catch (e) { log(`项目列表失败：${errMsg(e)}`, "err"); }
+  } catch (e) {
+    const msg = errMsg(e);
+    /* Issue #8 现场：网络层异常（Failed to fetch 等）多因环境地址不可达或浏览器强缓存旧版前端，
+       给用户可操作的提示而非仅报错文案 */
+    const hint = /Failed to fetch|NetworkError|TypeError|网络错误|加载失败|fetch/i.test(msg)
+      ? "（网络异常：请确认右上角「环境」地址可达，并按 Ctrl+F5 强制刷新清除旧缓存）"
+      : "";
+    log(`项目列表失败：${msg}${hint}`, "err");
+  }
 }
 
 async function createProject() {
