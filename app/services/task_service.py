@@ -296,13 +296,24 @@ async def _llm_extract_requirements(
     project_id: int,
     file_ids: list[int],
     task_id: int,
+    task: Task | None = None,
 ) -> int:
-    """从文件文本块抽取 Requirement（门禁内 LLM）。返回抽取条数；门禁关闭返回 0。"""
+    """从文件文本块抽取 Requirement（门禁内 LLM）。返回抽取条数；门禁关闭返回 0。
+
+    task 提供时全程更新进度并落库（Issue #13：LLM 抽取阶段持续数分钟，
+    此前任务一直显示 queued 0%，产品以为"解析不出来"——必须让用户看到"AI 抽取中"）。"""
     from sqlalchemy import select as sa_select
 
     from app.models.doc import DocBlock
     from app.services import requirement_service
     from app.services.llm import LLMClient, extract_json, llm_enabled
+
+    async def _progress(percent: int, work: str) -> None:
+        if task is None:
+            return
+        task.progress = {"phase": task.task_type, "status": "running", "percent": percent, "current_work": work}
+        await session.commit()
+        await _set_rls_context(session, task.enterprise_id)  # 事务级 RLS 上下文随 commit 失效，必须重建
 
     if not llm_enabled():
         return 0
@@ -323,6 +334,7 @@ async def _llm_extract_requirements(
         "如要求为评分细则，structured 必须含 {\"score_rule\": {\"weight\": 分值, \"criterion\": \"评分标准\"}}。"
         "只依据给定材料，禁止编造。"
     )
+    await _progress(45, "AI 抽取要求中（大文件需数分钟，请耐心等待）")
     reply = await LLMClient().chat(system, f"招标材料：\n{text}")
     parsed = extract_json(reply)
     if isinstance(parsed, dict):
@@ -333,6 +345,7 @@ async def _llm_extract_requirements(
         items = []
     if not items:
         # 抽取为空重试一次（Issue #8：解析 0 条不能静默通过）——更严格的纯 JSON 指令
+        await _progress(55, "首轮抽取为空，重试更严格指令…")
         reply = await LLMClient().chat(
             system + "只输出 JSON 数组本身，禁止任何解释、Markdown 围栏或额外文字；确实没有可抽取项时输出 []。",
             f"招标材料：\n{text[:20000]}",
@@ -344,6 +357,7 @@ async def _llm_extract_requirements(
             items = parsed
         else:
             items = []
+    await _progress(60, f"AI 抽取完成（{len(items)} 条候选），正在过滤落库…")
     # 碎片与重复过滤（Issue #12）：历史重复块会诱导 LLM 输出"报价限价(万元)"这类孤立碎片；
     # 丢弃过短内容、纯数字/单位/表头碎片与重复条目，保证落库要求为完整整句。
     import re as _re
@@ -434,6 +448,7 @@ async def _llm_extract_structure(
     enterprise_id: int,
     project_id: int,
     file_ids: list[int],
+    task: Task | None = None,
 ) -> int:
     """解析阶段确认标书结构：从招标材料提取响应文件格式要求，
     落库为 req_type=doc_structure 的要求（structured 携带 role/guide/order），返回条数。"""
@@ -442,6 +457,13 @@ async def _llm_extract_structure(
     from app.models.doc import DocBlock
     from app.services import requirement_service
     from app.services.llm import LLMClient, llm_enabled
+
+    async def _progress(percent: int, work: str) -> None:
+        if task is None:
+            return
+        task.progress = {"phase": task.task_type, "status": "running", "percent": percent, "current_work": work}
+        await session.commit()
+        await _set_rls_context(session, task.enterprise_id)
 
     if not llm_enabled():
         return 0
@@ -455,6 +477,7 @@ async def _llm_extract_structure(
     if not text.strip():
         return 0
     try:
+        await _progress(70, "AI 解析标书结构（响应文件格式要求）…")
         reply = await LLMClient().chat(_STRUCTURE_SYSTEM, f"招标材料：\n{text}")
         parsed = _parse_structure_reply(reply)
         if not parsed.get("business") or not parsed.get("technical"):
@@ -508,6 +531,14 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
             raise ValueError(
                 f"文件解析失败：{fobj.original_name}" + (f"（原因：{detail}）" if detail else "")
             )
+    task.progress = {
+        "phase": task.task_type,
+        "status": "running",
+        "percent": 35,
+        "current_work": f"{len(file_ids)} 个文件解析完成，开始 AI 抽取要求",
+    }
+    await session.commit()
+    await _set_rls_context(session, task.enterprise_id)
 
     extracted = await _llm_extract_requirements(
         session,
@@ -515,6 +546,7 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         project_id=task.project_id,
         file_ids=file_ids,
         task_id=task.id,
+        task=task,
     )
     # 流程化确认标书结构（用户反馈）：解析阶段即从招标文件提取响应文件格式要求，
     # 落库为 req_type=doc_structure 的要求，生成任务直接消费（不用通用模板拍脑袋）。
@@ -523,7 +555,16 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         enterprise_id=task.enterprise_id,
         project_id=task.project_id,
         file_ids=file_ids,
+        task=task,
     )
+    task.progress = {
+        "phase": task.task_type,
+        "status": "running",
+        "percent": 90,
+        "current_work": f"结构解析完成（{structure_extracted} 章），汇总结果…",
+    }
+    await session.commit()
+    await _set_rls_context(session, task.enterprise_id)
     result: dict = {
         "parsed_file_ids": [int(i) for i in file_ids],
         "requirements_extracted": extracted,
@@ -653,8 +694,10 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     for req in requirements:
         req_by_type.setdefault(req.req_type, []).append(req)
 
-    # 关键输入自检（Issue #8）：requirements 为空但项目已有材料时，生成前先行解析抽取，
-    # 避免"上传了真实招标文件却未解析"导致成果退化为通用文本。
+    # 关键输入自检（Issue #8/#13 验收红线）：解析未成功（要求为 0）时，绝不允许
+    # 静默兜底继续生成——必须让任务以明确原因失败，把用户引导回【招标解析】。
+    # （原实现曾在生成内先行自动解析抽取；产品验收要求"有错误就爆出来，不要继续"，
+    # 自动兜底会让"没解析成功也能生成"的错觉延续，故改为硬失败。）
     from app.models.file import FileObject
 
     material_file_ids = [
@@ -670,31 +713,19 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             )
         ).all()
     ]
-    if not requirements and material_file_ids:
-        extracted_count = await _llm_extract_requirements(
-            session,
-            enterprise_id=task.enterprise_id,
-            project_id=project_id,
-            file_ids=material_file_ids,
-            task_id=task.id,
+    if not requirements:
+        # Issue #12 问题三：要求为 0 仍生成并标记完成 → 用户拿到与本次招标无关的内容。
+        # 空要求直接失败（带明确指引），不再产出"完成但不可用"的成果。
+        if material_file_ids:
+            raise ValueError(
+                "生成已拦截：项目材料尚未解析出任何招标要求——请先到资料页触发【招标解析】，"
+                "抽取成功后再发起成果生成（或到要求页手动录入要求）"
+            )
+        raise ValueError(
+            "生成已拦截：项目没有任何招标要求且未上传材料——请先上传并解析招标文件，"
+            "或手动录入要求后再发起成果生成"
         )
-        if extracted_count > 0:
-            requirements = (
-                await session.scalars(
-                    sa_select(Requirement).where(
-                        Requirement.enterprise_id == task.enterprise_id,
-                        Requirement.project_id == project_id,
-                        Requirement.current.is_(True),
-                        Requirement.req_type != "doc_structure",
-                    )
-                )
-            ).all()
-            req_by_type = {}
-            for req in requirements:
-                req_by_type.setdefault(req.req_type, []).append(req)
-        pre_extracted = extracted_count
-    else:
-        pre_extracted = None
+    pre_extracted = None
 
     facts = (
         await session.scalars(
@@ -730,17 +761,6 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     ).all()
     material_text = "\n".join(b.text_content or "" for b in material_blocks)[:30000] or "（项目未上传招标材料）"
 
-    if not requirements:
-        # Issue #12 问题三：要求为 0 仍生成并标记完成 → 用户拿到与本次招标无关的内容。
-        # 空要求直接失败（带明确指引），不再产出“完成但不可用”的成果。
-        if material_file_ids:
-            raise ValueError(
-                "未从项目材料抽取出招标要求（已尝试自动解析）：请检查材料可读性后重新触发【招标解析】，"
-                "或到要求页手动录入要求，再发起成果生成"
-            )
-        raise ValueError(
-            "项目没有任何招标要求且未上传材料：请先上传并解析招标文件，或手动录入要求后再发起成果生成"
-        )
 
     # 历史知识检索（Issue #4）：为技术标提供专业写法素材（来源可追溯，结果仅入任务元数据）
     knowledge_refs: list[dict] = []

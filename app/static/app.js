@@ -858,8 +858,20 @@ async function generateBid() {
   if (generatingTaskId) return log(`正在生成中（任务 #${generatingTaskId}），请勿重复提交；进度见底部日志`, "warn");
   const btn = $("d-gen");
   try {
+    // Issue #13 验收红线：未解析出任何招标要求时【硬性拦截】生成——有错误就报错，
+    // 绝不允许"没解析成功还能继续生成标书"（后端同样有严格门禁兜底）。
     if (!reqCount) {
-      log("当前项目暂无要求：生成任务会先尝试自动解析材料；若仍无要求，任务将以明确原因失败（不再产出与招标无关的通用内容）", "warn");
+      let liveReqs = null;
+      try {
+        const rs = await api(`/requirements?project_id=${projectId}`);
+        liveReqs = Array.isArray(rs) ? rs.filter((r) => r.req_type !== "doc_structure") : null;
+      } catch { /* 网络抖动：以本地计数兜底 */ }
+      reqCount = liveReqs ? liveReqs.length : reqCount;
+      if (!reqCount) {
+        log("生成已拦截：当前项目没有解析出任何招标要求——请先到【资料】上传招标文件并触发【招标解析】，或到【要求】页手动录入；解析成功前不允许生成标书", "err");
+        setHtml("d-status", "<b style=\"color:#c00\">生成已拦截：未解析出招标要求</b>。请先完成招标解析（资料页 → 上传招标文件 → 触发招标解析任务），或到要求页手动录入要求，再生成标书。");
+        return;
+      }
     }
     // 生成前输入完整性打分（用户需求）：三类缺口清单 + 逐项引导入口，避免生成后才看到一堆待补充
     try {
@@ -1030,11 +1042,14 @@ async function reEvaluate() {
 }
 
 /* ---------- 任务跟踪（Issue #11.11/12：SSE 健壮 + 结果/错误/降级显式展示，绝不静默失败） ---------- */
-async function pollTask(taskId, taskType) {
+async function pollTask(taskId, taskType, restored = false) {
   activeTaskId = taskId;
   activeTaskType = taskType || "";
-  localStorage.setItem(TASK_KEY(), String(taskId));
-  log(`任务 ${taskId} 已提交（${TASK_TYPE_NAMES[taskType] || taskType || "任务"}），等待执行…`, "info");
+  localStorage.setItem(TASK_KEY(), JSON.stringify({ id: taskId, type: taskType || "" }));
+  const label = TASK_TYPE_NAMES[taskType] || taskType || "未知类型";
+  log(restored
+    ? `已恢复跟踪任务 ${taskId}（${label}），正在继续跟踪…`
+    : `任务 ${taskId} 已提交（${label}），等待执行…`, "info");
   let reachedEnd = false;
   try {
     const resp = await rawFetch(`/tasks/${taskId}/stream`);
@@ -1072,12 +1087,21 @@ async function pollTask(taskId, taskType) {
     if (!reachedEnd) log(`任务流读取中断，自动改用轮询继续跟踪（不影响任务执行）`, "warn");
   }
   // 轮询回退：长任务预算 300s（Issue #10 P1.10）
+  let lastProgKey = "";
   for (let i = 0; i < 300 && !reachedEnd; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     try {
       const st = await api(`/tasks/${taskId}`);
       if (st.status === 3) { finishTask(taskId, taskType, st, true); return; }
       if (st.status === 6 || st.status === 4 || st.status === 5) { finishTask(taskId, taskType, st, false); return; }
+      /* Issue #13：SSE 断流后轮询也必须展示进展（LLM 抽取阶段数分钟，
+         此前静默等待，产品误以为"一直解析不出来"） */
+      const pr = st.progress || {};
+      const key = JSON.stringify(pr);
+      if (pr.phase && key !== lastProgKey) {
+        lastProgKey = key;
+        log(`任务 ${taskId}：${pr.phase} ${pr.status || ""} ${pr.percent != null ? pr.percent + "%" : ""} ${pr.current_work || ""}`, "info");
+      }
     } catch { /* 网络抖动，继续轮询 */ }
   }
   log(`任务 ${taskId} 仍在执行（已等待 5 分钟），可在“评审”页任务列表查看实时状态`, "warn");
@@ -1515,7 +1539,14 @@ async function initApp() {
     const savedTask = localStorage.getItem(TASK_KEY());
     renderPanel("project");
     log(`已恢复项目 #${projectId}（刷新恢复）`, "ok");
-    if (savedTask) pollTask(Number(savedTask));
+    if (savedTask) {
+      try {
+        const st = JSON.parse(savedTask);
+        pollTask(Number(st.id ?? st), st.type || "", true);
+      } catch {
+        pollTask(Number(savedTask), "", true);
+      }
+    }
   } else {
     renderPanel("project");
   }
