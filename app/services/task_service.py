@@ -872,6 +872,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         "self_check": {"parse_ok": False, "missing": 0, "conflicts": 0},
         "refined": [],
     }
+    chapter_expansions = {"n": 0}  # 分章字数不达标自动重写次数（闭环）
 
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
     enhanced: list[str] = []
@@ -1013,18 +1014,35 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         chapter_sem = asyncio.Semaphore(4)  # 控制并发，避免云模型限流/超时
 
         async def _gen_chapter(doc_name: str, title: str, guide: str, reqs_text: str) -> str:
-            """生成一章正文；失败回退空串（该章跳过，其余章节保留）。"""
+            """生成一章正文；字数不达标自动重写（最多 2 轮扩充），失败回退空串。"""
+            m = re.search(r"(\d+)\s*[-–]\s*\d+\s*字", guide or "")
+            min_len = max(150, int(int(m.group(1)) * 0.6)) if m else 150
+            system = (
+                f"你是投标文件撰写助手，为《{doc_name}》撰写一章正式正文。"
+                "要求：只依据给定材料与要求，禁止编造企业事实、业绩、人员、证书；"
+                "禁止沿用历史项目名称/招标人/金额/工期/人员姓名；资料不足处标注【待补充】；"
+                "直接输出 Markdown 正文（可用 ### 分小节），务必达到给定字数。"
+            )
+            user = f"章节：{title}\n写作要求：{guide}\n\n相关要求：\n{reqs_text}\n\n{common_context}"
+            reply = ""
             async with chapter_sem:
-                try:
-                    return await client.chat(
-                        f"你是投标文件撰写助手，为《{doc_name}》撰写一章正式正文。"
-                        "要求：只依据给定材料与要求，禁止编造企业事实、业绩、人员、证书；"
-                        "禁止沿用历史项目名称/招标人/金额/工期/人员姓名；资料不足处标注【待补充】；"
-                        "直接输出 Markdown 正文（可用 ### 分小节），务必达到给定字数。",
-                        f"章节：{title}\n写作要求：{guide}\n\n相关要求：\n{reqs_text}\n\n{common_context}",
-                    )
-                except Exception:  # noqa: BLE001
-                    return ""
+                for attempt in range(3):
+                    try:
+                        if attempt == 0:
+                            reply = await client.chat(system, user)
+                        else:
+                            reply = await client.chat(
+                                system + f"上一版正文仅 {len(reply.strip())} 字，未达要求；"
+                                "请在不重复已有内容的前提下扩充到至少 " + str(min_len) + " 字。",
+                                user,
+                            )
+                    except Exception:  # noqa: BLE001
+                        return reply
+                    if len(reply.strip()) >= min_len:
+                        return reply
+                    if attempt > 0:
+                        chapter_expansions["n"] += 1
+                return reply
 
         # 结构优先级：解析落库（requirement）→ 生成时再解析材料（tender）→ 通用章节（fallback，已在门禁外确定）
         if structure_source == "fallback":
@@ -1142,6 +1160,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             pass
         agent_meta["closed"] = self_check_closed
     agent_meta["knowledge_refs"] = len(knowledge_refs)
+    agent_meta["chapter_expansions"] = chapter_expansions["n"]
 
     # —— 输入完整性（用户反馈"待补充太多"）：统计三类输入缺口 + 交付件末尾附填写说明 ——
     from app.models.enterprise_domain import EnterpriseAsset

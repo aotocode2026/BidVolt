@@ -372,6 +372,44 @@ def test_bid_review_flags_uncovered_score_rule(client):
     assert any("评分细则未在成果中体现" in i["message"] for i in task.result["issues"])
 
 
+def test_bid_generate_chapter_expansion_closes_length(client, monkeypatch):
+    """分章字数不达标自动重写闭环（用户需求）：短稿被扩充到达标，重写次数可追溯。"""
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+
+    async def fake_chat(self, system, user):
+        if "自检助手" in system:
+            return '{"missing": [], "conflicts": []}'
+        if "扩充到至少" in system:
+            return "本章为技术方案正式正文，" + "内容详实、措施具体。" * 40
+        if "技术" in user:
+            return "电压等级 10kV：满足。"
+        return "应答内容。"
+
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [{"req_type": "tech_requirement", "content": "电压等级 10kV",
+                                "coordinates": [{"file_id": 1}]}]},
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-expand"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["agent"]["chapter_expansions"] >= 1
+    deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
+    tech = next(d for d in deliverables if d["deliverable_type"] == 2)
+    content = client.get(f"/api/v1/deliverables/{tech['deliverable_id']}/content", headers=h).json()
+    tech_text = "\n".join(n.get("text", "") for n in content["model"]["nodes"])
+    assert len(tech_text) >= 300  # 至少一章被扩充到达标
+
+
 def test_bid_generate_requires_requirements(client):
     """Issue #12 问题三：要求为 0 不得生成并标记完成——任务必须失败并给出明确指引。"""
     h, pid = _setup(client)
