@@ -20,10 +20,14 @@
   MCP 每次工具调用携带并逐调用校验；
 - 实测：无头执行 OK（session 正常）、`bidvolt:health` 等 MCP 工具在 CLI 会话真实调用成功、
   5 个 skill 已安装启用；生成任务 150–152 走 hermes 路径（runtime=hermes 记录在任务结果）；
-- **已知限制（如实记录）**：MiniMax-Text-01 主推理在多步生成任务中倾向"叙述工具调用/虚构返回"
-  而非真实执行（save_deliverable 未实际落库）。因此生产默认仍走内嵌闭环（质量稳定），
-  agent=hermes 为实验开关；待主推理切换为工具调用能力更强的模型（如 deepseek，原设计文档规划）
-  后完成 skill 路径端到端验收。
+- **主模型已切换 MiniMax-M3（2026-08-19，用户指正）**：原部署写死 MiniMax-Text-01（当时安装脚本默认，
+  非决策）。M3 实测可用（HTTP 200）。切换后端 .env + config 默认 + install-hermes.sh 默认 + Hermes config，
+  全服务重启验证。效果：内嵌闭环自检质量显著提升——公网 E2E **1 轮闭环（missing 0、closed=True）**、
+  本地 2 轮闭环；Hermes Agent 亦由"叙述工具调用"转为真实调用 MCP 工具（已读到真实要求数据）；
+- **已知限制（如实记录）**：Hermes 多步生成中 Agent 仍会在保存前输出 A/B/C/D 方案等待确认
+  （headless 模式 skill 决策环待调，预期在 SKILL.md 增加"非交互模式必须直接执行"约束）；
+  capability 已通过临时文件兜底通道（/tmp/bidvolt_cap_token，0600）传递并实测生效；
+  生产默认仍走内嵌闭环（质量稳定），agent=hermes 保持实验开关。
 
 ### 路线图落地
 | 项 | 状态 |
