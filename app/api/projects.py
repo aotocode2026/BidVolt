@@ -63,14 +63,18 @@ async def _summaries(session: AsyncSession, project_ids: list[int]) -> dict[int,
         )
     ).all():
         out[pid]["review_run_count"] = count
+    # Issue #8 P0 现场：聚合子查询曾用 scalar_subquery() 包成标量，
+    # 当 ≥2 个项目存在评分记录时 PostgreSQL 报
+    # "more than one row returned by a subquery used as an expression" → GET /projects 500。
+    # 改为派生表 + 列引用，任意项目数均安全。
     latest_ids = (
-        select(func.max(ScoreRecord.id))
+        select(func.max(ScoreRecord.id).label("id"))
         .where(ScoreRecord.project_id.in_(project_ids))
         .group_by(ScoreRecord.project_id)
-    ).scalar_subquery()
+    ).subquery()
     for score in (
         await session.scalars(
-            select(ScoreRecord).where(ScoreRecord.id.in_(select(latest_ids)))
+            select(ScoreRecord).where(ScoreRecord.id.in_(select(latest_ids.c.id)))
         )
     ).all():
         summary = out[score.project_id]

@@ -51,3 +51,50 @@ def test_archive_makes_project_readonly(client):
 
 def test_project_requires_auth(client):
     assert client.post("/api/v1/projects", json={"name": "x"}).status_code == 401
+
+
+def test_project_list_with_multiple_projects_having_scores(client):
+    """Issue #8 P0 现场：≥2 个项目各有评分记录时 GET /projects 曾 500
+    （GROUP BY 聚合子查询被当标量：PostgreSQL "more than one row returned by a
+    subquery used as an expression"）。回归：列表 200 且各项目取到自己最新一条评分。"""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.models.review import ScoreRecord
+
+    h = _headers(client)
+    ent_id = client.get("/api/v1/auth/me", headers=h).json()["enterprise_id"]
+    pids = [
+        client.post("/api/v1/projects", json={"name": f"评分项目{i}"}, headers=h).json()["project_id"]
+        for i in (1, 2)
+    ]
+
+    async def _seed():
+        # 与 tests/conftest.py 的 client 夹具使用同一相对路径测试库
+        engine = create_async_engine("sqlite+aiosqlite:///./.test_bidvolt.db")
+        async with engine.begin() as conn:
+            for pid, base in zip(pids, (80, 90)):
+                await conn.execute(
+                    ScoreRecord.__table__.insert().values(
+                        enterprise_id=ent_id, project_id=pid, total_score=base,
+                        reject_count=0, missing_count=0,
+                    )
+                )
+                await conn.execute(
+                    ScoreRecord.__table__.insert().values(
+                        enterprise_id=ent_id, project_id=pid, total_score=base + 5,
+                        reject_count=0, missing_count=1,
+                    )
+                )
+        await engine.dispose()
+
+    asyncio.run(_seed())
+
+    lst = client.get("/api/v1/projects", headers=h)
+    assert lst.status_code == 200
+    by_id = {p["project_id"]: p for p in lst.json()["items"]}
+    assert by_id[pids[0]]["summary"]["latest_total_score"] == 85
+    assert by_id[pids[1]]["summary"]["latest_total_score"] == 95
+    assert by_id[pids[0]]["summary"]["missing_count"] == 1
+    assert by_id[pids[1]]["summary"]["missing_count"] == 1
