@@ -875,11 +875,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
 
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
     enhanced: list[str] = []
-    # Hermes 真接入（用户要求）：payload.agent="hermes" 时由部署的 Hermes Agent
-    # 经 bidvolt MCP（携带任务级 capability token）执行 bid-generate skill 完成生成；
-    # 失败/不可用回退内嵌闭环（hermes_ok=False）。
+    # Hermes 作为默认生成路径（用户决策）：由部署的 Hermes Agent 经 bidvolt MCP
+    # （携带任务级 capability token）执行 bid-generate skill 完成生成；
+    # 质量门兜底：不可用/失败/产出不达标（三份成果无版本或正文过短）→ 回退内嵌闭环。
+    from app.config import settings as _settings
+
+    use_hermes = (task.payload.get("agent") or _settings.bid_generate_agent) == "hermes"
     hermes_ok = False
-    if task.payload.get("agent") == "hermes":
+    if use_hermes and llm_enabled():
         hermes_result = await _run_hermes_agent(task)
         if hermes_result is None:
             log_tail = "hermes 不可用（未安装或无法启动）"
@@ -889,12 +892,46 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         agent_meta["runtime"] = "hermes"
         agent_meta["hermes"] = {"ok": hermes_ok, "log_tail": (log_tail or "")[-500:]}
         if hermes_ok:
-            # Hermes 已保存成果版本：跳过内嵌起草/保存，直接走统一门禁（评审+终检语义）
-            agent_meta["plan_sections"] = len(biz_chapters) + len(tech_chapters)
-            task.progress = {
-                "phase": "bid_generate", "status": "running", "percent": 80,
-                "current_work": "Hermes Agent 已生成成果，进入评审与质量门禁",
-            }
+            # 质量门：三份成果都必须有版本，且技术标/商务标正文达到最低篇幅，否则回退内嵌
+            gate_ok = True
+            try:
+                existing_dls = (
+                    await session.scalars(
+                        sa_select(Deliverable).where(
+                            Deliverable.project_id == project_id,
+                            Deliverable.enterprise_id == task.enterprise_id,
+                        )
+                    )
+                ).all()
+                by_type = {d.deliverable_type: d for d in existing_dls}
+                for dtype in (1, 2, 3):
+                    d = by_type.get(dtype)
+                    if d is None or d.current_version_no == 0:
+                        gate_ok = False
+                        break
+                    if dtype in (1, 2):
+                        _, m = await deliverable_service.get_version_content(
+                            session, d.id, d.current_version_no
+                        )
+                        text = "\n".join(n.get("text", "") for n in (m or {}).get("nodes", []))
+                        # 质量门与 E2E 质量标准对齐：技术标 >=2000 字、商务标 >=500 字
+                        if len(text.strip()) < (2000 if dtype == 2 else 500):
+                            gate_ok = False
+                            break
+            except Exception:  # noqa: BLE001
+                gate_ok = False
+            agent_meta["hermes"]["gate"] = "pass" if gate_ok else "fallback"
+            if gate_ok:
+                # Hermes 产出达标：跳过内嵌起草/保存，直接走统一门禁（评审+终检语义）
+                agent_meta["plan_sections"] = len(biz_chapters) + len(tech_chapters)
+                task.progress = {
+                    "phase": "bid_generate", "status": "running", "percent": 80,
+                    "current_work": "Hermes Agent 已生成成果，进入评审与质量门禁",
+                }
+            else:
+                hermes_ok = False
+    if use_hermes and not hermes_ok:
+        agent_meta["runtime"] = "hermes-fallback"  # 实际产出由内嵌闭环完成
     if llm_enabled() and not hermes_ok:
         import re
 

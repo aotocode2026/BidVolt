@@ -224,10 +224,18 @@ def test_bid_generate_hermes_mode_falls_back_when_unavailable(client, monkeypatc
     """Hermes 真接入：payload.agent=hermes 但运行时不具备时回退内嵌闭环，任务正常完成并记录 runtime。"""
     from app.services import task_service as ts
 
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+
     async def fake_hermes(task):
         return None  # hermes 不可用
 
+    async def fake_chat(self, system, user):
+        return "### 参数响应\n电压等级 10kV：满足。"
+
     monkeypatch.setattr(ts, "_run_hermes_agent", fake_hermes)
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
     h, pid = _setup(client)
     client.post(
         f"/api/v1/projects/{pid}/requirements/upsert",
@@ -242,7 +250,7 @@ def test_bid_generate_hermes_mode_falls_back_when_unavailable(client, monkeypatc
     )
     task = _drain_one_task()
     assert task.status == 3
-    assert task.result["agent"]["runtime"] == "hermes"
+    assert task.result["agent"]["runtime"] == "hermes-fallback"  # 实际产出由内嵌闭环完成
     assert task.result["agent"]["hermes"]["ok"] is False
     # 回退内嵌闭环：成果仍产出（确定性草稿）
     deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
@@ -253,6 +261,86 @@ def test_bid_generate_hermes_mode_falls_back_when_unavailable(client, monkeypatc
     biz_text = "\n".join(n.get("text", "") for n in biz_content["model"]["nodes"])
     assert "应答函" in biz_text
     assert "致：" in biz_text
+
+
+def test_bid_generate_hermes_gate_falls_back_without_deliverables(client, monkeypatch):
+    """默认路径 Hermes：ok 但未产出合格成果 → 质量门回退内嵌闭环。"""
+    from app.services import task_service as ts
+
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+
+    async def fake_hermes(task):
+        return {"ok": True, "log": "done"}
+
+    async def fake_chat(self, system, user):
+        return "### 参数响应\n电压等级 10kV：满足。"
+
+    monkeypatch.setattr(ts, "_run_hermes_agent", fake_hermes)
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [{"req_type": "tech_requirement", "content": "电压等级 10kV",
+                                "coordinates": [{"file_id": 1}]}]},
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-gate1"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["agent"]["runtime"] == "hermes-fallback"
+    assert task.result["agent"]["hermes"]["gate"] == "fallback"
+    deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
+    assert len(deliverables) == 3
+    assert all(d["current_version_no"] >= 1 for d in deliverables)
+
+
+def test_bid_generate_hermes_gate_passes_with_good_deliverables(client, monkeypatch):
+    """默认路径 Hermes：产出达标（三份版本 + 正文篇幅）→ 跳过内嵌保存，runtime=hermes。"""
+    from app.services import task_service as ts
+
+    monkeypatch.setattr(settings, "data_classification_confirmed", 1)
+    monkeypatch.setattr(settings, "cloud_llm_enabled", 1)
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
+
+    async def fake_hermes(task):
+        return {"ok": True, "log": "done"}
+
+    monkeypatch.setattr(ts, "_run_hermes_agent", fake_hermes)
+    h, pid = _setup(client)
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [{"req_type": "tech_requirement", "content": "电压等级 10kV",
+                                "coordinates": [{"file_id": 1}]}]},
+        headers=h,
+    )
+    long_text = "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，售后服务响应及时。" * 10
+    for dtype in (1, 2, 3):
+        did = client.post(
+            "/api/v1/deliverables",
+            json={"project_id": pid, "deliverable_type": dtype, "title": "成果"},
+            headers=h,
+        ).json()["deliverable_id"]
+        model = ({"nodes": [{"type": "paragraph", "text": long_text}]} if dtype in (1, 2)
+                 else {"type": "sheet", "sheets": [{"name": "报价单", "rows": [["项目", "建议价"], ["x", "119.2"]]}]})
+        client.post(f"/api/v1/deliverables/{did}/versions", json={"content": model, "version_type": 2}, headers=h)
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-gate2"},
+        headers=h,
+    )
+    task = _drain_one_task()
+    assert task.status == 3
+    assert task.result["agent"]["runtime"] == "hermes"
+    assert task.result["agent"]["hermes"]["gate"] == "pass"
+    # 内嵌保存被跳过：版本不新增（仍为 1）
+    deliverables = client.get(f"/api/v1/deliverables?project_id={pid}", headers=h).json()
+    assert all(d["current_version_no"] == 1 for d in deliverables)
 
 
 def test_bid_review_flags_uncovered_score_rule(client):

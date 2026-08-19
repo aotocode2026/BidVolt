@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimax.chat/v1"
     minimax_model: str = "MiniMax-M3"
+    # 标书生成主路径（用户决策）：hermes = Hermes Agent 经 MCP 执行（质量门不达标自动回退内嵌闭环）
+    bid_generate_agent: str = "hermes"
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_vl_model: str = "qwen-vl-max"

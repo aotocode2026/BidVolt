@@ -42,6 +42,47 @@ def test_evaluate_reports_missing_deliverables(client):
     assert all(i["status"] == 1 for i in items.json())
 
 
+def test_evaluate_weighted_score_rules(client):
+    """评分细则权重化评审引擎：细则体现得满分、未体现 0 分并给建议；统计可追溯。"""
+    h, pid = _setup(client)
+    long_text = "本公司具备相应资质与业绩，人员设备资金保障到位，质量保证体系健全，售后服务响应及时。" * 3
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [
+            {"req_type": "score_rule", "content": "售后服务方案（满分20分）：响应及时性",
+             "structured": {"score_rule": {"weight": 20, "criterion": "售后服务响应及时"}},
+             "coordinates": [{"file_id": 1}]},
+            {"req_type": "score_rule", "content": "进度保障（满分10分）：按期交付",
+             "structured": {"score_rule": {"weight": 10, "criterion": "按期交付承诺"}},
+             "coordinates": [{"file_id": 1}]},
+        ]},
+        headers=h,
+    )
+    # 技术标体现第一条细则（"售后服务响应及时"），未体现第二条
+    _create_deliverable(client, h, pid, 2, {
+        "nodes": [{"type": "paragraph", "text": long_text + "售后服务响应及时性：7×24 小时响应。"}]})
+    _create_deliverable(client, h, pid, 1, {"nodes": [{"type": "paragraph", "text": long_text}]})
+    _create_deliverable(client, h, pid, 3, {"type": "sheet", "sheets": [{"name": "报价单", "rows": [["项目", "建议价"]]}]})
+
+    r = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    stats = body["score_rules"]
+    assert stats["count"] == 2
+    assert stats["weight_total"] == 30
+    assert stats["weight_got"] == 20
+    assert stats["missed"] == 1
+
+    items = client.get(f"/api/v1/projects/{pid}/scores/{body['score_id']}/items", headers=h).json()
+    rule_items = [i for i in items if i["category"] == "评分细则"]
+    assert len(rule_items) == 2
+    by_desc = {i["problem_description"][:4]: i for i in rule_items}
+    got_values = sorted(i["got"] for i in rule_items)
+    assert got_values == [0, 20]  # 一条满分、一条 0 分
+    missed_item = next(i for i in rule_items if i["got"] == 0)
+    assert "评分细则未在成果中体现" in missed_item["suggestion"]
+
+
 def test_two_enterprises_both_evaluate(client):
     """服务器实测回归：内置 Provider 按企业隔离创建，
     唯一约束为 (enterprise_id, provider_code)，第二个企业评审不再撞
