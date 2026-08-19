@@ -1042,6 +1042,7 @@ async function pollTask(taskId, taskType) {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      let eventName = "";
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1049,13 +1050,18 @@ async function pollTask(taskId, taskType) {
         const lines = buf.split("\n");
         buf = lines.pop() || "";
         for (const line of lines) {
+          if (line.startsWith("event:")) { eventName = line.slice(6).trim(); continue; }
           if (!line.startsWith("data:")) continue;
           let payload = null;
           try { payload = JSON.parse(line.slice(5).trim()); } catch { continue; }  // 非 JSON 心跳行直接忽略
           if (!payload) continue;
+          /* Issue #13 复盘：终态只能由 done/failed/cancelled【事件】触发。
+             此前按 payload.status 字符串判断——progress 事件里 status 也是
+             "failed"/"done"（TaskStatus.name），会先命中无 error/result 的 progress
+             事件并 finishTask → 失败显示"未知错误"、完成丢失质量门禁消息。 */
+          if (eventName === "done") { reachedEnd = true; finishTask(taskId, taskType, payload, true); return; }
+          if (eventName === "failed" || eventName === "cancelled") { reachedEnd = true; finishTask(taskId, taskType, payload, false); return; }
           const p = payload.progress || {};
-          if (payload.status === 3 || payload.status === "done") { reachedEnd = true; finishTask(taskId, taskType, payload, true); return; }
-          if (payload.status === 6 || payload.status === 4 || payload.status === 5 || payload.status === "failed" || payload.status === "cancelled") { reachedEnd = true; finishTask(taskId, taskType, payload, false); return; }
           if (p.phase) log(`任务 ${taskId}：${p.phase} ${p.status || ""} ${p.percent != null ? p.percent + "%" : ""} ${p.current_work || ""}`, "info");
         }
       }

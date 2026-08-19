@@ -59,7 +59,7 @@ def test_project_list_with_multiple_projects_having_scores(client):
     subquery used as an expression"）。回归：列表 200 且各项目取到自己最新一条评分。"""
     import asyncio
 
-    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text
 
     from app.models.review import ScoreRecord
 
@@ -71,9 +71,13 @@ def test_project_list_with_multiple_projects_having_scores(client):
     ]
 
     async def _seed():
-        # 与 tests/conftest.py 的 client 夹具使用同一相对路径测试库
-        engine = create_async_engine("sqlite+aiosqlite:///./.test_bidvolt.db")
+        # 与 conftest 使用同一测试库 URL：BIDVOLT_TEST_DATABASE_URL 指向 PG 时即真 PG 对等
+        from tests.conftest import IS_PG, make_test_engine
+
+        engine = make_test_engine()
         async with engine.begin() as conn:
+            if IS_PG:
+                await conn.execute(text(f"SELECT set_config('app.enterprise_id', '{ent_id}', true)"))
             for pid, base in zip(pids, (80, 90)):
                 await conn.execute(
                     ScoreRecord.__table__.insert().values(

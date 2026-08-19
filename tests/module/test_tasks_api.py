@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import io
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.services.task_service import run_next_task
-
-TEST_DB = "./.test_bidvolt.db"
+from tests.conftest import make_test_engine
 
 
 def _headers(client):
@@ -51,7 +50,7 @@ def test_submit_task_idempotency_and_worker(client):
     assert r2.json()["created"] is False
 
     # 跑一次 worker
-    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    engine = make_test_engine()
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def drain():
@@ -89,7 +88,7 @@ def test_stream_whitelist_event(client):
         headers=h,
     ).json()["task_id"]
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    engine = make_test_engine()
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     import asyncio
@@ -131,7 +130,7 @@ def test_stream_terminal_task_emits_progress_and_done(client):
         headers=h,
     ).json()["task_id"]
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    engine = make_test_engine()
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     import asyncio
@@ -165,7 +164,7 @@ def test_stream_failed_event_carries_error(client, monkeypatch):
         headers=h,
     ).json()["task_id"]
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    engine = make_test_engine()
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def drain():
