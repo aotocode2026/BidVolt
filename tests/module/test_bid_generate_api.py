@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import settings
 from app.services import llm as llm_module
 from app.services.task_service import run_next_task
-
-TEST_DB = "./.test_bidvolt.db"
+from tests.conftest import make_test_engine
 
 
 def _setup(client):
@@ -22,7 +21,7 @@ def _setup(client):
 
 
 def _drain_one_task():
-    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    engine = make_test_engine()
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def drain():
@@ -423,7 +422,43 @@ def test_bid_generate_requires_requirements(client):
         task = _drain_one_task()
     assert task is not None
     assert task.status == 6
-    assert "要求" in (task.error or {}).get("message", "")
+    assert "生成已拦截" in (task.error or {}).get("message", "")
+
+
+def test_bid_generate_no_auto_extract_fallback(client, monkeypatch):
+    """Issue #13 验收红线：生成任务不得自行兜底解析（会形成"没解析成功也能生成"的错觉）。
+    即使 LLM 可用且能抽出要求，生成也必须先失败并引导用户走【招标解析】。"""
+    import io
+
+    monkeypatch.setattr(llm_module, "llm_enabled", lambda: True)
+    calls: list[str] = []
+
+    def fake_chat(system, user):
+        calls.append(user)
+        return '[{"req_type": "tech_requirement", "content": "电压等级 10kV"}]'
+
+    monkeypatch.setattr(llm_module.LLMClient, "chat", fake_chat)
+
+    h, pid = _setup(client)
+    client.post(
+        "/api/v1/files/upload",
+        data={"target": "project", "project_id": str(pid)},
+        files=[("files", ("招标.txt", io.BytesIO("招标公告：电压等级 10kV。".encode()), "text/plain"))],
+        headers=h,
+    )
+    client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "bid_generate", "payload": {}, "idempotency_key": "bg-noreq-mat"},
+        headers=h,
+    )
+    task = None
+    for _ in range(3):
+        task = _drain_one_task()
+    assert task is not None
+    assert task.status == 6
+    assert "生成已拦截" in (task.error or {}).get("message", "")
+    assert "招标解析" in (task.error or {}).get("message", "")
+    assert calls == []  # 生成任务未调用 LLM 抽取：不再自动兜底，先失败引导
 
 
 def test_bid_generate_without_payload_quote_is_placeholder(client):
