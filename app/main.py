@@ -63,6 +63,18 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "same-origin")
     return response
 
+
+@app.middleware("http")
+async def cache_control(request: Request, call_next):
+    """禁止缓存 /demo 前端与 API 响应（Issue #8 现场问题）：
+    前端曾高频迭代，浏览器/代理缓存旧版 app.js 导致“项目列表失败”等已修复问题持续复现。
+    /demo 与 /api 一律 no-store，保证用户强刷即拿到最新产物。"""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/demo") or path.startswith("/api"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 _STATUS_CODES = {
     401: "unauthorized",
     403: "forbidden",
