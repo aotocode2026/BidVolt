@@ -13,6 +13,21 @@ INTERNAL_TOKEN = os.environ.get("BIDVOLT_INTERNAL_TOKEN", "")
 CAPABILITY_TOKEN = os.environ.get("BIDVOLT_CAPABILITY_TOKEN", "")
 
 
+def _read_cap_file() -> str:
+    """Hermes 不保证把父进程 env 透传给 MCP 子进程：capability token 经固定临时文件兜底传递
+    （worker 单任务串行，写入安全；文件模式 0600）。"""
+    cap_file = os.environ.get("BIDVOLT_CAP_FILE", "/tmp/bidvolt_cap_token")
+    try:
+        with open(cap_file, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+if not CAPABILITY_TOKEN:
+    CAPABILITY_TOKEN = _read_cap_file()
+
+
 def _headers() -> dict[str, str]:
     headers = {"Accept": "application/json"}
     if INTERNAL_TOKEN:

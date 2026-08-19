@@ -571,6 +571,15 @@ async def _run_hermes_agent(task: Task) -> dict | None:
     # 缺省 HOME 下无配置会触发交互式 setup，必须显式指定。
     hermes_home = os.environ.get("HERMES_HOME") or "/data/hermes"
     env["HERMES_HOME"] = hermes_home
+    # capability 兜底通道：hermes 不保证把父进程 env 透传给 MCP 子进程，
+    # 写入固定临时文件（MCP 端 tools.py 会读取；单 worker 串行，安全）
+    try:
+        cap_file = os.environ.get("BIDVOLT_CAP_FILE", "/tmp/bidvolt_cap_token")
+        with open(cap_file, "w", encoding="utf-8") as _f:
+            _f.write(cap)
+        os.chmod(cap_file, 0o600)
+    except OSError:
+        pass
     try:
         proc = await asyncio.create_subprocess_exec(
             hermes_bin, "chat", "-q", prompt,
