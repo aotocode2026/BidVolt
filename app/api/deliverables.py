@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,9 +41,16 @@ def _handle_version_conflict(exc: VersionConflict) -> HTTPException:
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_deliverable(
     body: dict,
+    request: Request,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EDIT)),
+    user: UserContext = Depends(require_capability("create_deliverable")),
 ) -> dict:
+    # MCP（capability）路径：project_id 强制等于任务绑定项目，防止越权写其他项目
+    cap_payload = getattr(request.state, "cap_payload", None)
+    if cap_payload is not None:
+        if int(body.get("project_id") or 0) != int(cap_payload["pid"]):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="capability token 不允许写该项目")
+        body["project_id"] = int(cap_payload["pid"])
     project = await session.scalar(
         select(Project).where(
             Project.id == body["project_id"],

@@ -49,6 +49,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "get_project_material_blocks",
         "list_project_materials",
         "get_deliverable_content",
+        "create_deliverable",
         "save_deliverable",
         "calculate_quote",
         "get_history_price",

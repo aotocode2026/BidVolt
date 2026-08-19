@@ -43,6 +43,14 @@ metadata:
 
 ## Procedure
 
+### 执行模式（最高优先级）
+- **非交互/批处理模式（headless）必须直接执行到底**：逐项真实调用 MCP 工具完成全部读写，
+  直到三份成果全部 `save_deliverable` 保存成功为止。
+- **严禁**：只输出计划、A/B/C/D 方案、伪代码、示例 JSON 或"请用户确认后再继续"——
+  此类输出视为任务失败；遇权限/参数错误时读取工具返回的真实错误信息修正后重试，
+  不得虚构工具返回结果。
+- 保存后做最后校验：三份成果 `get_deliverable_content` 读回，抽查关键字段一致后输出一句简短总结。
+
 ### 判定模式
 1. 查询项目是否有已有成果：有任意一份 → **校核模式**；一份都没有 → **生成模式**。
 2. 校核模式：逐份读取已有成果（可只传部分），先检查完整性（缺失章节/文件），再进入校核项。
@@ -58,7 +66,8 @@ metadata:
    - 招标要求：来自 `list_requirements`
    - 市场/政策/标准：来自 `search_web` 且引用时 `link_citation` 记录来源
 4. 写入前交叉一致性检查：企业名称、项目名称、金额、工期、数量、参数、税率，三份必须一致。
-5. `save_deliverable` 保存（expected_version_id 取当前版本、idempotency_key、source_task_id、change_note 说明改动）。
+5. `save_deliverable` 保存（expected_version_no 必须等于当前版本号：新建记录当前为 0，
+   首次保存传 0；先 `get_deliverable_content` 读回 current_version_no 再保存；idempotency_key、source_task_id、change_note 说明改动）。
 
 ### 校核项（校核模式）
 文件完整性 → 资格响应（qualification 逐条核对）→ 技术响应（tech_requirement 逐条）→ 报价计算（重算公式）→ 否决风险（reject_clause 逐条扫）→ 评分项覆盖（score_rule）→ 资料有效性（有效期/缺失）→ 跨文件一致性。

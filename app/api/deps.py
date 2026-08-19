@@ -42,6 +42,7 @@ TOOL_PERMISSION: dict[str, str] = {
     "classify_enterprise_asset": Permission.PROJECT_EDIT,
     "upsert_enterprise_facts": Permission.PROJECT_EDIT,
     "search_knowledge": Permission.FILE_READ,
+    "create_deliverable": Permission.DELIVERABLE_EDIT,
 }
 
 
@@ -146,6 +147,7 @@ def require_capability(tool: str):
             if req_pid is not None and task.project_id != int(req_pid):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="capability token 不属于请求项目")
             await _set_rls_context(session, int(payload["eid"]))
+            request.state.cap_payload = payload  # 端点可按需校验 body.project_id == payload.pid
             return UserContext(
                 user_id=0,
                 enterprise_id=int(payload["eid"]),

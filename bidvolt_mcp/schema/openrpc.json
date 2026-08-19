@@ -395,6 +395,49 @@
       }
     },
     {
+      "name": "create_deliverable",
+      "summary": "创建成果记录（生成前必须先创建三份记录；capability 路径下 project_id 与任务绑定项目强校验）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "deliverable_type": {
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "deliverable_type",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "save_deliverable",
       "summary": "保存成果新版本（expected_version_id CAS + idempotency_key + source_task_id）",
       "params": [

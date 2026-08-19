@@ -106,6 +106,20 @@ def _get_deliverable_content(args: dict) -> Any:
     return _get(f"/api/v1/deliverables/{args['deliverable_id']}/content")
 
 
+def _create_deliverable(args: dict) -> Any:
+    """创建成果记录（Hermes 生成前必须先建三份记录，再 save_deliverable 写版本）。
+    capability 路径下 project_id 与任务绑定项目强校验（后端 403 拦截越权）。"""
+    body = {
+        "project_id": args["project_id"],
+        "deliverable_type": args["deliverable_type"],
+        "title": args["title"],
+    }
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.post("/api/v1/deliverables", json=body, headers=_headers())
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _save_deliverable(args: dict) -> Any:
     body = {
         "content": args["model"],
@@ -397,6 +411,21 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _get_deliverable_content,
+    },
+    {
+        "name": "create_deliverable",
+        "description": "创建成果记录（生成前必须先创建三份记录；capability 路径下 project_id 与任务绑定项目强校验）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "deliverable_type": {"type": "integer"},
+                "title": {"type": "string"},
+            },
+            "required": ["project_id", "deliverable_type", "title"],
+            "additionalProperties": False,
+        },
+        "handler": _create_deliverable,
     },
     {
         "name": "save_deliverable",
