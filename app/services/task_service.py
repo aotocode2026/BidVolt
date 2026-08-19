@@ -557,11 +557,17 @@ async def _run_hermes_agent(task: Task) -> dict | None:
         return None
     prompt = (
         f"你是投标文件撰写 Agent。请使用 bidvolt-bid-generate skill 为项目 {task.project_id} 生成三份投标成果。"
-        "【硬性要求】每一步都必须真实调用 MCP 工具（工具名带 bidvolt: 前缀，如 bidvolt:list_requirements、"
-        "bidvolt:search_assets、bidvolt:save_deliverable、bidvolt:calculate_quote），等待工具真实返回后再继续；"
-        "严禁凭空虚构工具返回结果、严禁只输出计划或代码块。"
+        "【硬性要求】本会话为非交互批处理模式：必须直接执行到底，每一步都真实调用 MCP 工具"
+        "（工具名带 bidvolt: 前缀，如 bidvolt:list_requirements、bidvolt:search_assets、"
+        "bidvolt:save_deliverable、bidvolt:calculate_quote），等待工具真实返回后再继续；"
+        "严禁只输出计划、A/B/C/D 方案、伪代码或虚构工具返回结果；"
+        "严禁询问用户或等待确认——直接生成并保存，完成后用一句话总结。"
         "流程：1) bidvolt:list_requirements 建立要求基线；2) bidvolt:search_assets 取企业事实；"
-        "3) 逐份撰写并调用 bidvolt:save_deliverable 保存新版本；"
+        "3) 若项目尚无成果记录，先调用 bidvolt:create_deliverable 创建商务标/技术标/报价单三份记录"
+        "（project_id 填 " + str(task.project_id) + "，deliverable_type 分别 1/2/3）；"
+        "4) 逐份撰写并调用 bidvolt:save_deliverable 保存新版本"
+        "（注意：expected_version_no 必须等于该成果【当前版本号】——新创建的记录当前版本号为 0，"
+        "首次保存传 0；后续保存前先用 bidvolt:get_deliverable_content 读回当前版本号再传）；"
         "禁止编造企业事实；无资料处标注【待补充】；报价只建议不落库。任务 id=" + str(task.id) + "。"
     )
     env = dict(os.environ)
