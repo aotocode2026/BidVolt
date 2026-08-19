@@ -43,6 +43,8 @@
 | 终检 v2：逐条要求覆盖 + 结构合规 + 文字质量（重复段落/【待补充】）+ 字数统计 | ✅ |
 | tasks 列表返回 result/error（评审页任务表摘要可见） | ✅ |
 | Hermes 运行时接入（capability 全流程） | ✅（运行时验证；Agent 执行一致性待换模型） |
+| **Hermes 提为默认生成路径**（用户决策，2026-08-19） | ✅ `settings.bid_generate_agent="hermes"`：Hermes 先行，**质量门与 E2E 质量标准对齐**（技术标≥2000 字/商务标≥500 字/三份有版本），不达标自动回退内嵌闭环（runtime=hermes-fallback 可追溯）；公网 E2E 26/26 实测 |
+| **评分细则权重化评审引擎** | ✅ 评分细则（weight/criterion）逐项打分：体现得满分、未体现 0 分+建议；evaluate 返回权重统计（count/weight_total/weight_got/missed） |
 | loop 整体迁移 Hermes gateway / 任务级 capability 在 MCP 全量启用 | ⏳ 生产前待办（同上，依赖主推理模型） |
 
 ## 三、举一反三：同类"硬编码 vs 招标驱动"问题的处置
