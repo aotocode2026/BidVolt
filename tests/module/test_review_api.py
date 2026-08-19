@@ -76,7 +76,6 @@ def test_evaluate_weighted_score_rules(client):
     items = client.get(f"/api/v1/projects/{pid}/scores/{body['score_id']}/items", headers=h).json()
     rule_items = [i for i in items if i["category"] == "评分细则"]
     assert len(rule_items) == 2
-    by_desc = {i["problem_description"][:4]: i for i in rule_items}
     got_values = sorted(i["got"] for i in rule_items)
     assert got_values == [0, 20]  # 一条满分、一条 0 分
     missed_item = next(i for i in rule_items if i["got"] == 0)
