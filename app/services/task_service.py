@@ -501,7 +501,13 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     for file_id in file_ids:
         fobj = await reparse_file(session, int(file_id))
         if fobj.status != 3:
-            raise ValueError(f"文件解析失败：{fobj.original_name}")
+            # Issue #13：失败原因必须具体可查——parse_status 里有真实原因（如"不支持的格式：.pptx"），
+            # 不能只报文件名（产品侧此前只看到"未知错误"，无法定位）
+            ps = fobj.parse_status or {}
+            detail = str(ps.get("message") or ps.get("error_code") or "").strip()
+            raise ValueError(
+                f"文件解析失败：{fobj.original_name}" + (f"（原因：{detail}）" if detail else "")
+            )
 
     extracted = await _llm_extract_requirements(
         session,

@@ -174,3 +174,45 @@ def test_parse_ofd_leading_slash_loc(tmp_path):
     assert len(blocks) == 1
     assert "投标文件" in blocks[0]["text_content"]
     assert blocks[0]["page_no"] == 1
+
+
+def _write_minimal_pptx(tmp_path: Path, slides: list[str]) -> Path:
+    """构造最小 pptx（zip + slideN.xml，a:t 文本），供标准库提取路径测试。"""
+    p = tmp_path / "a.pptx"
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        )
+        for i, text in enumerate(slides, start=1):
+            zf.writestr(
+                f"ppt/slides/slide{i}.xml",
+                f'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                f'xmlns:a="{ns}"><p:sp><p:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:sld>',
+            )
+    return p
+
+
+def test_parse_pptx_stdlib(tmp_path):
+    """Issue #13：供应商注意事项 .pptx 曾报"不支持的格式"——标准库 zip+XML 提取 slide 文本。"""
+    p = _write_minimal_pptx(tmp_path, ["投标注意事项：保证金 5%", "第二页内容：交付周期 30 天"])
+    blocks = parser._parse_pptx_stdlib(p)
+    assert len(blocks) == 2
+    assert blocks[0]["page_no"] == 1
+    assert blocks[1]["page_no"] == 2
+    assert "保证金 5%" in blocks[0]["text_content"]
+    assert "交付周期 30 天" in blocks[1]["text_content"]
+
+
+def test_parse_pptx_no_text_layer(tmp_path):
+    import pytest
+
+    p = tmp_path / "empty.pptx"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr(
+            "ppt/slides/slide1.xml",
+            '<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sp/></p:sld>',
+        )
+    with pytest.raises(ValueError, match="无文本层"):
+        parser._parse_pptx_stdlib(p)

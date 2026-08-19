@@ -88,7 +88,86 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
         doc.close()
         return blocks
 
+    if ext == ".pptx":
+        try:
+            from pptx import Presentation
+
+            prs = Presentation(str(path))
+            blocks = []
+            idx = 0
+            for slide_no, slide in enumerate(prs.slides, start=1):
+                parts: list[str] = []
+                for shape in slide.shapes:
+                    if getattr(shape, "has_text_frame", False):
+                        parts.append(shape.text_frame.text)
+                    if getattr(shape, "has_table", False):
+                        for row in shape.table.rows:
+                            parts.append(" | ".join(cell.text for cell in row.cells))
+                text = "\n".join(p for p in parts if p.strip())
+                if text.strip():
+                    blocks.append(
+                        {
+                            "block_type": "paragraph",
+                            "page_no": slide_no,
+                            "block_index": idx,
+                            "text_content": text,
+                            "extra": {"source": "pptx-slide", "page": slide_no},
+                        }
+                    )
+                    idx += 1
+            if blocks:
+                return blocks
+        except Exception:  # noqa: BLE001 库缺失或包结构异常 → 纯标准库兜底
+            pass
+        return _parse_pptx_stdlib(path)
+
     raise ValueError(f"不支持的格式：{ext}")
+
+
+def _parse_pptx_stdlib(path: Path) -> list[dict]:
+    """pptx 文本层提取（纯标准库）：解 zip，按 slideN.xml 顺序提取 <a:t> 文本。
+
+    无需 python-pptx 依赖即可支持 .pptx（生产 Issue #13：供应商注意事项 .pptx 上传后
+    解析报"不支持的格式"，任务失败且原因不可见）。
+    """
+    import re
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    blocks: list[dict] = []
+    idx = 0
+    with zipfile.ZipFile(path) as zf:
+        slide_names = sorted(
+            (n for n in zf.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+            key=lambda n: int(re.search(r"slide(\d+)\.xml$", n).group(1)),
+        )
+        for name in slide_names:
+            root = ET.fromstring(zf.read(name))
+            texts = [
+                ("".join(t.itertext()) or "").strip()
+                for t in root.iter()
+                if local(t.tag) == "t"
+            ]
+            texts = [t for t in texts if t]
+            if not texts:
+                continue
+            page_no = int(re.search(r"slide(\d+)\.xml$", name).group(1))
+            blocks.append(
+                {
+                    "block_type": "paragraph",
+                    "page_no": page_no,
+                    "block_index": idx,
+                    "text_content": "\n".join(texts),
+                    "extra": {"source": "pptx-text-layer", "page": page_no},
+                }
+            )
+            idx += 1
+    if not blocks:
+        raise ValueError("pptx 无文本层（图片型幻灯片请走视觉模型）")
+    return blocks
 
 
 def _parse_ofd(path: Path) -> list[dict]:

@@ -147,3 +147,36 @@ def test_stream_terminal_task_emits_progress_and_done(client):
     assert "event: snapshot" in resp.text
     assert "event: done" in resp.text
     assert "internal_id" not in resp.text
+
+
+def test_stream_failed_event_carries_error(client, monkeypatch):
+    """Issue #13：终态事件必须带 error——此前只发 task_id/status，前端失败提示只能
+    显示"未知错误"，任务表里已落库的真实 error（如"文件解析失败：xx.pptx"）被丢弃。"""
+    import asyncio
+
+    import app.services.task_service as ts
+
+    monkeypatch.setattr(ts, "MAX_RETRIES", 1)  # 一轮即终态，免三轮重试
+    h = _headers(client)
+    pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]
+    task_id = client.post(
+        f"/api/v1/projects/{pid}/tasks",
+        json={"task_type": "tender_parse", "payload": {"file_ids": []}, "idempotency_key": "k-err"},
+        headers=h,
+    ).json()["task_id"]
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def drain():
+        async with session_factory() as session:
+            await ts.run_next_task(session)
+
+    asyncio.run(drain())
+    engine.sync_engine.dispose()
+
+    resp = client.get(f"/api/v1/tasks/{task_id}/stream", headers=h)
+    assert "event: failed" in resp.text
+    assert '"error"' in resp.text
+    assert "payload.file_ids" in resp.text  # 真实异常信息进入 SSE
+    assert "internal_id" not in resp.text
