@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.deliverable import Deliverable
 from app.models.project_material import ProjectMaterial, ProjectSnapshot
+from app.models.requirement import Requirement
 from app.models.review import (
     ReviewItem,
     ReviewMaterialLink,
@@ -18,6 +19,7 @@ from app.models.review import (
     ReviewRun,
     ScoreRecord,
 )
+from app.services import deliverable_service
 
 RULESET_VERSION = "builtin-code-1.0"
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
@@ -162,6 +164,69 @@ async def run_evaluation(
                 }
             )
 
+    # 评分细则权重化评审引擎（路线图项）：解析出的评分细则（structured.score_rule.weight/criterion）
+    # 逐项打分：细则在技术标/商务标正文中体现 → 得满分；未体现 → 0 分并给出建议。
+    score_rule_reqs = (
+        await session.scalars(
+            select(Requirement).where(
+                Requirement.enterprise_id == enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+                Requirement.req_type == "score_rule",
+            )
+        )
+    ).all()
+    score_rule_stats = {"count": 0, "weight_total": 0.0, "weight_got": 0.0, "missed": 0}
+    if score_rule_reqs:
+        doc_texts: dict[int, str] = {}
+        for d in deliverables:
+            if d.current_version_no == 0:
+                continue
+            try:
+                _, m = await deliverable_service.get_version_content(session, d.id, d.current_version_no)
+            except Exception:  # noqa: BLE001
+                m = {}
+            doc_texts[d.deliverable_type] = "\n".join(
+                n.get("text", "") for n in (m or {}).get("nodes", [])
+            )
+        for r in score_rule_reqs:
+            structured = r.structured or {}
+            rule = structured.get("score_rule") or {}
+            try:
+                weight = float(rule.get("weight") or 10)
+            except (TypeError, ValueError):
+                weight = 10.0
+            criterion = str(rule.get("criterion") or r.content)
+            covered = any(
+                t and (r.content[:10] in t or criterion[:10] in t)
+                for t in doc_texts.values()
+            )
+            items_data.append(
+                {
+                    "category": "评分细则",
+                    "problem_description": r.content,
+                    "got": round(weight, 2) if covered else 0.0,
+                    "full": round(weight, 2),
+                    "improvable": 0.0 if covered else round(weight, 2),
+                    "risk_level": 0 if covered else 1,
+                    "suggestion": None if covered else f"评分细则未在成果中体现：{criterion[:40]}",
+                    "action_type": "manual_review",
+                    "missing_material_types": None,
+                    "evidence": {
+                        "claim_id": f"score-rule-{r.id}",
+                        "criterion": criterion,
+                        "weight": weight,
+                        "source_requirement_id": r.id,
+                    },
+                }
+            )
+            score_rule_stats["count"] += 1
+            score_rule_stats["weight_total"] += round(weight, 2)
+            if covered:
+                score_rule_stats["weight_got"] += round(weight, 2)
+            else:
+                score_rule_stats["missed"] += 1
+
     raw_hash = sha256(
         json.dumps(
             {
@@ -194,7 +259,7 @@ async def run_evaluation(
         total_score=round(total_got / total_full * 100, 2) if total_full else 0.0,
         missing_count=missing_count,
         improvable=round(sum(d["improvable"] for d in items_data), 2),
-        detail={"items_count": len(items_data)},
+        detail={"items_count": len(items_data), "score_rules": score_rule_stats},
     )
     session.add(score)
     await session.flush()
@@ -230,6 +295,7 @@ async def run_evaluation(
         "total_score": float(score.total_score),
         "missing_count": missing_count,
         "item_ids": [i.id for i in items],
+        "score_rules": score_rule_stats,
     }
 
 
