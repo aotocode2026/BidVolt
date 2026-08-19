@@ -61,7 +61,7 @@ fi
 
 echo "==> 5/7 配置模型/视觉/目录（幂等）"
 export HERMES_HOME
-"$HERMES" config set model.default "${MINIMAX_MODEL:-MiniMax-Text-01}" >/dev/null 2>&1 || true
+"$HERMES" config set model.default "${MINIMAX_MODEL:-MiniMax-M3}" >/dev/null 2>&1 || true
 "$HERMES" config set model.provider minimax >/dev/null 2>&1 || true
 "$HERMES" config set model.max_tokens 8000 >/dev/null 2>&1 || true
 "$HERMES" config set model_catalog.enabled false >/dev/null 2>&1 || true
