@@ -72,13 +72,19 @@ async def latest_score(
     )
     if score is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="尚未评标")
+    run = await session.get(ReviewRun, score.review_run_id) if score.review_run_id else None
     return {
         "score_id": score.id,
         "review_run_id": score.review_run_id,
+        "snapshot_id": run.snapshot_id if run else None,
         "total_score": float(score.total_score) if score.total_score is not None else None,
         "missing_count": score.missing_count,
         "improvable": float(score.improvable) if score.improvable is not None else None,
         "detail": score.detail,
+        # 评分基准（Issue #8）：scale=score_rules 按招标评分细则打分；builtin=内置完整性规则
+        "scale": (score.detail or {}).get("scale", "builtin"),
+        "full_marks": (score.detail or {}).get("full_marks"),
+        "got_marks": (score.detail or {}).get("got_marks"),
     }
 
 

@@ -688,6 +688,25 @@ function panelDeliverable() {
     </div>
     <textarea id="d-json" placeholder='{"nodes":[{"id":"n1","type":"paragraph","text":"内容"}]}'></textarea>`;
   refreshDeliverables();
+  loadLatestReview();
+}
+
+async function loadLatestReview() {
+  /* 校核结果可取回（Issue #8 反馈"刷新后结果不可继续查看"）：
+     按项目取回最近一次 bid_review 任务的 issue 清单并渲染到成果页校核区 */
+  const el = $("d-review");
+  if (!projectId || !el) return;
+  try {
+    const data = await api(`/projects/${projectId}/tasks?status_filter=3`);
+    const reviewTask = (data.items || []).find((t) => t.task_type === "bid_review");
+    if (!reviewTask) { lastReviewIssues = null; return; }
+    const issues = (reviewTask.result && Array.isArray(reviewTask.result.issues)) ? reviewTask.result.issues : [];
+    lastReviewIssues = issues;
+    renderReviewResult();
+    if (issues.length) {
+      log(`已恢复最近一次校核结果（任务 #${reviewTask.task_id}，${issues.length} 项问题/提醒）`, "warn");
+    }
+  } catch (e) { /* 无历史校核：静默不报错（面板保持空） */ }
 }
 
 function renderDeliverableStatus() {
@@ -982,6 +1001,7 @@ function panelTask() {
     <div class="row"><button class="ghost" onclick="confirmAll()">确认全部建议</button>
       <button class="ghost" onclick="reEvaluate()">重审受影响项</button></div>`;
   refreshTasks();
+  refreshScore();
 }
 
 async function refreshTasks() {
@@ -1023,30 +1043,61 @@ async function doEvaluate() {
     scoreCtx = ev;
     reviewDone = true;
     markStep("task");
-    log(`评标完成：总分 ${ev.total_score}，缺失 ${ev.missing_count}`, "ok");
-    const items = await api(`/projects/${projectId}/scores/${ev.score_id}/items`);
+    /* Issue #8：评分基准必须说清——按招标评分细则 or 内置规则（未获取细则时不得冒充招标得分） */
+    if (ev.scale === "score_rules") {
+      log(`评标完成：总分 ${ev.total_score}（按招标评分细则，满分 ${ev.full_marks} 分，得分 ${ev.got_marks} 分），缺失项 ${ev.missing_count} 项`, "ok");
+    } else {
+      log(`评标完成：总分 ${ev.total_score}（内置完整性规则，满分 ${ev.full_marks} 分）`, "ok");
+      log("未获取招标评分细则：本分数不代表招标评标得分，请确认招标文件评分办法后人工核对", "warn");
+    }
+    await refreshScore();
+  } catch (e) { log(`评标失败：${errMsg(e)}`, "err"); }
+}
+
+async function refreshScore() {
+  /* 评审恢复（Issue #8 反馈"刷新后结果不可继续查看/按钮无效"）：按项目取回最近一次评分与逐条项 */
+  const tbody = $("t-items");
+  if (!projectId || !tbody) return;
+  try {
+    const sc = await api(`/projects/${projectId}/scores`);
+    scoreCtx = sc;
+    const items = await api(`/projects/${projectId}/scores/${sc.score_id}/items`);
     setHtml("t-items", items.map((i) => `
       <tr><td>${i.item_id}</td><td>${esc(i.category)}</td><td>${esc(i.problem_description)}</td>
       <td>${i.got ?? "-"}/${i.full ?? "-"}</td><td>${i.improvable ?? "-"}</td><td>${i.status}</td>
       <td>${esc(i.effective_suggestion || "")}</td></tr>`).join(""));
-  } catch (e) { log(`评标失败：${errMsg(e)}`, "err"); }
+    if (sc.scale === "score_rules") {
+      log(`已恢复最近评标：总分 ${sc.total_score}（按招标评分细则，满分 ${sc.full_marks} 分），缺失 ${sc.missing_count} 项`, "ok");
+    } else {
+      log(`已恢复最近评标：总分 ${sc.total_score}（内置完整性规则，未获取招标评分细则——不代表招标评标得分）`, "warn");
+    }
+  } catch (e) {
+    scoreCtx = null;
+    setHtml("t-items", "<tr><td colspan=7>尚未评标：点【模拟评标】生成评分与逐条建议（需先完成成果生成）</td></tr>");
+  }
 }
 
 async function confirmAll() {
-  if (!scoreCtx) return log("先评标", "err");
+  if (!scoreCtx) return log("尚无评标记录：请先【模拟评标】（如刚完成评标请刷新页面后重试）", "err");
   try {
     const items = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items`);
-    const r = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items/confirm`, { method: "POST", body: { item_ids: items.map((i) => i.item_id), expected_version: scoreCtx.snapshot_id } });
-    log(`确认结果：${JSON.stringify(r.results)}`, "ok");
+    const pending = items.filter((i) => i.status === 1);
+    if (!pending.length) return log("没有待确认的条目（可能已全部确认）", "ok");
+    const r = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items/confirm`, { method: "POST", body: { item_ids: pending.map((i) => i.item_id), expected_version: scoreCtx.snapshot_id } });
+    const ok = (r.results || []).filter((x) => x.status === "succeeded").length;
+    const skipped = (r.results || []).length - ok;
+    log(`确认完成：成功 ${ok} 条${skipped ? `、跳过 ${skipped} 条（状态冲突/不存在）` : ""}`, "ok");
+    await refreshScore();
   } catch (e) { log(`确认失败：${errMsg(e)}`, "err"); }
 }
 
 async function reEvaluate() {
-  if (!scoreCtx) return log("先评标", "err");
+  if (!scoreCtx) return log("尚无评标记录：请先【模拟评标】", "err");
   try {
     const items = await api(`/projects/${projectId}/scores/${scoreCtx.score_id}/items`);
     const r = await api(`/projects/${projectId}/re-evaluate`, { method: "POST", body: { item_ids: items.map((i) => i.item_id) } });
-    log(`重审完成：总分 ${r.total_score}，提升 ${r.improved_count} 项`, "ok");
+    log(`重审完成：总分 ${r.total_score}，提升 ${r.improved_count} 项（下方列表已刷新）`, "ok");
+    await refreshScore();
   } catch (e) { log(`重审失败：${errMsg(e)}`, "err"); }
 }
 
