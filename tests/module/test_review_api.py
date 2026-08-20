@@ -34,9 +34,13 @@ def test_evaluate_reports_missing_deliverables(client):
     body = r.json()
     assert body["missing_count"] == 3
     assert body["total_score"] == 0
+    # Issue #8：无评分细则时显式标注内置规则（scale=builtin），不冒充招标得分
+    assert body["scale"] == "builtin"
+    assert body["full_marks"] == 30  # 完整性三份各 10 分
 
     scores = client.get(f"/api/v1/projects/{pid}/scores", headers=h)
     assert scores.json()["score_id"] == body["score_id"]
+    assert scores.json()["scale"] == "builtin"
     items = client.get(f"/api/v1/projects/{pid}/scores/{body['score_id']}/items", headers=h)
     assert len(items.json()) == 3
     assert all(i["status"] == 1 for i in items.json())
@@ -72,6 +76,11 @@ def test_evaluate_weighted_score_rules(client):
     assert stats["weight_total"] == 30
     assert stats["weight_got"] == 20
     assert stats["missed"] == 1
+    # Issue #8：评分基准必须显式——有评分细则按细则计算并标注 scale=score_rules
+    assert body["scale"] == "score_rules"
+    assert body["full_marks"] == 30
+    assert body["got_marks"] == 20
+    assert abs(body["total_score"] - 20 / 30 * 100) < 0.01
 
     items = client.get(f"/api/v1/projects/{pid}/scores/{body['score_id']}/items", headers=h).json()
     rule_items = [i for i in items if i["category"] == "评分细则"]

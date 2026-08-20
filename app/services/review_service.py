@@ -252,14 +252,36 @@ async def run_evaluation(
     total_got = sum(d["got"] for d in items_data)
     total_full = sum(d["full"] for d in items_data)
     missing_count = sum(1 for d in items_data if d["got"] == 0)
+    # 评分基准（Issue #8 反馈"未获取评审细则却显示 10 分满分"）：
+    # 有招标评分细则 → 总分按细则权重计算（weight_got/weight_total×100）；
+    # 无细则 → 内置完整性规则得分，并显式标注"未获取评分细则，不代表招标评标得分"。
+    has_rules = bool(score_rule_reqs)
+    if has_rules:
+        scale = "score_rules"
+        rule_got = score_rule_stats["weight_got"]
+        rule_full = score_rule_stats["weight_total"] or 1.0
+        overall = round(rule_got / rule_full * 100, 2)
+        full_marks = round(rule_full, 2)
+        got_marks = round(rule_got, 2)
+    else:
+        scale = "builtin"
+        overall = round(total_got / total_full * 100, 2) if total_full else 0.0
+        full_marks = round(total_full, 2)
+        got_marks = round(total_got, 2)
     score = ScoreRecord(
         enterprise_id=enterprise_id,
         project_id=project_id,
         review_run_id=run.id,
-        total_score=round(total_got / total_full * 100, 2) if total_full else 0.0,
+        total_score=overall,
         missing_count=missing_count,
         improvable=round(sum(d["improvable"] for d in items_data), 2),
-        detail={"items_count": len(items_data), "score_rules": score_rule_stats},
+        detail={
+            "items_count": len(items_data),
+            "score_rules": score_rule_stats,
+            "scale": scale,
+            "full_marks": full_marks,
+            "got_marks": got_marks,
+        },
     )
     session.add(score)
     await session.flush()
@@ -296,6 +318,9 @@ async def run_evaluation(
         "missing_count": missing_count,
         "item_ids": [i.id for i in items],
         "score_rules": score_rule_stats,
+        "scale": scale,
+        "full_marks": full_marks,
+        "got_marks": got_marks,
     }
 
 
