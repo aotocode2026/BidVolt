@@ -325,9 +325,12 @@ def main() -> int:
             )
             # 生成路径兼容两种运行时：Hermes 默认路径（质量门兜底内嵌）或内嵌闭环
             runtime_ok = meta["runtime"] in ("hermes", "hermes-fallback")
+            # Issue #8 复盘：核心语义是"结构来自招标文件"（requirement/tender，非 fallback 通用模板），
+            # 章节数随招标文件规模变化（本轮小样本仅 2 章），不再硬编码 >=4。
+            structure_from_tender = meta["structure_source"] in ("requirement", "tender") and meta["structure_len"] >= 1
             record(
                 "结构来自招标文件+Agent生成路径",
-                meta["structure_len"] >= 4 and meta["agent"] is True and runtime_ok,
+                structure_from_tender and meta["agent"] is True and runtime_ok,
                 str(meta),
             )
         except Exception as e:  # noqa: BLE001
@@ -405,6 +408,7 @@ def main() -> int:
             ok_tasks = True
             page.click("button:has-text('模拟评标')")
             ok_ev = wait_log(page, "评标完成：总分")
+            page.wait_for_timeout(800)
             page.wait_for_selector("#t-items tr td", timeout=15000)  # 等待明细渲染
             item_id = page.eval_on_selector("#t-items tr td:first-child", "el => el.innerText")
             page.fill("#s-item-id", item_id.strip())
@@ -412,8 +416,10 @@ def main() -> int:
             page.click("button:has-text('保存建议修改')")
             ok_sugg = wait_log(page, "建议已保存")
             shot(page, tag, "07-评标")
+            page.wait_for_timeout(500)
             page.click("button:has-text('确认全部建议')")
-            ok_conf = wait_log(page, "确认结果")
+            ok_conf = wait_log(page, "确认完成")  # Issue #8 复盘：确认反馈改为"确认完成：成功 N 条…"
+            page.wait_for_timeout(500)
             page.click("button:has-text('重审受影响项')")
             ok_re = wait_log(page, "重审完成")
             record("评标闭环", ok_ev and ok_sugg and ok_conf and ok_re and ok_tasks, f"item={item_id.strip()} tasks_table={ok_tasks}")
