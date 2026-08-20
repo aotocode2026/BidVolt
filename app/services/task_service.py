@@ -406,9 +406,11 @@ def _dedup_block_texts(blocks, limit: int = 30000) -> str:
 _STRUCTURE_SYSTEM = (
     "你是投标文件结构解析助手。从招标文件材料中提取应答/响应文件的组成与章节要求，输出 JSON："
     '{"business": [{"title": "...", "guide": "该部分内容与写作要求"}], '
-    '"technical": [...], "price": [...], "notes": "..."}。'
+    '"technical": [...], "price": [...], "notes": "...", '
+    '"format": {"font": "字体要求(如宋体/仿宋/黑体)", "size": "字号要求(如小四/四号/12pt)", '
+    '"line_spacing": "行距要求(如1.5倍行距/单倍行距)", "toc_required": true|false, "other": "其他版式要求"}}。'
     "依据：第五章响应文件格式、响应供应商须知、技术规范书；如材料明确给出格式/组成要求，"
-    "必须严格照搬其章节名称与顺序；如材料未给出明确格式要求，返回 {\"business\": [], \"technical\": []}。"
+    "必须严格照搬其章节名称与顺序；format 仅当材料明确给出字体/字号/版式要求时填写，否则为 null。"
     "只依据给定材料，禁止编造。"
 )
 
@@ -439,6 +441,7 @@ def _parse_structure_reply(reply: str) -> dict[str, list[tuple[str, str]]]:
         "business": _norm(parsed.get("business") or []),
         "technical": _norm(parsed.get("technical") or []),
         "price": _norm(parsed.get("price") or []),
+        "format": parsed.get("format") if isinstance(parsed.get("format"), dict) else None,
     }
 
 
@@ -510,7 +513,20 @@ async def _llm_extract_structure(
             )
             order += 1
             count += 1
-    return {"count": count, "error": None}
+    format_spec = parsed.get("format") or None
+    if format_spec:
+        # 格式要求落库（doc_structure / role=format）：导出时优先按招标要求排版
+        await requirement_service.upsert_requirement(
+            session,
+            enterprise_id=enterprise_id,
+            project_id=project_id,
+            req_type="doc_structure",
+            content=f"响应文件格式要求：{format_spec.get('font') or ''} {format_spec.get('size') or ''}",
+            structured={"role": "format", "spec": format_spec},
+            coordinates=[],
+            confidence=None,
+        )
+    return {"count": count, "error": None, "format": format_spec}
 
 
 def _structure_window(full_text: str) -> str:
@@ -778,6 +794,17 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         )
     pre_extracted = None
 
+    async def _gen_progress(percent: int, work: str) -> None:
+        """生成全程进度可视化（Issue #8 反馈"一直卡在 10%"）：每阶段落库供 SSE/轮询展示。"""
+        task.progress = {"phase": "bid_generate", "status": "running", "percent": percent, "current_work": work}
+        await session.commit()
+        await _set_rls_context(session, task.enterprise_id)
+
+    await _gen_progress(
+        20,
+        f"输入检查完成（要求 {len(requirements)} 条 / 材料 {len(material_file_ids)} 个），开始生成",
+    )
+
     facts = (
         await session.scalars(
             sa_select(EnterpriseFact).where(EnterpriseFact.enterprise_id == task.enterprise_id)
@@ -961,6 +988,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     use_hermes = (task.payload.get("agent") or _settings.bid_generate_agent) == "hermes"
     hermes_ok = False
     if use_hermes and llm_enabled():
+        await _gen_progress(30, "启动 Hermes Agent（经 bidvolt MCP 工具）生成成果…")
         hermes_result = await _run_hermes_agent(task)
         if hermes_result is None:
             log_tail = "hermes 不可用（未安装或无法启动）"
@@ -1013,6 +1041,11 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     if llm_enabled() and not hermes_ok:
         import re
 
+        await _gen_progress(
+            40,
+            f"回退内嵌闭环：分章深度生成中（商务 {len(biz_chapters)} 章 / 技术 {len(tech_chapters)} 章，"
+            "每章均可能多轮扩充，请耐心等待）",
+        )
         client = LLMClient()
 
         def _clean_md(text: str) -> str:
@@ -1156,6 +1189,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             _gen_doc("商务标", biz_chapters, biz_reqs),
             _gen_doc("技术标", tech_chapters, tech_req_text),
         )
+        await _gen_progress(60, "分章生成完成，执行 Agent 自检补缺（对照全部要求）…")
         if biz_doc is not None:
             # 应答函格式页（路线图项）：正式商务标首部必须含应答函（字段未知处【待补充】，禁止编造）
             buyer_name = (project.buyer or "") if project is not None else ""
@@ -1236,6 +1270,10 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         except Exception:  # noqa: BLE001  自检失败不阻塞生成
             pass
         agent_meta["closed"] = self_check_closed
+        await _gen_progress(
+            75,
+            f"自检完成（closed={self_check_closed}，{agent_meta.get('rounds', 0)} 轮），进入评审与质量门禁…",
+        )
     agent_meta["knowledge_refs"] = len(knowledge_refs)
     agent_meta["chapter_expansions"] = chapter_expansions["n"]
 
@@ -1313,6 +1351,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     # 评审闭环（Issue #8）：生成后自动执行内置评审 + 要求覆盖检查，评审结果绑定当前成果版本
     from app.services import review_service
 
+    await _gen_progress(85, "执行内置评审与评分细则核对…")
     review_info = await review_service.run_evaluation(
         session, enterprise_id=task.enterprise_id, project_id=project_id
     )

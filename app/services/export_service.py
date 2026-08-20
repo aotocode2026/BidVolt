@@ -8,16 +8,124 @@ from io import BytesIO
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 
 
-def docx_bytes(model: dict) -> bytes:
-    from docx import Document
+_CN_SIZES = {
+    "初号": 42, "小初": 36, "一号": 26, "小一": 24, "二号": 22, "小二": 18,
+    "三号": 16, "小三": 15, "四号": 14, "小四": 12, "五号": 10.5, "小五": 9, "六号": 7.5,
+}
 
+
+def _resolve_format(spec: dict | None) -> dict:
+    """招标文件格式要求 → 排版参数；未要求处用默认（正文宋体小四、1.5 倍行距）。"""
+    if not spec:
+        return {"font": "宋体", "size": 12, "line_spacing": 1.5}
+    font = str(spec.get("font") or "").strip() or "宋体"
+    if "黑体" in font:
+        font = "黑体"
+    elif "仿宋" in font:
+        font = "仿宋"
+    elif "楷" in font:
+        font = "楷体"
+    else:
+        font = "宋体"
+    size_raw = str(spec.get("size") or "").strip()
+    size = _CN_SIZES.get(size_raw)
+    if size is None:
+        import re as _re
+
+        m = _re.search(r"(\d+(?:\.\d+)?)", size_raw)
+        size = float(m.group(1)) if m else 12
+    spacing_raw = str(spec.get("line_spacing") or "")
+    line_spacing = 1.5
+    if "单倍" in spacing_raw or "1.0" in spacing_raw:
+        line_spacing = 1.0
+    elif "2" in spacing_raw and "倍" in spacing_raw:
+        line_spacing = 2.0
+    return {"font": font, "size": size, "line_spacing": line_spacing}
+
+
+def docx_bytes(model: dict, format_spec: dict | None = None) -> bytes:
+    """DOCX 生成（Issue #8 反馈"字体大小粗细不一致、无标题目录结构"）：
+    - 字体/字号/行距优先按招标文件格式要求（format_spec，解析自响应文件格式章节），
+      未要求处默认正文宋体小四、1.5 倍行距；
+    - 标题分三级（文件标题 / 章 / 节），黑体加粗黑色，Word 导航窗格可见层级；
+    - 文首输出目录页（章节清单）。"""
+    import re
+
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
+
+    fmt = _resolve_format(format_spec)
+    body_size = float(fmt["size"])
     doc = Document()
-    for node in model.get("nodes", []):
-        text = node.get("text", "")
+
+    def _style_font(name, east, size, bold):
+        style = doc.styles[name]
+        style.font.name = "Times New Roman"
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), east)
+        style.font.size = Pt(size)
+        style.font.bold = bold
+        style.font.color.rgb = RGBColor(0, 0, 0)
+
+    _style_font("Normal", fmt["font"], body_size, False)
+    _style_font("Title", "黑体", body_size + 6, True)
+    _style_font("Heading 1", "黑体", body_size + 4, True)
+    _style_font("Heading 2", "黑体", body_size + 2, True)
+    _style_font("Heading 3", "黑体", body_size + 1, True)
+    doc.styles["Normal"].paragraph_format.line_spacing = float(fmt["line_spacing"])
+
+    def _heading_level(text: str, is_first: bool) -> int:
+        if is_first and text.strip() in ("商务标", "技术标", "报价单"):
+            return 0  # Title
+        if re.match(r"^第[一二三四五六七八九十百0-9]+[章部分节]", text.strip()):
+            return 1
+        if re.match(r"^[一二三四五六七八九十]+、", text.strip()):
+            return 1
+        return 2
+
+    nodes = model.get("nodes") or []
+    # 目录页：收集全部标题
+    toc: list[tuple[int, str]] = []
+    first_heading_seen = False
+    for node in nodes:
         if node.get("type") == "heading":
-            doc.add_heading(text, level=1)
+            text = str(node.get("text") or "").strip()
+            if not text:
+                continue
+            toc.append((_heading_level(text, not first_heading_seen), text))
+            first_heading_seen = True
+
+    if toc:
+        doc.add_paragraph("目录", style="Heading 1")
+        for level, title in toc:
+            if level == 0:
+                continue
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Pt(0 if level == 1 else 18)
+            run = p.add_run(title)
+            run.font.size = Pt(12 if level == 1 else 10.5)
+            run.font.bold = level == 1
+            run.font.name = "Times New Roman"
+            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+
+    first_heading_seen = False
+    for node in nodes:
+        text = str(node.get("text") or "")
+        ntype = node.get("type")
+        if ntype == "heading":
+            level = _heading_level(text.strip(), not first_heading_seen)
+            first_heading_seen = True
+            if level == 0:
+                p = doc.add_paragraph(text, style="Title")
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            else:
+                doc.add_heading(text, level=level)
         else:
-            doc.add_paragraph(text)
+            if text.startswith("- "):
+                doc.add_paragraph(text[2:], style="List Bullet")
+            else:
+                doc.add_paragraph(text)
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()

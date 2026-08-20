@@ -152,6 +152,24 @@ async def export_project(
     await session.flush()
 
     files: list[dict] = []
+    # 招标文件格式要求（解析阶段落库 doc_structure / role=format）：导出排版优先遵循，
+    # 未要求处用默认（Issue #8：成果必须按招标模板要求生成）
+    from app.models.requirement import Requirement
+
+    structure_rows = (
+        await session.scalars(
+            select(Requirement).where(
+                Requirement.enterprise_id == user.enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+                Requirement.req_type == "doc_structure",
+            )
+        )
+    ).all()
+    format_spec = next(
+        ((r.structured or {}).get("spec") for r in structure_rows if (r.structured or {}).get("role") == "format"),
+        None,
+    )
     for deliverable in deliverables:
         if deliverable.current_version_no == 0:
             continue
@@ -160,7 +178,7 @@ async def export_project(
         )
         for fmt in formats:
             if fmt == "docx" and deliverable.deliverable_type in (1, 2):
-                data = export_service.docx_bytes(model)
+                data = export_service.docx_bytes(model, format_spec=format_spec)
                 ext = "docx"
             elif fmt == "xlsx" and deliverable.deliverable_type == 3:
                 data = export_service.xlsx_bytes(model)
