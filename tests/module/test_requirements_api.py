@@ -119,6 +119,9 @@ def test_tender_parse_extracts_structure(client, monkeypatch):
     task = _drain_one_task()
     assert task.status == 3
     assert task.result["structure_extracted"] == 3
+    # Hermes 双通道复核（Issue #8）：结果必须显式记录复核状态（CI 无 hermes → ok=False + 原因）
+    assert "hermes_review" in task.result
+    assert isinstance(task.result["hermes_review"].get("ok"), bool)
 
     reqs = client.get(f"/api/v1/requirements?project_id={pid}", headers=h).json()
     structures = [r for r in reqs if r["req_type"] == "doc_structure"]

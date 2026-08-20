@@ -546,8 +546,9 @@ def _structure_window(full_text: str) -> str:
 
 
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
-    """解析项目材料：doc_block + （门禁内）LLM 语义抽取 requirement。"""
+    """解析项目材料：doc_block + （门禁内）LLM 语义抽取 requirement + Hermes 双通道复核。"""
     from app.services.file_service import reparse_file
+    from app.services.llm import llm_enabled
 
     file_ids = task.payload.get("file_ids") or []
     if not file_ids:
@@ -596,6 +597,40 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         task_id=task.id,
         task=task,
     )
+    # 提交代码抽取的待落库要求（Hermes 复核通过 MCP 独立连接读取，必须可见）
+    await session.commit()
+    await _set_rls_context(session, task.enterprise_id)
+    # —— Hermes 双通道复核（用户要求）：代码+M3 快路径抽取，Hermes 经 tender-parse skill
+    # 对照材料文本补抽遗漏要求；失败不阻塞，但显式写入任务结果 ——
+    hermes_review: dict = {"ok": False, "error": "未执行"}
+    if llm_enabled() and parsed_ids:
+        task.progress = {
+            "phase": task.task_type, "status": "running", "percent": 66,
+            "current_work": "Hermes 复核招标要求（双通道，对照材料文本补抽）…",
+        }
+        await session.commit()
+        await _set_rls_context(session, task.enterprise_id)
+        try:
+            hermes_review = (await _run_hermes_parse_review(task)) or {"ok": False, "error": "hermes 不可用"}
+        except Exception as exc:  # noqa: BLE001
+            hermes_review = {"ok": False, "error": str(exc)[:200]}
+        # 复核后重新统计要求数（Hermes 经独立连接写入，重查数据库）
+        from sqlalchemy import select as _sa_select
+
+        from app.models.requirement import Requirement as _Req
+
+        extracted = len(
+            (
+                await session.scalars(
+                    _sa_select(_Req).where(
+                        _Req.enterprise_id == task.enterprise_id,
+                        _Req.project_id == task.project_id,
+                        _Req.current.is_(True),
+                        _Req.req_type != "doc_structure",
+                    )
+                )
+            ).all()
+        )
     # 流程化确认标书结构（用户反馈）：解析阶段即从招标文件提取响应文件格式要求，
     # 落库为 req_type=doc_structure 的要求，生成任务直接消费（不用通用模板拍脑袋）。
     structure_info = await _llm_extract_structure(
@@ -620,6 +655,10 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         "parse_failures": parse_failures,
         "requirements_extracted": extracted,
         "structure_extracted": structure_extracted,
+        "hermes_review": {
+            "ok": bool(hermes_review.get("ok")),
+            "detail": (hermes_review.get("error") or hermes_review.get("log_tail") or "")[-300:],
+        },
     }
     from app.services.llm import llm_enabled
 
@@ -631,6 +670,8 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
             f"{len(parse_failures)} 个文件解析失败（已跳过）："
             + "；".join(f"{f['file_name']}（{f['reason'][:60]}）" for f in parse_failures[:5])
         )
+    if not hermes_review.get("ok") and llm_enabled() and parsed_ids:
+        notes.append(f"Hermes 复核未完成（{hermes_review.get('error', '')[:80]}），要求以代码抽取结果为准")
     if structure_error:
         notes.append(f"未确认招标文件响应格式：{structure_error}（成果可能未按模板结构生成，请人工核对）")
     elif structure_extracted == 0 and llm_enabled():
@@ -718,6 +759,69 @@ async def _run_hermes_agent(task: Task) -> dict | None:
         return {"ok": False, "error": "hermes 执行超时（900s）"}
     log_tail = (out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace"))[-1500:]
     return {"ok": proc.returncode == 0, "log": log_tail}
+
+
+async def _run_hermes_parse_review(task: Task) -> dict | None:
+    """Hermes 双通道复核要求（用户要求"用 hermes 提一遍要求"）：代码+M3 抽取为快路径，
+    Hermes 经 bidvolt-tender-parse skill 对照材料文本复核补抽（upsert_requirements 幂等）。
+    不可用/失败返回 {"ok": False, "error": ...}（不阻塞解析任务，失败显式写入任务结果）。"""
+    import os
+    import shutil
+
+    hermes_bin = shutil.which("hermes") or "/data/hermes/venv/bin/hermes"
+    if not os.path.exists(hermes_bin):
+        return {"ok": False, "error": "hermes 未安装"}
+    try:
+        from app.services.capability import issue_capability
+
+        cap = issue_capability(
+            enterprise_id=task.enterprise_id,
+            project_id=task.project_id,
+            task_id=task.id,
+            task_type=task.task_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"capability 签发失败：{exc}"}
+    prompt = (
+        f"你是招标文件解析复核 Agent。项目 {task.project_id} 已完成一轮要求抽取，请复核并补抽。"
+        "【硬性要求】本会话为非交互批处理模式：必须直接执行到底，每一步真实调用 MCP 工具"
+        "（工具名带 bidvolt: 前缀），等待工具真实返回后再继续；严禁只输出计划、方案或虚构工具返回结果；"
+        "严禁询问用户或等待确认。"
+        "流程：1) bidvolt:list_requirements 查看已有要求；2) bidvolt:get_project_material_blocks 读取材料文本；"
+        "3) 对照材料补抽遗漏的资格要求/评分细则/否决条款/技术要求/报价规则/材料清单，"
+        "经 bidvolt:upsert_requirements 落库（坐标必填、先查重不重复写入、不编造）；"
+        "4) 完成后用一句话总结（补抽条数）。任务 id=" + str(task.id) + "。"
+    )
+    env = dict(os.environ)
+    env["BIDVOLT_CAPABILITY_TOKEN"] = cap
+    env["HERMES_ACCEPT_HOOKS"] = "1"
+    hermes_home = os.environ.get("HERMES_HOME") or "/data/hermes"
+    env["HERMES_HOME"] = hermes_home
+    try:
+        cap_file = os.environ.get("BIDVOLT_CAP_FILE", "/tmp/bidvolt_cap_token")
+        with open(cap_file, "w", encoding="utf-8") as _f:
+            _f.write(cap)
+        os.chmod(cap_file, 0o600)
+    except OSError:
+        pass
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            hermes_bin, "chat", "-q", prompt,
+            "-t", "bidvolt", "-s", "bidvolt-tender-parse",
+            "-Q", "--cli", "--max-turns", "40", "--no-restore-cwd",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=env, cwd=hermes_home,
+        )
+    except OSError:
+        return {"ok": False, "error": "hermes 启动失败"}
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
+    except TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return {"ok": False, "error": "hermes 复核超时（600s）"}
+    log_tail = (out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace"))[-1500:]
+    return {"ok": proc.returncode == 0, "log_tail": log_tail}
 
 
 async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
