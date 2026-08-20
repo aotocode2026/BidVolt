@@ -36,6 +36,8 @@ def _file_dict(f: FileObject) -> dict:
         "category": f.category,
         "project_id": f.project_id,
         "document_role": f.document_role,
+        # 存量解析失败文件在资料列表红字标注原因（新上传已直接拒绝，不会产生 status=4）
+        "parse_status": f.parse_status,
     }
 
 
@@ -52,35 +54,38 @@ async def upload_files(
     for upload in files:
         data = await upload.read(settings.max_upload_bytes + 1)
         try:
-            fobj = await file_service.process_upload(
-                session, user, data, upload.filename or "unnamed", target, project_id, document_role
-            )
-            await write_audit(
-                session,
-                enterprise_id=user.enterprise_id,
-                user_id=user.user_id,
-                project_id=fobj.project_id,
-                action="file.upload",
-                object_type="file_object",
-                object_id=fobj.id,
-            )
-            item = {
-                "file_id": fobj.id,
-                "name": fobj.original_name,
-                "size": fobj.size_bytes,
-                "mime": fobj.mime_type,
-                "status": fobj.status,
-                "document_role": fobj.document_role,
-                # Issue #13：解析失败原因随上传响应返回，前端即时提示（此前原因只落库不展示）
-                "parse_status": fobj.parse_status,
-            }
-            if target == "enterprise":
-                # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest
-                asset = await session.scalar(
-                    select(EnterpriseAsset).where(EnterpriseAsset.source_file_id == fobj.id)
+            # SAVEPOINT：单文件解析失败 → 该文件整体回滚（不入库、不进资料列表），
+            # 其余文件互不影响（Issue #8 复盘：失败文件必须红字拒绝，不留歧义记录）。
+            async with session.begin_nested():
+                fobj = await file_service.process_upload(
+                    session, user, data, upload.filename or "unnamed", target, project_id, document_role
                 )
-                item["asset_id"] = asset.id if asset else None
-                item["auto_ingest"] = True
+                await write_audit(
+                    session,
+                    enterprise_id=user.enterprise_id,
+                    user_id=user.user_id,
+                    project_id=fobj.project_id,
+                    action="file.upload",
+                    object_type="file_object",
+                    object_id=fobj.id,
+                )
+                item = {
+                    "file_id": fobj.id,
+                    "name": fobj.original_name,
+                    "size": fobj.size_bytes,
+                    "mime": fobj.mime_type,
+                    "status": fobj.status,
+                    "document_role": fobj.document_role,
+                    # Issue #13：解析失败原因随上传响应返回，前端即时提示（此前原因只落库不展示）
+                    "parse_status": fobj.parse_status,
+                }
+                if target == "enterprise":
+                    # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest
+                    asset = await session.scalar(
+                        select(EnterpriseAsset).where(EnterpriseAsset.source_file_id == fobj.id)
+                    )
+                    item["asset_id"] = asset.id if asset else None
+                    item["auto_ingest"] = True
             results.append(item)
         except ValueError as exc:
             results.append({"name": upload.filename, "error": str(exc)})

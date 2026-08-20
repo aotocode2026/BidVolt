@@ -57,15 +57,17 @@ def test_upload_magic_mismatch_fails(client):
     assert "error" in r.json()["files"][0]
 
 
-def test_corrupted_zip_enters_manual_processing(client):
+def test_corrupted_zip_upload_rejected_loudly(client):
+    """Issue #8 复盘：解析失败的文件必须整体拒绝（红字原因），不入库不进资料列表。"""
     h = _headers(client)
     r = _upload(client, h, content=b"PK\x03\x04 not-a-real-zip", name="bad.zip")
     assert r.status_code == 200
     entry = r.json()["files"][0]
-    # 损坏压缩包不静默丢弃：解析失败进入"需人工处理"（status=4）
-    assert entry["status"] == 4
-    st = client.get(f"/api/v1/files/{entry['file_id']}/parse-status", headers=h).json()
-    assert st["parse_status"]["error_code"]
+    assert "error" in entry
+    assert "文件解析失败" in entry["error"]
+    # 未被记录为项目材料
+    lst = client.get("/api/v1/files", headers=h).json()
+    assert all(x["name"] != "bad.zip" for x in lst["items"])
 
 
 def test_upload_to_project_sets_processing(client):

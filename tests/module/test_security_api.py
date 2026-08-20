@@ -96,10 +96,9 @@ def test_scan_image_injection_does_not_change_authorization(client):
     )
     assert r.status_code == 200
     entry = r.json()["files"][0]
-    # 视觉门禁关闭：不调用 VL，解析失败为可理解的错误，而非执行"指令"
-    assert entry["status"] == 4
-    st = client.get(f"/api/v1/files/{entry['file_id']}/parse-status", headers=h).json()
-    assert "视觉模型门禁关闭" in st["parse_status"]["message"]
+    # 视觉门禁关闭：不调用 VL，上传被整体拒绝并给出可理解的原因，而非执行"指令"
+    assert "error" in entry
+    assert "视觉模型门禁关闭" in entry["error"]
 
     # 权限未被提升
     me = client.get("/api/v1/auth/me", headers=h).json()
