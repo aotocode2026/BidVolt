@@ -121,6 +121,21 @@ def docx_bytes(model: dict, format_spec: dict | None = None) -> bytes:
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             else:
                 doc.add_heading(text, level=level)
+        elif ntype == "table":
+            # 模板表格照搬（Issue #8：表格不能拍平成文字）
+            rows = node.get("rows") or []
+            if rows:
+                t = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+                t.style = "Table Grid"
+                for ri, row in enumerate(rows):
+                    for ci in range(len(t.rows[ri].cells)):
+                        val = row[ci] if ci < len(row) else ""
+                        cell = t.rows[ri].cells[ci]
+                        cell.text = ""
+                        run = cell.paragraphs[0].add_run(str(val))
+                        run.font.name = "Times New Roman"
+                        run._element.rPr.rFonts.set(qn("w:eastAsia"), fmt["font"])
+                        run.font.size = Pt(max(body_size - 1, 9))
         else:
             if text.startswith("- "):
                 doc.add_paragraph(text[2:], style="List Bullet")

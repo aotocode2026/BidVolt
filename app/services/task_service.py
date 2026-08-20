@@ -404,14 +404,16 @@ def _dedup_block_texts(blocks, limit: int = 30000) -> str:
 
 
 _STRUCTURE_SYSTEM = (
-    "你是投标文件结构解析助手。从招标文件材料中提取应答/响应文件的组成与章节要求，输出 JSON："
-    '{"business": [{"title": "...", "guide": "该部分内容与写作要求"}], '
+    "你是投标文件结构解析助手。从招标文件'响应文件格式'章节中【逐项照搬】响应文件的组成清单，输出 JSON："
+    '{"business": [{"title": "...", "guide": "该条目的编制/格式要求摘要"}], '
     '"technical": [...], "price": [...], "notes": "...", '
     '"format": {"font": "字体要求(如宋体/仿宋/黑体)", "size": "字号要求(如小四/四号/12pt)", '
     '"line_spacing": "行距要求(如1.5倍行距/单倍行距)", "toc_required": true|false, "other": "其他版式要求"}}。'
-    "依据：第五章响应文件格式、响应供应商须知、技术规范书；如材料明确给出格式/组成要求，"
-    "必须严格照搬其章节名称与顺序；format 仅当材料明确给出字体/字号/版式要求时填写，否则为 null。"
-    "只依据给定材料，禁止编造。"
+    "铁律（Issue #8 产品复测：结构必须与招标模板逐项一致）："
+    "1) 逐项列出该章节'商务文件''技术文件''价格文件'下的全部文件条目，禁止归纳、合并、改写、漏项；"
+    "2) title 照搬招标文件原文的编号与名称（如'（一）法定代表人（单位负责人）授权委托书'、'1.技术偏差表'）；"
+    "3) 每个条目带 guide 摘要该条目的编制要求；format 仅当材料明确给出字体/字号/版式要求时填写，否则 null；"
+    "4) 如材料未给出明确组成清单，对应数组返回 []。只依据给定材料，禁止编造。"
 )
 
 
@@ -545,6 +547,230 @@ def _structure_window(full_text: str) -> str:
     return full_text[:40000]
 
 
+def _score_rules_window(full_text: str) -> str:
+    """从大文本中定位"评分标准/评审要素/评分权重"表格窗口，供评分细则专项抽取。"""
+    lines = full_text.splitlines()
+    kws = (
+        "评分标准", "评审要素", "评审内容", "评分权重", "商务详评细则", "技术详评",
+        "分值权重", "报价评分", "诚信评价", "综合评价", "打分",
+    )
+    hits = [i for i, ln in enumerate(lines) if any(k in ln for k in kws)]
+    if hits:
+        start = max(0, min(hits) - 15)
+        end = min(len(lines), max(hits) + 900)
+        window = "\n".join(lines[start:end])
+        return window[:50000]
+    return ""
+
+
+def _chapter_window(full_text: str, title: str, guide: str = "") -> str:
+    """按章节标题/写作要求从招标文件原文中取相关段落窗口（Issue #8 复盘：
+    正文必须对着原始文档写，抽取仅是骨架，不能丢失原文信息）。"""
+    import re as _re
+
+    lines = full_text.splitlines()
+    tokens = [t for t in _re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,}", title or "")][:4]
+    if not tokens:
+        tokens = [t for t in _re.findall(r"[\u4e00-\u9fff]{2,}", guide or "")][:3]
+    if not tokens:
+        return ""
+    hits = [i for i, ln in enumerate(lines) if any(k in ln for k in tokens)]
+    if not hits:
+        return ""
+    start = max(0, min(hits) - 15)
+    end = min(len(lines), max(hits) + 80)
+    return "\n".join(lines[start:end])[:6000]
+
+
+def _extract_template_blocks(full_text: str) -> dict[str, list[dict]]:
+    """模板原文确定性提取（Issue #8 验收铁律：模板原文/章节/编号/顺序/表格/注释
+    不能减少、改写或替换）——从'第五章响应文件格式'章节【逐字照搬】组成与模板，
+    不经过 LLM 归纳，避免信息丢失。
+
+    返回 {role: [{kind: heading|paragraph|table, text, cols?, order}]}。
+    表格行在 doc_block 中以 "cell1 | cell2 | cell3" 形式存在，按 | 重建表格结构。
+    """
+    import re as _re
+
+    lines = full_text.splitlines()
+    role_starts: dict[str, int] = {}
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        m = _re.match(r"^[一二三]?、?(价格|商务|技术)文件$", s)
+        if m:
+            role_starts.setdefault({"价格": "price", "商务": "business", "技术": "technical"}[m.group(1)], i)
+    if not role_starts:
+        return {}
+
+    def _classify_table(rows: list[list[str]]) -> str | None:
+        head = " ".join(rows[0]) if rows else ""
+        if any(k in head for k in ("采购文件条目号", "层级", "建设规模", "职务", "职称", "拟委任", "工作年限")):
+            return "technical"
+        if any(k in head for k in ("检查内容", "开户行", "项目名称", "响应总价", "自查", "出资金额", "财务指标", "保证金")):
+            return "business"
+        return None
+
+    out: dict[str, list[dict]] = {}
+    seen_tables: set[str] = set()
+
+    def _emit(role: str, blocks: list[dict]) -> None:
+        for b in blocks:
+            if b.get("kind") == "table":
+                fp = "|".join("|".join(r) for r in b["rows"])
+                if fp in seen_tables:
+                    continue
+                seen_tables.add(fp)
+            out.setdefault(role, []).append(b)
+
+    for role, start in sorted(role_starts.items(), key=lambda kv: kv[1]):
+        nexts = [v for v in role_starts.values() if v > start]
+        # 段落内附录/表格区标记：取该角色起始之后的第一个标记作为本段结束
+        seg_end = len(lines)
+        for i in range(start, len(lines)):
+            if any(k in lines[i] for k in ("投标（应答）人须知前附表附件", "商务评分标准", "技术评分标准", "响应文件编制注意事项")):
+                seg_end = i
+                break
+        nexts.append(seg_end)
+        seg = lines[start:min(nexts)]
+        blocks: list[dict] = []
+        buf: list[str] = []
+        table_rows: list[list[str]] = []
+
+        def flush_table():
+            nonlocal table_rows
+            if len(table_rows) >= 2:
+                blocks.append({"kind": "table", "rows": table_rows})
+            elif table_rows:
+                blocks.append({"kind": "paragraph", "text": " | ".join(table_rows[0])})
+            table_rows = []
+
+        def flush_buf():
+            nonlocal buf
+            if buf:
+                blocks.append({"kind": "paragraph", "text": "\n".join(buf)})
+                buf = []
+
+        for ln in seg:
+            s = ln.strip()
+            if not s:
+                flush_table()
+                flush_buf()
+                continue
+            if _re.match(r"^（[一二三四五六七八九十]+）", s) or _re.match(r"^\d{1,2}\.", s):
+                flush_table()
+                flush_buf()
+                blocks.append({"kind": "heading", "text": s})
+                continue
+            if " | " in s and len(s.split(" | ")) >= 2:
+                flush_buf()
+                cells = [c.strip() for c in s.split(" | ")]
+                if cells and any(cells):
+                    table_rows.append(cells)
+                continue
+            flush_table()
+            buf.append(s)
+        flush_table()
+        flush_buf()
+        _emit(role, blocks)
+
+    # 后置"格式文件/表格模板区"（Issue #8：技术偏差表等表格模板位于组成说明之后，
+    # 如"序号 | 采购文件条目号 | 采购文件条款 | 响应文件条款 | 偏差说明"在 1329 行附近）：
+    # 全局扫描残留表格，按表头关键词归入商务/技术模板，避免表格拍平成文字丢失。
+    all_rows: list[list[str]] = []
+    for ln in lines:
+        s = ln.strip()
+        if " | " in s and len(s.split(" | ")) >= 2:
+            cells = [c.strip() for c in s.split(" | ")]
+            if cells and any(cells):
+                all_rows.append(cells)
+            continue
+        if all_rows:
+            role = _classify_table(all_rows)
+            if role and len(all_rows) >= 2:
+                _emit(role, [{"kind": "table", "rows": all_rows}])
+            all_rows = []
+    if all_rows:
+        role = _classify_table(all_rows)
+        if role and len(all_rows) >= 2:
+            _emit(role, [{"kind": "table", "rows": all_rows}])
+    return out
+
+
+_SCORE_RULES_SYSTEM = (
+    "你是评标标准解析助手。从招标文件的评分标准表（商务评分标准/技术评分标准/报价评分标准/"
+    "各项目评分权重）中【逐条】提取评分项，输出 JSON 数组："
+    '[{"element": "评审要素名（照搬原文，如 绿色低碳评价）", '
+    '"content": "评审内容原文（含分值区间，如 0-3分、优：9-10分）", '
+    '"weight": 分值上限数字（区间取上限，如 3 或 10）}, ...]。'
+    "铁律：表格每行一条，逐条提取禁止归纳合并；分值取区间上限；"
+    "只依据给定材料，禁止编造；材料无评分标准表时输出 []。"
+)
+
+
+async def _llm_extract_score_rules(
+    session: AsyncSession,
+    *,
+    enterprise_id: int,
+    project_id: int,
+    file_ids: list[int],
+    task: Task | None = None,
+) -> int:
+    """评分标准表专项抽取（Issue #8：评标必须按招标评分细则打分，分值权重来自原文表格）。
+    落库为 req_type=score_rule（structured.score_rule.weight=分值上限），返回抽取条数。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.doc import DocBlock
+    from app.services import requirement_service
+    from app.services.llm import LLMClient, extract_json, llm_enabled
+
+    if not llm_enabled():
+        return 0
+    file_ids = [int(i) for i in file_ids]
+    if not file_ids:
+        return 0
+    blocks = (
+        await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
+    ).all()
+    full_text = _dedup_block_texts(blocks, limit=160000)
+    window = _score_rules_window(full_text)
+    if not window.strip():
+        return 0
+    reply = await LLMClient().chat(_SCORE_RULES_SYSTEM, f"评分标准章节文本：\n{window}")
+    parsed = extract_json(reply)
+    if isinstance(parsed, dict):
+        items = parsed.get("rules") or parsed.get("items") or []
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        items = []
+    count = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        element = str(item.get("element") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not element or not content:
+            continue
+        try:
+            weight = float(item.get("weight") or 0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        if weight <= 0:
+            continue
+        await requirement_service.upsert_requirement(
+            session,
+            enterprise_id=enterprise_id,
+            project_id=project_id,
+            req_type="score_rule",
+            content=f"{element}：{content[:160]}",
+            structured={"score_rule": {"weight": weight, "criterion": content[:200], "element": element[:80]}},
+            coordinates=[],
+            confidence=None,
+        )
+        count += 1
+    return count
+
+
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     """解析项目材料：doc_block + （门禁内）LLM 语义抽取 requirement + Hermes 双通道复核。"""
     from app.services.file_service import reparse_file
@@ -642,11 +868,55 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     )
     structure_extracted = structure_info.get("count") or 0
     structure_error = structure_info.get("error")
+    # 评分标准表专项抽取（Issue #8：评标按招标评分细则打分，权重来自原文表格）
+    score_rules_extracted = await _llm_extract_score_rules(
+        session,
+        enterprise_id=task.enterprise_id,
+        project_id=task.project_id,
+        file_ids=parsed_ids,
+        task=task,
+    )
+    # 模板原文确定性提取（Issue #8 验收铁律：模板原文/编号/顺序/表格不能改写或替换，
+    # 生成只能在模板上填写与增加——故模板必须逐字落库，供生成骨架照搬）
+    from sqlalchemy import select as _sa_select
+
+    from app.models.doc import DocBlock as _DB
+    from app.services import requirement_service as _req_svc
+
+    template_blocks = await session.scalars(
+        _sa_select(_DB).where(_DB.file_id.in_(parsed_ids))
+    )
+    full_text = _dedup_block_texts(list(template_blocks), limit=160000)
+    templates = _extract_template_blocks(full_text)
+    template_count = 0
+    for role in ("business", "technical", "price"):
+        for order, blk in enumerate(templates.get(role, [])):
+            text = blk.get("text") or (
+                "\n".join(" | ".join(r) for r in blk.get("rows") or [])
+            )
+            if not text.strip():
+                continue
+            await _req_svc.upsert_requirement(
+                session,
+                enterprise_id=task.enterprise_id,
+                project_id=task.project_id,
+                req_type="doc_template",
+                content=text[:2000],
+                structured={
+                    "role": role,
+                    "order": order,
+                    "kind": blk.get("kind") or "paragraph",
+                    "rows": blk.get("rows") or [],
+                },
+                coordinates=[],
+                confidence=None,
+            )
+            template_count += 1
     task.progress = {
         "phase": task.task_type,
         "status": "running",
-        "percent": 90,
-        "current_work": f"结构解析完成（{structure_extracted} 章），汇总结果…",
+        "percent": 92,
+        "current_work": f"结构 {structure_extracted} 章 / 模板 {template_count} 块 / 评分细则 {score_rules_extracted} 条，汇总…",
     }
     await session.commit()
     await _set_rls_context(session, task.enterprise_id)
@@ -655,6 +925,8 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         "parse_failures": parse_failures,
         "requirements_extracted": extracted,
         "structure_extracted": structure_extracted,
+        "template_blocks_extracted": template_count,
+        "score_rules_extracted": score_rules_extracted,
         "hermes_review": {
             "ok": bool(hermes_review.get("ok")),
             "detail": (hermes_review.get("error") or hermes_review.get("log_tail") or "")[-300:],
@@ -676,6 +948,8 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         notes.append(f"未确认招标文件响应格式：{structure_error}（成果可能未按模板结构生成，请人工核对）")
     elif structure_extracted == 0 and llm_enabled():
         notes.append("招标文件未明确响应文件格式要求，成果将按通用投标结构生成")
+    if score_rules_extracted == 0 and llm_enabled():
+        notes.append("未从材料抽取出评分标准表：评标将以内置完整性规则计分（不代表招标评标得分）")
     if extracted == 0 and llm_enabled():
         notes.append("未从材料抽取出任何招标要求：请检查文件内容（扫描件/加密件需人工处理），或到要求页手动录入")
     if not llm_enabled():
@@ -717,10 +991,15 @@ async def _run_hermes_agent(task: Task) -> dict | None:
         "bidvolt:save_deliverable、bidvolt:calculate_quote），等待工具真实返回后再继续；"
         "严禁只输出计划、A/B/C/D 方案、伪代码或虚构工具返回结果；"
         "严禁询问用户或等待确认——直接生成并保存，完成后用一句话总结。"
-        "流程：1) bidvolt:list_requirements 建立要求基线；2) bidvolt:search_assets 取企业事实；"
-        "3) 若项目尚无成果记录，先调用 bidvolt:create_deliverable 创建商务标/技术标/报价单三份记录"
+        "流程：1) bidvolt:list_requirements 建立要求基线——其中 req_type=doc_structure 是招标文件"
+        "'响应文件格式'章节的文件组成清单，成果章节必须逐项照搬该清单（标题与顺序不得改写）；"
+        "req_type=score_rule 是评分细则，正文必须逐条响应；"
+        "2) bidvolt:get_project_material_blocks 阅读招标文件【原文】，每章正文必须以原文相关段落为依据撰写"
+        "（抽取信息仅是骨架，禁止脱离原文编造条款）；"
+        "3) bidvolt:search_assets 取企业事实；"
+        "4) 若项目尚无成果记录，先调用 bidvolt:create_deliverable 创建商务标/技术标/报价单三份记录"
         "（project_id 填 " + str(task.project_id) + "，deliverable_type 分别 1/2/3）；"
-        "4) 逐份撰写并调用 bidvolt:save_deliverable 保存新版本"
+        "5) 逐份撰写并调用 bidvolt:save_deliverable 保存新版本"
         "（注意：expected_version_no 必须等于该成果【当前版本号】——新创建的记录当前版本号为 0，"
         "首次保存传 0；后续保存前先用 bidvolt:get_deliverable_content 读回当前版本号再传）；"
         "禁止编造企业事实；无资料处标注【待补充】；报价只建议不落库。任务 id=" + str(task.id) + "。"
@@ -941,7 +1220,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             .order_by(DocBlock.file_id, DocBlock.block_index)
         )
     ).all()
-    material_text = "\n".join(b.text_content or "" for b in material_blocks)[:30000] or "（项目未上传招标材料）"
+    material_text = "\n".join(b.text_content or "" for b in material_blocks)[:160000] or "（项目未上传招标材料）"
 
 
     # 历史知识检索（Issue #4）：为技术标提供专业写法素材（来源可追溯，结果仅入任务元数据）
@@ -1082,7 +1361,80 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     }
     chapter_expansions = {"n": 0}  # 分章字数不达标自动重写次数（闭环）
 
+    # 企业名称（模板填空用：供应商名称字段）
+    from app.models.auth import Enterprise as _Ent
+
+    ent_row = await session.get(_Ent, task.enterprise_id)
+    ent_name = (ent_row.name if ent_row else "") or ""
+
+    # —— 模板照搬（Issue #8 验收铁律）：成果以招标文件模板原文为骨架，
+    # 系统只在模板上填写已知信息与追加补充内容，不改写/替换/删减模板 ——
+    template_rows = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == task.enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+                Requirement.req_type == "doc_template",
+            )
+        )
+    ).all()
+    tpl_by_role: dict[str, list] = {"business": [], "technical": [], "price": []}
+    for r in template_rows:
+        role = (r.structured or {}).get("role")
+        if role in tpl_by_role:
+            tpl_by_role[role].append(r)
+    for role in tpl_by_role:
+        tpl_by_role[role].sort(key=lambda r: (r.structured or {}).get("order", 0))
+
+    def _template_nodes(rows: list) -> list[dict]:
+        nodes: list[dict] = []
+        for r in rows:
+            st = r.structured or {}
+            if st.get("kind") == "table" and st.get("rows"):
+                nodes.append({"id": f"tpl-{r.id}", "type": "table", "rows": st["rows"]})
+            elif st.get("kind") == "heading":
+                nodes.append({"id": f"tpl-{r.id}", "type": "heading", "text": r.content})
+            else:
+                nodes.append({"id": f"tpl-{r.id}", "type": "paragraph", "text": r.content})
+        return nodes
+
+    def _fill_known(text: str) -> str:
+        """填空（Issue #8 验收铁律：在模板上填写，不删改模板）：
+        已知字段回填（招标人/项目名称/供应商名称），未知空位原位标注【待补充：字段名】。"""
+        import re as _re
+
+        buyer = (project.buyer or "") if project is not None else ""
+        out = text
+        # 具名字段优先回填
+        out = out.replace("（采购人）", buyer or "【待补充：招标人名称】")
+        out = out.replace("（响应供应商名称）", ent_name or "【待补充：供应商名称】")
+        out = out.replace("（项目名称）", project_name or "【待补充：项目名称】")
+        if "项目名称：" in out:
+            out = _re.sub(r"项目名称：\s*[,，、]?", f"项目名称：{project_name}，", out, count=1)
+        # 下划线空位 → 原位待补充（保留字段位置，不删除）
+        out = _re.sub(r"_{2,}", "【待补充】", out)
+        # "法定地址：。" 等空字段尾部补标注
+        out = _re.sub(r"(法定地址|注册地址)：\s*[,，。、]?", r"\1：【待补充】", out)
+        return out
+
+    def _fill_template_nodes(nodes: list[dict]) -> list[dict]:
+        for n in nodes:
+            if n.get("type") == "paragraph" and n.get("text"):
+                n["text"] = _fill_known(n["text"])
+            elif n.get("type") == "table" and n.get("rows"):
+                n["rows"] = [[_fill_known(str(c)) for c in row] for row in n["rows"]]
+        return nodes
+
+    biz_tpl = _fill_template_nodes(_template_nodes(tpl_by_role.get("business", [])))
+    tech_tpl = _fill_template_nodes(_template_nodes(tpl_by_role.get("technical", [])))
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
+    if biz_tpl:
+        models[1]["nodes"] = [{"id": "tpl-biz-h", "type": "heading", "text": "商务文件"}, *biz_tpl]
+        models[1]["template_based"] = True
+    if tech_tpl:
+        models[2]["nodes"] = [{"id": "tpl-tech-h", "type": "heading", "text": "技术文件"}, *tech_tpl]
+        models[2]["template_based"] = True
     enhanced: list[str] = []
     # Hermes 作为默认生成路径（用户决策）：由部署的 Hermes Agent 经 bidvolt MCP
     # （携带任务级 capability token）执行 bid-generate skill 完成生成；
@@ -1237,7 +1589,12 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 "禁止沿用历史项目名称/招标人/金额/工期/人员姓名；资料不足处标注【待补充】；"
                 "直接输出 Markdown 正文（可用 ### 分小节），务必达到给定字数。"
             )
-            user = f"章节：{title}\n写作要求：{guide}\n\n相关要求：\n{reqs_text}\n\n{common_context}"
+            user = (
+                f"章节：{title}\n写作要求：{guide}\n\n相关要求：\n{reqs_text}\n\n"
+                f"招标文件原文相关段落（必须以此为准撰写，不得偏离）：\n"
+                f"{_chapter_window(material_text, title, guide) or '（原文未直接提及本章节，严格按写作要求与相关要求撰写）'}\n\n"
+                f"{common_context}"
+            )
             reply = ""
             async with chapter_sem:
                 for attempt in range(3):
@@ -1304,10 +1661,20 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                  "text": f"我方【供应商名称】已仔细研究《{project_name}》采购文件（含全部澄清与修改），"
                          "自愿参加本项目应答，并承诺完全响应采购文件要求（详见商务偏离表），应答报价详见价格文件。"},
             ]
-            models[1] = {"nodes": [biz_doc["nodes"][0], *cover_nodes, *biz_doc["nodes"][1:]]}
+            if models[1].get("template_based"):
+                # 模板照搬式（Issue #8 验收铁律）：LLM 只在模板之后【追加】补充响应内容，
+                # 绝不改写/替换模板骨架
+                models[1]["nodes"].append({"id": "llm-supp-h", "type": "heading", "text": "补充响应内容（在采购文件模板基础上增加）"})
+                models[1]["nodes"].extend([*cover_nodes, *biz_doc["nodes"][1:]])
+            else:
+                models[1] = {"nodes": [biz_doc["nodes"][0], *cover_nodes, *biz_doc["nodes"][1:]]}
             enhanced.append("business")
         if tech_doc is not None:
-            models[2] = tech_doc
+            if models[2].get("template_based"):
+                models[2]["nodes"].append({"id": "llm-supp-t", "type": "heading", "text": "补充响应内容（在采购文件模板基础上增加）"})
+                models[2]["nodes"].extend(tech_doc["nodes"][1:] if len(tech_doc["nodes"]) > 1 else tech_doc["nodes"])
+            else:
+                models[2] = tech_doc
             enhanced.append("technical")
 
         # —— Agent 自检闭环（Hermes bid-generate skill 的 V1 内嵌实现）——
@@ -1642,6 +2009,15 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
 
     issues: list[dict] = []
     texts: dict[int, str] = {}
+    requirements = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+            )
+        )
+    ).all()
     existing = {d.deliverable_type: d for d in deliverables}
     for dtype, name in ((1, "商务标"), (2, "技术标"), (3, "报价单")):
         d = existing.get(dtype)
@@ -1658,16 +2034,43 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
         texts[dtype] = text
         if project.name not in text:
             issues.append({"severity": "warning", "message": f"{name}未包含项目名称：{project.name}", "locate": d.id})
-
-    requirements = (
-        await session.scalars(
-            sa_select(Requirement).where(
-                Requirement.enterprise_id == enterprise_id,
-                Requirement.project_id == project_id,
-                Requirement.current.is_(True),
+        # 模板照搬校验（Issue #8 验收铁律：模板章节/表格一个不能少——缺一项报一项）
+        if dtype in (1, 2):
+            role = "business" if dtype == 1 else "technical"
+            tpl_rows = [
+                r for r in requirements
+                if r.req_type == "doc_template"
+                and (r.structured or {}).get("role") == role
+            ]
+            tpl_rows.sort(key=lambda r: (r.structured or {}).get("order", 0))
+            missing_tpl = []
+            for r in tpl_rows:
+                key = r.content.strip()[:24]
+                if key and key not in text:
+                    kind = (r.structured or {}).get("kind") or "paragraph"
+                    missing_tpl.append(f"{key}（{kind}）")
+            if missing_tpl:
+                issues.append(
+                    {
+                        "severity": "error",
+                        "message": f"{name}缺少采购文件模板条目 {len(missing_tpl)} 项："
+                        + "；".join(missing_tpl[:6])
+                        + ("…" if len(missing_tpl) > 6 else ""),
+                        "locate": d.id,
+                    }
+                )
+        # 【待补充】逐处列出缺失清单（Issue #8：每一处待补充必须在校核中指出）
+        lines = [ln.strip() for ln in text.splitlines() if "【待补充】" in ln]
+        for ln in lines[:12]:
+            short = ln[:60]
+            issues.append(
+                {
+                    "severity": "warning",
+                    "message": f"{name}存在待补充：{short}（对应企业资料/证明材料尚未上传或未进入成果，正式提交前必须补齐）",
+                    "locate": d.id,
+                }
             )
-        )
-    ).all()
+
     for req in requirements:
         target = "技术标" if req.req_type == "tech_requirement" else ("商务标" if req.req_type == "qualification" else None)
         if target is None:

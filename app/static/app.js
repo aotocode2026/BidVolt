@@ -776,7 +776,14 @@ async function renderDeliverableContent(id) {
       textLen += t.length;
       allText += t;
       if (n.type === "heading" || n.type === "title") html += `<h4>${esc(t)}</h4>`;
-      else html += `<p>${esc(t)}</p>`;
+      else if (n.type === "table" && Array.isArray(n.rows)) {
+        // 模板表格照搬（Issue #8：表格节点按真实表格渲染）
+        html += "<table>";
+        for (const row of n.rows) {
+          html += "<tr>" + row.map((cell) => `<td>${esc(String(cell ?? ""))}</td>`).join("") + "</tr>";
+        }
+        html += "</table>";
+      } else html += `<p>${esc(t)}</p>`;
     }
     if (model.sheets && model.sheets.length) {
       for (const s of model.sheets) {
@@ -1047,8 +1054,7 @@ async function doEvaluate() {
     if (ev.scale === "score_rules") {
       log(`评标完成：总分 ${ev.total_score}（按招标评分细则，满分 ${ev.full_marks} 分，得分 ${ev.got_marks} 分），缺失项 ${ev.missing_count} 项`, "ok");
     } else {
-      log(`评标完成：总分 ${ev.total_score}（内置完整性规则，满分 ${ev.full_marks} 分）`, "ok");
-      log("未获取招标评分细则：本分数不代表招标评标得分，请确认招标文件评分办法后人工核对", "warn");
+      log(`完整性检查完成：通过 ${ev.got_marks}/${ev.full_marks} 项（未获取招标评分细则，不显示评标得分——各缺失项见下表）`, "warn");
     }
     await refreshScore();
   } catch (e) { log(`评标失败：${errMsg(e)}`, "err"); }
@@ -1069,7 +1075,12 @@ async function refreshScore() {
     if (sc.scale === "score_rules") {
       log(`已恢复最近评标：总分 ${sc.total_score}（按招标评分细则，满分 ${sc.full_marks} 分），缺失 ${sc.missing_count} 项`, "ok");
     } else {
-      log(`已恢复最近评标：总分 ${sc.total_score}（内置完整性规则，未获取招标评分细则——不代表招标评标得分）`, "warn");
+      log(`已恢复最近评标：完整性检查通过 ${sc.got_marks ?? "?"}/${sc.full_marks ?? "?"} 项（未获取招标评分细则，不显示评标得分）`, "warn");
+    }
+    /* Issue #8：评分细则逐项可见——细则条数/权重合计/命中分，与下方明细表对应 */
+    const sr = (sc.detail && sc.detail.score_rules) || null;
+    if (sr && sr.count) {
+      log(`评分细则：共 ${sr.count} 项，权重合计 ${sr.weight_total} 分，命中 ${sr.weight_got} 分，未命中 ${sr.missed} 项（明细见下表"评分细则"行）`, sr.missed ? "warn" : "ok");
     }
   } catch (e) {
     scoreCtx = null;
@@ -1098,7 +1109,14 @@ async function reEvaluate() {
     const r = await api(`/projects/${projectId}/re-evaluate`, { method: "POST", body: { item_ids: items.map((i) => i.item_id) } });
     log(`重审完成：总分 ${r.total_score}，提升 ${r.improved_count} 项（下方列表已刷新）`, "ok");
     await refreshScore();
-  } catch (e) { log(`重审失败：${errMsg(e)}`, "err"); }
+  } catch (e) {
+    const m = errMsg(e);
+    if (String(m).includes("没有可重审")) {
+      log("重审说明：当前没有可提升条目——请先【模拟评标】生成逐条建议，并上传相应企业资料后再重审", "warn");
+    } else {
+      log(`重审失败：${m}`, "err");
+    }
+  }
 }
 
 /* ---------- 任务跟踪（Issue #11.11/12：SSE 健壮 + 结果/错误/降级显式展示，绝不静默失败） ---------- */
