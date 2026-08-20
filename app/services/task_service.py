@@ -826,58 +826,9 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     # 提交代码抽取的待落库要求（Hermes 复核通过 MCP 独立连接读取，必须可见）
     await session.commit()
     await _set_rls_context(session, task.enterprise_id)
-    # —— Hermes 双通道复核（用户要求）：代码+M3 快路径抽取，Hermes 经 tender-parse skill
-    # 对照材料文本补抽遗漏要求；失败不阻塞，但显式写入任务结果 ——
-    hermes_review: dict = {"ok": False, "error": "未执行"}
-    if llm_enabled() and parsed_ids:
-        task.progress = {
-            "phase": task.task_type, "status": "running", "percent": 66,
-            "current_work": "Hermes 复核招标要求（双通道，对照材料文本补抽）…",
-        }
-        await session.commit()
-        await _set_rls_context(session, task.enterprise_id)
-        try:
-            hermes_review = (await _run_hermes_parse_review(task)) or {"ok": False, "error": "hermes 不可用"}
-        except Exception as exc:  # noqa: BLE001
-            hermes_review = {"ok": False, "error": str(exc)[:200]}
-        # 复核后重新统计要求数（Hermes 经独立连接写入，重查数据库）
-        from sqlalchemy import select as _sa_select
-
-        from app.models.requirement import Requirement as _Req
-
-        extracted = len(
-            (
-                await session.scalars(
-                    _sa_select(_Req).where(
-                        _Req.enterprise_id == task.enterprise_id,
-                        _Req.project_id == task.project_id,
-                        _Req.current.is_(True),
-                        _Req.req_type != "doc_structure",
-                    )
-                )
-            ).all()
-        )
-    # 流程化确认标书结构（用户反馈）：解析阶段即从招标文件提取响应文件格式要求，
-    # 落库为 req_type=doc_structure 的要求，生成任务直接消费（不用通用模板拍脑袋）。
-    structure_info = await _llm_extract_structure(
-        session,
-        enterprise_id=task.enterprise_id,
-        project_id=task.project_id,
-        file_ids=parsed_ids,
-        task=task,
-    )
-    structure_extracted = structure_info.get("count") or 0
-    structure_error = structure_info.get("error")
-    # 评分标准表专项抽取（Issue #8：评标按招标评分细则打分，权重来自原文表格）
-    score_rules_extracted = await _llm_extract_score_rules(
-        session,
-        enterprise_id=task.enterprise_id,
-        project_id=task.project_id,
-        file_ids=parsed_ids,
-        task=task,
-    )
     # 模板原文确定性提取（Issue #8 验收铁律：模板原文/编号/顺序/表格不能改写或替换，
-    # 生成只能在模板上填写与增加——故模板必须逐字落库，供生成骨架照搬）
+    # 生成只能在模板上填写与增加——故模板必须逐字落库，供生成骨架照搬）。
+    # 置于 Hermes 复核之前：复核阶段对照原文检查模板清单完整性并补缺。
     from sqlalchemy import select as _sa_select
 
     from app.models.doc import DocBlock as _DB
@@ -912,6 +863,69 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
                 confidence=None,
             )
             template_count += 1
+    await session.commit()
+    await _set_rls_context(session, task.enterprise_id)
+    # —— Hermes 双通道复核（用户要求）：代码+M3 快路径抽取，Hermes 经 tender-parse skill
+    # 对照材料文本补抽遗漏要求 + 复核模板清单完整性（缺失模板块补落库）；失败不阻塞，但显式写入任务结果 ——
+    hermes_review: dict = {"ok": False, "error": "未执行"}
+    if llm_enabled() and parsed_ids:
+        task.progress = {
+            "phase": task.task_type, "status": "running", "percent": 66,
+            "current_work": "Hermes 复核招标要求与模板清单（双通道，对照原文补抽补缺）…",
+        }
+        await session.commit()
+        await _set_rls_context(session, task.enterprise_id)
+        try:
+            hermes_review = (await _run_hermes_parse_review(task)) or {"ok": False, "error": "hermes 不可用"}
+        except Exception as exc:  # noqa: BLE001
+            hermes_review = {"ok": False, "error": str(exc)[:200]}
+        # 复核后重新统计要求数（Hermes 经独立连接写入，重查数据库）
+        from app.models.requirement import Requirement as _Req
+
+        extracted = len(
+            (
+                await session.scalars(
+                    _sa_select(_Req).where(
+                        _Req.enterprise_id == task.enterprise_id,
+                        _Req.project_id == task.project_id,
+                        _Req.current.is_(True),
+                        _Req.req_type != "doc_structure",
+                    )
+                )
+            ).all()
+        )
+        # 复核后重统模板数（Hermes 可能补落 doc_template 块）
+        template_count = len(
+            (
+                await session.scalars(
+                    _sa_select(_Req).where(
+                        _Req.enterprise_id == task.enterprise_id,
+                        _Req.project_id == task.project_id,
+                        _Req.current.is_(True),
+                        _Req.req_type == "doc_template",
+                    )
+                )
+            ).all()
+        )
+    # 流程化确认标书结构（用户反馈）：解析阶段即从招标文件提取响应文件格式要求，
+    # 落库为 req_type=doc_structure 的要求，生成任务直接消费（不用通用模板拍脑袋）。
+    structure_info = await _llm_extract_structure(
+        session,
+        enterprise_id=task.enterprise_id,
+        project_id=task.project_id,
+        file_ids=parsed_ids,
+        task=task,
+    )
+    structure_extracted = structure_info.get("count") or 0
+    structure_error = structure_info.get("error")
+    # 评分标准表专项抽取（Issue #8：评标按招标评分细则打分，权重来自原文表格）
+    score_rules_extracted = await _llm_extract_score_rules(
+        session,
+        enterprise_id=task.enterprise_id,
+        project_id=task.project_id,
+        file_ids=parsed_ids,
+        task=task,
+    )
     task.progress = {
         "phase": task.task_type,
         "status": "running",
@@ -1062,14 +1076,21 @@ async def _run_hermes_parse_review(task: Task) -> dict | None:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"capability 签发失败：{exc}"}
     prompt = (
-        f"你是招标文件解析复核 Agent。项目 {task.project_id} 已完成一轮要求抽取，请复核并补抽。"
+        f"你是招标文件解析复核 Agent。项目 {task.project_id} 已完成一轮要求与模板抽取，请复核并补缺。"
         "【硬性要求】本会话为非交互批处理模式：必须直接执行到底，每一步真实调用 MCP 工具"
         "（工具名带 bidvolt: 前缀），等待工具真实返回后再继续；严禁只输出计划、方案或虚构工具返回结果；"
         "严禁询问用户或等待确认。"
-        "流程：1) bidvolt:list_requirements 查看已有要求；2) bidvolt:get_project_material_blocks 读取材料文本；"
+        "流程：1) bidvolt:list_requirements 查看已有要求与 doc_template 模板清单；"
+        "2) bidvolt:get_project_material_blocks 读取招标文件原文；"
         "3) 对照材料补抽遗漏的资格要求/评分细则/否决条款/技术要求/报价规则/材料清单，"
         "经 bidvolt:upsert_requirements 落库（坐标必填、先查重不重复写入、不编造）；"
-        "4) 完成后用一句话总结（补抽条数）。任务 id=" + str(task.id) + "。"
+        "4) 【模板清单复核】对照'第五章响应文件格式'的文件组成与表格，检查 doc_template 清单是否"
+        "缺失条目（如'投标（应答）文件自查表''履约能力及质量保证措施'等）或表格被遗漏；"
+        "缺失的经 bidvolt:upsert_requirements 以 req_type='doc_template' 补落库："
+        "content 照搬原文（禁止改写归纳），structured 含 role（business/technical/price）、"
+        "order（递增序号）、kind（heading/paragraph/table），表格带 rows 二维数组"
+        "（每行一个字符串数组，与原文表格逐格一致）；"
+        "5) 完成后用一句话总结（补抽要求 N 条、补模板 M 块）。任务 id=" + str(task.id) + "。"
     )
     env = dict(os.environ)
     env["BIDVOLT_CAPABILITY_TOKEN"] = cap
