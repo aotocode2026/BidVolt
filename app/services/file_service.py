@@ -73,6 +73,20 @@ async def _parse_file(session: AsyncSession, fobj: FileObject) -> None:
                 fobj.category = fobj.category or _category_heuristic(fobj.original_name)
                 return
             raise ValueError("视觉模型门禁关闭（P1），图片解析不可用")
+        if fobj.ext in (".zip", ".rar", ".7z"):
+            # 压缩包不作文本解析：.zip 供"压缩包导入"流程使用（导入前校验完整性，
+            # 坏包红字拒绝）；.rar/.7z 当前既不能解析也不能导入，直接拒绝避免歧义。
+            if fobj.ext != ".zip":
+                raise ValueError("暂不支持 .rar/.7z：请转换为 .zip 后上传，或直接上传压缩包内的文件")
+            import zipfile
+
+            with zipfile.ZipFile(path) as zf:
+                bad = zf.testzip()
+            if bad:
+                raise ValueError(f"压缩包损坏（条目 {bad} 校验失败）")
+            fobj.status = 3  # 接受为压缩包（正文文本由导入后的内部文件提供）
+            fobj.category = fobj.category or "压缩包"
+            return
         blocks = parser.parse_to_blocks(path, fobj.ext or "")
         # Issue #12 根因：重解析前必须清除旧块。此前 upload 时解析 1 次 + 每轮任务重解析又追加，
         # 同一文件 6 次解析累积 2370 块（6 倍重复文本），污染 LLM 抽取提示词导致要求碎片化。
@@ -148,6 +162,12 @@ async def process_upload(
     await session.flush()
 
     await _parse_file(session, fobj)
+    if fobj.status != 3:
+        # 积极报错（Issue #8 复盘）：解析失败的文件不允许入库/进入资料列表——
+        # 上传即拒绝，红字给出原因，绝不让用户拿到一个"上传成功但用不了"的文件。
+        ps = fobj.parse_status or {}
+        detail = str(ps.get("message") or ps.get("error_code") or "未知原因").strip()
+        raise ValueError(f"文件解析失败：{filename}（原因：{detail}）；请修复文件格式后重新上传")
 
     if target == "enterprise":
         asset = EnterpriseAsset(

@@ -280,14 +280,16 @@ def main() -> int:
                 matrix_note.append(f"{name}:ERR {str(e)[:60]}")
         record(f"多格式输入矩阵({len(valid_files)} 种全部解析成功)", matrix_ok, " ".join(matrix_note))
 
-        # 损坏 docx：先 API 上传确认 status=4 + parse_status 具体原因
+        # 损坏 docx：上传即整体拒绝（红字原因），不入库不进资料列表（Issue #8 复盘语义）
         pid5 = api(base, "POST", "/api/v1/projects", token=token, json={"name": "损坏文件项目"})["project_id"]
         corrupt = upload(base, token, pid5, "坏文件.docx", make_corrupt_docx())
-        ps = corrupt.get("parse_status") or {}
-        reason = str(ps.get("message") or ps.get("error_code") or "")
-        record("损坏 docx 落库原因(API)", corrupt.get("status") == 4 and bool(reason), f"status={corrupt.get('status')} reason={reason[:60]}")
+        reason = str(corrupt.get("error") or "")
+        files_after = api(base, "GET", f"/api/v1/files?target=project&project_id={pid5}&size=100", token=token)
+        not_in_list = all(x["name"] != "坏文件.docx" for x in files_after.get("items", []))
+        record("损坏 docx 上传即拒绝且不入资料列表(API)", bool(reason) and "文件解析失败" in reason and not_in_list,
+               f"reason={reason[:60]} 入列表={'是' if not not_in_list else '否'}")
 
-        # 同一损坏文件走 UI 上传 → 上传时即提示原因（模拟产品路径）
+        # 同一损坏文件走 UI 上传 → 上传即红字拒绝（模拟产品路径）
         try:
             tab(page, "项目")
             page.wait_for_function(
@@ -302,58 +304,37 @@ def main() -> int:
                 "buffer": make_corrupt_docx(),
             })
             page.click("button:has-text('上传')")
-            ok_notice = wait_log(page, "文件解析失败", timeout_ms=60000)
+            ok_notice = wait_log(page, "上传被拒绝", timeout_ms=60000)
             notice_text = log_text(page)
-            ok_reason = bool(re.search(r"文件解析失败：.+（(?!未知原因)", notice_text))
-            record("UI 上传损坏 docx 即时提示原因", ok_notice and ok_reason,
-                   ("原因可见" if ok_reason else "原因缺失") + f"（未知错误出现={'未知错误' in notice_text}）")
+            ok_reason = "文件解析失败" in notice_text and "未知错误" not in notice_text
+            rows_empty = page.evaluate(
+                "() => { const el = document.getElementById('m-files'); return el && el.querySelectorAll('tr').length === 0; }"
+            )
+            record("UI 上传损坏 docx 红字拒绝且列表为空", ok_notice and ok_reason and rows_empty,
+                   f"原因可见={'文件解析失败' in notice_text} 未知错误={'未知错误' in notice_text} 列表空={rows_empty}")
         except Exception as e:  # noqa: BLE001
-            record("UI 上传损坏 docx 即时提示原因", False, str(e)[:120])
+            record("UI 上传损坏 docx 红字拒绝且列表为空", False, str(e)[:120])
 
-        # ============ Phase 4：错误路径任务（UI 触发，禁止"未知错误"） ============
+        # ============ Phase 4：错误路径任务（坏 file_id 触发失败，禁止"未知错误"） ============
+        # 上传即拒绝语义下，任务级解析失败只剩存量坏数据等边界；用坏 file_id 精确触发失败路径，
+        # 校验 API error 与 SSE failed 事件都携带具体原因。
         try:
-            prev_ids = [int(m) for m in re.findall(r"任务 (\d+) 已提交", log_text(page))]
-            prev_max = max(prev_ids) if prev_ids else 0
-            page.click("button:has-text('触发招标解析任务')")
-            # 等待【新】任务提交日志（避免被 Phase 3 上传阶段的旧日志误匹配）
-            page.wait_for_function(
-                "max => { const t = document.getElementById('log').innerText; "
-                "const ids = [...t.matchAll(/任务 (\\d+) 已提交/g)].map(m => +m[1]); "
-                "return ids.length && Math.max(...ids) > max; }",
-                arg=prev_max,
-                timeout=30000,
-            )
-            logtxt = log_text(page)
-            ids = [int(m) for m in re.findall(r"任务 (\d+) 已提交", logtxt)]
-            task_id = max(ids)
-            # 等待该任务的失败日志（含具体原因）
-            ok_fail_log = wait_log(page, f"任务 {task_id} 失败：文件解析失败：", timeout_ms=180000)
-            logtxt = log_text(page)
-            has_unknown = "未知错误" in logtxt
-            ok_detail = any(
-                f"任务 {task_id} 失败" in line and "文件解析失败" in line for line in logtxt.splitlines()
-            )
-            record("UI 解析任务失败日志含具体原因(禁止未知错误)", ok_fail_log and ok_detail and not has_unknown,
-                   f"task={task_id} 未知错误={'有' if has_unknown else '无'}")
-            if has_unknown:
-                # 定位"未知错误"来源：转储相关日志行
-                for line in logtxt.splitlines():
-                    if "未知错误" in line or "失败" in line:
-                        print(f"    [log] {line.strip()[:160]}", flush=True)
-
-            # API 层复核 + SSE 错误透传
-            final = poll_task(base, token, task_id, 240) if task_id else {"status": -1}
-            api_ok = final.get("status") == 6 and "文件解析失败" in str(final.get("error") or "")
+            t = api(base, "POST", f"/api/v1/projects/{pid5}/tasks", token=token, json={
+                "task_type": "tender_parse", "payload": {"file_ids": [999999]}, "idempotency_key": f"badfid-{stamp}",
+            })
+            task_id = t["task_id"]
+            final = poll_task(base, token, task_id, 240)
+            api_ok = final.get("status") == 6 and "文件不存在" in str(final.get("error") or "")
             record("失败任务 API error.message 含原因", api_ok, str(final.get("error"))[:80])
             try:
                 r = httpx.get(f"{base}/api/v1/tasks/{task_id}/stream", headers={"Authorization": f"Bearer {token}"}, timeout=30)
                 body = r.text
-                sse_ok = "event: failed" in body and '"error"' in body and "文件解析失败" in body
+                sse_ok = "event: failed" in body and '"error"' in body and "文件不存在" in body
             except Exception as e:  # noqa: BLE001
                 body, sse_ok = "", False
             record("SSE failed 事件携带 error", sse_ok, f"stream_len={len(body)}")
         except Exception as e:  # noqa: BLE001
-            record("UI 解析任务失败路径", False, str(e)[:120])
+            record("错误路径任务(坏 file_id)", False, str(e)[:120])
 
         browser.close()
 

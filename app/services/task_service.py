@@ -323,7 +323,7 @@ async def _llm_extract_requirements(
     blocks = (
         await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
     ).all()
-    text = _dedup_block_texts(blocks, limit=30000)
+    text = _dedup_block_texts(blocks, limit=60000)
     if not text.strip():
         return 0
     system = (
@@ -449,9 +449,10 @@ async def _llm_extract_structure(
     project_id: int,
     file_ids: list[int],
     task: Task | None = None,
-) -> int:
+) -> dict:
     """解析阶段确认标书结构：从招标材料提取响应文件格式要求，
-    落库为 req_type=doc_structure 的要求（structured 携带 role/guide/order），返回条数。"""
+    落库为 req_type=doc_structure 的要求（structured 携带 role/guide/order）。
+    返回 {"count": n, "error": str|None}——失败原因必须向上透出（禁止静默返回 0）。"""
     from sqlalchemy import select as sa_select
 
     from app.models.doc import DocBlock
@@ -466,16 +467,20 @@ async def _llm_extract_structure(
         await _set_rls_context(session, task.enterprise_id)
 
     if not llm_enabled():
-        return 0
+        return {"count": 0, "error": "云模型门禁关闭，未做结构解析"}
     file_ids = [int(i) for i in file_ids]
     if not file_ids:
-        return 0
+        return {"count": 0, "error": None}
     blocks = (
         await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
     ).all()
-    text = _dedup_block_texts(blocks, limit=20000)
-    if not text.strip():
-        return 0
+    full_text = _dedup_block_texts(blocks, limit=200000)
+    if not full_text.strip():
+        return {"count": 0, "error": "材料无可提取文本"}
+    # 大文件开窗（Issue #8：412KB 采购文件从头部截 2 万字，漏掉"响应文件格式/模板要求"章节，
+    # 导致结构抽取 0 条、成果退化为通用结构）：优先取"响应/应答文件格式"相关窗口，
+    # 让模板要求章节进入 LLM 视野。
+    text = _structure_window(full_text)
     try:
         await _progress(70, "AI 解析标书结构（响应文件格式要求）…")
         reply = await LLMClient().chat(_STRUCTURE_SYSTEM, f"招标材料：\n{text}")
@@ -484,11 +489,11 @@ async def _llm_extract_structure(
             # 结构抽取为空重试一次（更严格的纯 JSON 指令，与要求抽取同策略）
             reply = await LLMClient().chat(
                 _STRUCTURE_SYSTEM + "只输出 JSON 本身，禁止任何解释或 Markdown 围栏。",
-                f"招标材料：\n{text[:16000]}",
+                f"招标材料：\n{text[:30000]}",
             )
             parsed = _parse_structure_reply(reply)
-    except Exception:  # noqa: BLE001
-        return 0
+    except Exception as exc:  # noqa: BLE001
+        return {"count": 0, "error": f"结构解析失败：{str(exc)[:200]}"}
     count = 0
     order = 0
     for role in ("price", "business", "technical"):
@@ -505,7 +510,23 @@ async def _llm_extract_structure(
             )
             order += 1
             count += 1
-    return count
+    return {"count": count, "error": None}
+
+
+def _structure_window(full_text: str) -> str:
+    """从大文本中定位"响应/应答文件格式与模板要求"相关窗口，供结构抽取使用。"""
+    lines = full_text.splitlines()
+    kws = (
+        "响应文件", "应答文件", "投标文件格式", "文件格式", "响应文件组成", "组成",
+        "商务文件", "技术文件", "价格文件", "格式要求", "编制要求", "递交要求", "目录要求",
+    )
+    hits = [i for i, ln in enumerate(lines) if any(k in ln for k in kws)]
+    if hits:
+        start = max(0, min(hits) - 20)
+        end = min(len(lines), max(hits) + 500)
+        window = "\n".join(lines[start:end])
+        return window[:40000]
+    return full_text[:40000]
 
 
 async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
@@ -521,21 +542,32 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     # 关键（生产定位 Issue #8）：RLS 上下文是事务级的，上面 commit 后即被清空；
     # 必须重建，否则后续 requirement_revision 等业务表 INSERT 会违反 RLS 策略
     await _set_rls_context(session, task.enterprise_id)
+    parsed_ids: list[int] = []
+    parse_failures: list[dict] = []
     for file_id in file_ids:
         fobj = await reparse_file(session, int(file_id))
         if fobj.status != 3:
-            # Issue #13：失败原因必须具体可查——parse_status 里有真实原因（如"不支持的格式：.pptx"），
-            # 不能只报文件名（产品侧此前只看到"未知错误"，无法定位）
+            # Issue #8 任务 224：单文件失败曾拖垮整个解析任务（其他文件白解析）。
+            # 改为逐文件语义：失败文件逐条记录原因，其余文件照常解析与抽取；
+            # 仅当全部文件失败时任务才失败。
             ps = fobj.parse_status or {}
             detail = str(ps.get("message") or ps.get("error_code") or "").strip()
-            raise ValueError(
-                f"文件解析失败：{fobj.original_name}" + (f"（原因：{detail}）" if detail else "")
+            parse_failures.append(
+                {"file_id": int(file_id), "file_name": fobj.original_name, "reason": detail or "未知原因"}
             )
+        else:
+            parsed_ids.append(int(file_id))
+    if not parsed_ids and parse_failures:
+        msg = "；".join(
+            f"{f['file_name']}（原因：{f['reason']}）" for f in parse_failures[:5]
+        )
+        raise ValueError(f"全部 {len(parse_failures)} 个文件解析失败：{msg}")
     task.progress = {
         "phase": task.task_type,
         "status": "running",
         "percent": 35,
-        "current_work": f"{len(file_ids)} 个文件解析完成，开始 AI 抽取要求",
+        "current_work": f"{len(parsed_ids)}/{len(file_ids)} 个文件解析成功"
+        + (f"，{len(parse_failures)} 个失败（原因已记录）" if parse_failures else ""),
     }
     await session.commit()
     await _set_rls_context(session, task.enterprise_id)
@@ -544,19 +576,21 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         session,
         enterprise_id=task.enterprise_id,
         project_id=task.project_id,
-        file_ids=file_ids,
+        file_ids=parsed_ids,
         task_id=task.id,
         task=task,
     )
     # 流程化确认标书结构（用户反馈）：解析阶段即从招标文件提取响应文件格式要求，
     # 落库为 req_type=doc_structure 的要求，生成任务直接消费（不用通用模板拍脑袋）。
-    structure_extracted = await _llm_extract_structure(
+    structure_info = await _llm_extract_structure(
         session,
         enterprise_id=task.enterprise_id,
         project_id=task.project_id,
-        file_ids=file_ids,
+        file_ids=parsed_ids,
         task=task,
     )
+    structure_extracted = structure_info.get("count") or 0
+    structure_error = structure_info.get("error")
     task.progress = {
         "phase": task.task_type,
         "status": "running",
@@ -566,14 +600,31 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     await session.commit()
     await _set_rls_context(session, task.enterprise_id)
     result: dict = {
-        "parsed_file_ids": [int(i) for i in file_ids],
+        "parsed_file_ids": parsed_ids,
+        "parse_failures": parse_failures,
         "requirements_extracted": extracted,
         "structure_extracted": structure_extracted,
     }
     from app.services.llm import llm_enabled
 
+    # 积极报错原则（Issue #8 复盘）：每一处降级/异常都必须显式写进任务结果，
+    # 前端逐条警示——绝不静默继续。
+    notes: list[str] = []
+    if parse_failures:
+        notes.append(
+            f"{len(parse_failures)} 个文件解析失败（已跳过）："
+            + "；".join(f"{f['file_name']}（{f['reason'][:60]}）" for f in parse_failures[:5])
+        )
+    if structure_error:
+        notes.append(f"未确认招标文件响应格式：{structure_error}（成果可能未按模板结构生成，请人工核对）")
+    elif structure_extracted == 0 and llm_enabled():
+        notes.append("招标文件未明确响应文件格式要求，成果将按通用投标结构生成")
+    if extracted == 0 and llm_enabled():
+        notes.append("未从材料抽取出任何招标要求：请检查文件内容（扫描件/加密件需人工处理），或到要求页手动录入")
     if not llm_enabled():
-        result["note"] = "云模型门禁关闭，未做语义抽取（仅完成文本解析）"
+        notes.append("云模型门禁关闭，未做语义抽取（仅完成文本解析）")
+    if notes:
+        result["note"] = "；".join(notes)
     task.result = result
 
 
@@ -1391,6 +1442,18 @@ async def _material_match_handler(session: AsyncSession, task: Task) -> None:
         )
         results.append({"requirement_id": req.id, "matched": matched})
     task.result = {"matched_count": len(results), "results": results}
+    # 积极报错（Issue #8 复盘）：无要求/全未匹配必须显式警示，禁止静默返回 0
+    notes: list[str] = []
+    if not requirements:
+        notes.append("项目没有招标要求，无法做资料匹配——请先完成【招标解析】")
+    elif not assets:
+        notes.append("企业资料库为空，所有要求均未匹配到资料——请先上传营业执照/资质/业绩等企业资料")
+    else:
+        unmatched = sum(1 for r in results if r["matched"] != 1)
+        if unmatched:
+            notes.append(f"{unmatched}/{len(results)} 条要求未匹配到企业资料，评审将标记缺失并给出补充建议")
+    if notes:
+        task.result["note"] = "；".join(notes)
 
 
 async def _chat_handler(session: AsyncSession, task: Task) -> None:

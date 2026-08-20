@@ -127,7 +127,65 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
             pass
         return _parse_pptx_stdlib(path)
 
+    if ext in (".html", ".htm"):
+        # 公告网页导入（Issue #4/#6）：去标签提取正文（纯标准库，无第三方依赖）
+        from html.parser import HTMLParser
+
+        class _TextExtractor(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.parts: list[str] = []
+
+            def handle_data(self, data: str) -> None:
+                if data.strip():
+                    self.parts.append(data.strip())
+
+        p = _TextExtractor()
+        p.feed(Path(path).read_text(encoding="utf-8", errors="replace"))
+        text = "\n".join(p.parts)
+        if not text.strip():
+            raise ValueError("HTML 无可提取文本")
+        return [{"block_type": "paragraph", "page_no": None, "block_index": 0, "text_content": text, "extra": {"source": "html-text"}}]
+
+    if ext == ".doc":
+        return _parse_legacy_doc(path)
+
     raise ValueError(f"不支持的格式：{ext}")
+
+
+def _parse_legacy_doc(path: Path) -> list[dict]:
+    """旧版 Word .doc（OLE2 二进制）文本提取：LibreOffice 无头转 TXT（容器已装）。
+
+    转换失败给出可操作提示（Issue #8 任务 224：合同条款（空白）.doc 曾报
+    "不支持的格式：.doc" 导致整个解析任务失败，用户无从下手）。
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        raise ValueError("旧版 .doc 需 LibreOffice 转换，但服务器未安装转换组件；请用 Word 另存为 .docx 后重新上传")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "source.doc"
+        src.write_bytes(path.read_bytes())
+        try:
+            proc = subprocess.run(
+                [soffice, "--headless", "--norestore", "--convert-to", "txt:Text (encoded):UTF8", "--outdir", tmp, str(src)],
+                capture_output=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("旧版 .doc 转换超时；请用 Word 另存为 .docx 后重新上传") from exc
+        if proc.returncode != 0:
+            raise ValueError("旧版 .doc 转换失败；请用 Word 另存为 .docx 后重新上传")
+        txt = Path(tmp) / "source.txt"
+        if not txt.exists():
+            raise ValueError("旧版 .doc 转换未产出文本；请用 Word 另存为 .docx 后重新上传")
+        text = txt.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        raise ValueError("文档无可提取文本（可能为空白文档或扫描件）；如为扫描件请走图片解析")
+    return [{"block_type": "paragraph", "page_no": None, "block_index": 0, "text_content": text, "extra": {"source": "libreoffice-doc"}}]
 
 
 def _parse_pptx_stdlib(path: Path) -> list[dict]:

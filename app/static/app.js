@@ -416,11 +416,11 @@ async function uploadFile() {
   try {
     const data = await api("/files/upload", { method: "POST", body: fd });
     const f0 = data.files[0] || {};
-    log(`上传 ${file.name} → ${JSON.stringify(f0)}`, "ok");
-    // Issue #13：解析失败必须在上传时即说清原因（此前只显示"未知错误"）
-    if (f0.status === 4 && f0.parse_status) {
-      const ps = f0.parse_status;
-      log(`文件解析失败：${ps.message || ps.error_code || "未知原因"}（不影响上传，可下载核对；如为图片型/加密文档需人工处理）`, "err");
+    if (f0.error) {
+      // 积极报错（Issue #8 复盘）：解析失败的文件被整体拒绝——红字亮出原因，不入库不进资料列表
+      log(`上传被拒绝：${f0.error}`, "err");
+    } else {
+      log(`上传 ${file.name} → ${JSON.stringify(f0)}`, "ok");
     }
     if (target === "project") markStep("material");
     await refreshFiles(); await refreshAssets();
@@ -433,11 +433,20 @@ async function refreshFiles() {
   try {
     // Issue #12 问题一：资料页必须只显示当前项目材料，并展示项目归属，不再混显历史项目文件
     const data = await api(`/files?target=project&project_id=${projectId}&size=100`);
-    materialCount = data.items.length;
-    setHtml("m-files", data.items.map((f) => `
-      <tr><td>${f.file_id}</td><td>${esc(f.name)}</td><td>#${f.project_id ?? "—"}</td><td>${f.status}</td>
-      <td><button class="ghost" onclick="authedDownload('/files/${f.file_id}/download','文件')">下载</button> ·
-          <button class="ghost" onclick="viewBlocks(${f.file_id})">文本块</button></td></tr>`).join(""));
+    materialCount = data.items.filter((f) => f.status === 3).length;
+    setHtml("m-files", data.items.map((f) => {
+      /* 存量解析失败文件（新上传已直接拒绝）：状态列红字 + 原因悬浮，不给用户歧义 */
+      if (f.status === 4) {
+        const ps = f.parse_status || {};
+        const reason = esc(ps.message || ps.error_code || "未知原因");
+        return `<tr style="background:#fff1f0"><td>${f.file_id}</td><td>${esc(f.name)}</td><td>#${f.project_id ?? "—"}</td>
+          <td><b style="color:#c00" title="${reason}">解析失败</b></td>
+          <td><button class="ghost" onclick="authedDownload('/files/${f.file_id}/download','文件')">下载</button></td></tr>`;
+      }
+      return `<tr><td>${f.file_id}</td><td>${esc(f.name)}</td><td>#${f.project_id ?? "—"}</td><td>${f.status}</td>
+        <td><button class="ghost" onclick="authedDownload('/files/${f.file_id}/download','文件')">下载</button> ·
+            <button class="ghost" onclick="viewBlocks(${f.file_id})">文本块</button></td></tr>`;
+    }).join(""));
     refreshSteps();
   } catch (e) { log(`文件列表失败：${errMsg(e)}`, "err"); }
 }
@@ -1113,6 +1122,9 @@ function finishTask(taskId, taskType, payload, ok) {
   if (ok) {
     log(`任务 ${taskId} 完成：${resultText.slice(0, 200)}`, "ok");
     if (result && result.note) log(`任务说明（降级提示）：${result.note}`, "warn");
+    /* 积极报错（Issue #8 复盘）：解析任务逐文件失败必须逐条亮出，绝不静默跳过 */
+    const pf = result && Array.isArray(result.parse_failures) ? result.parse_failures : [];
+    pf.forEach((f) => log(`文件解析失败（已跳过，未参与抽取）：${f.file_name} —— ${f.reason}`, "err"));
     const q = result && result.quality;
     if (q) {
       if (q.deliverables_ready === false) {
@@ -1190,6 +1202,11 @@ async function calcQuote() {
     markStep("quote");
     $("q-result").textContent = JSON.stringify(data.result, null, 2);
     log(`测算完成 calc#${calcId} 建议价 ${data.result.suggested}`, "ok");
+    /* 积极报错（Issue #8 复盘）：价格样本来源必须亮出——Mock 兜底与真实样本不能同权呈现 */
+    const src = data.result && data.result.sample_source;
+    if (src && src !== "anysearch_public") {
+      log(`价格样本为模拟数据（来源：${src}）：建议价仅供测算演示，正式报价请核对真实中标价`, "warn");
+    }
   } catch (e) { setText("q-result", errMsg(e)); log(`测算失败：${errMsg(e)}`, "err"); }
 }
 
