@@ -1055,13 +1055,62 @@ def xlsx_bytes(model: dict) -> bytes:
 
     wb = Workbook()
     wb.remove(wb.active)
-    for sheet in model.get("sheets", []):
-        ws = wb.create_sheet(str(sheet.get("name", "Sheet"))[:31])
-        for row in sheet.get("rows", []):
-            ws.append(["" if c is None else c for c in row])
+    for sheet in _normalize_xlsx_sheets(model):
+        name = str((sheet or {}).get("name") or "报价单")[:31]
+        ws = wb.create_sheet(name)
+        rows = (sheet or {}).get("rows") or [["（无表格数据）"]]
+        for row in rows:
+            if isinstance(row, (list, tuple)):
+                ws.append(["" if c is None else c for c in row])
+            else:
+                ws.append(["" if row is None else row])
+    if not wb.worksheets:  # 兜底：openpyxl 要求至少一个可见工作表
+        wb.create_sheet("报价单").append(["（无表格数据）"])
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _normalize_xlsx_sheets(model) -> list[dict]:
+    """把各种报价模型形状归一为 [{"name","rows"}]，保证至少一个可见工作表。
+
+    兼容：旧方案 {sheets:[{name,rows}]}；新方案 agent 落库的 {docModel:{sections:[...]}}；
+    以及裸 {rows}/ {nodes} / 被 {version_no, model} 包装的形状。
+    """
+    if not isinstance(model, dict):
+        model = {}
+    inner = model.get("model")
+    if isinstance(inner, dict) and not model.get("sheets"):
+        model = inner
+    sheets = model.get("sheets")
+    if isinstance(sheets, list) and sheets:
+        return sheets
+    doc_model = model.get("docModel")
+    if isinstance(doc_model, dict):
+        sections = doc_model.get("sections")
+        if isinstance(sections, list) and sections:
+            rows_out = [["条目", "内容", "来源"]]
+            for sec in sections:
+                if isinstance(sec, dict):
+                    rows_out.append(
+                        [
+                            str(sec.get("title") or ""),
+                            str(sec.get("content") or "").replace("/n", "\n"),
+                            str(sec.get("source") or ""),
+                        ]
+                    )
+            return [{"name": "报价单", "rows": rows_out}]
+    rows = model.get("rows")
+    if isinstance(rows, list) and rows:
+        return [{"name": "报价单", "rows": rows}]
+    nodes = model.get("nodes")
+    if isinstance(nodes, list) and nodes:
+        rows_out = [
+            [str(n.get("text") or "")] if isinstance(n, dict) else [str(n)]
+            for n in nodes
+        ]
+        return [{"name": "报价单", "rows": rows_out}]
+    return [{"name": "报价单", "rows": [["（报价模型无表格数据：请到报价页录入真实成本后重新生成）"]]}]
 
 
 def run_final_check(deliverables, requirements=None, contents=None, structure=None) -> dict:

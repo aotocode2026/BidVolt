@@ -2477,10 +2477,18 @@ async def _bid_review_handler(session: AsyncSession, task: Task) -> None:
     task.result = {"issues": issues, "issue_count": len(issues)}
 
 
+async def _agent_pipeline_dispatch(session: AsyncSession, task: Task) -> None:
+    """新方案分发（隔离）：Agent 主会话端到端。旧 handler 不受影响。"""
+    from app.services.agent_pipeline import run_agent_pipeline
+
+    await run_agent_pipeline(session, task)
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
     TaskType.BID_GENERATE: _bid_generate_handler,
     TaskType.MATERIAL_MATCH: _material_match_handler,
     TaskType.CHAT: _chat_handler,
     TaskType.BID_REVIEW: _bid_review_handler,
+    TaskType.AGENT_PIPELINE: _agent_pipeline_dispatch,
 }

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import (
+    agent,
     audit,
     auth,
     chat,
@@ -139,6 +140,7 @@ app.include_router(matches.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(tender_notices.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
+app.include_router(agent.router, prefix="/api/v1")  # 新方案：Agent 主会话端到端（隔离接口）
 
 app.mount("/demo", StaticFiles(directory="app/static", html=True), name="demo")
 
