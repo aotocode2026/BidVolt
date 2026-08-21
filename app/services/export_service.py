@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from io import BytesIO
+
+logger = logging.getLogger(__name__)
 
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 
@@ -26,6 +29,8 @@ def docx_from_template(source_path, model: dict) -> bytes:
     project_name = str(model.get("project_name") or "").strip()
     supplier = str(model.get("supplier_name") or "").strip()
 
+    _PLACEHOLDER_KEYS = ("（采购人）", "（响应供应商名称）", "（项目名称）")
+
     def _fill_text(text: str) -> str:
         out = text
         out = out.replace("（采购人）", buyer or "【待补充：招标人名称】")
@@ -34,26 +39,61 @@ def docx_from_template(source_path, model: dict) -> bytes:
         out = _re.sub(r"_{2,}", "【待补充】", out)
         return out
 
-    def _fill_runs(paragraph) -> None:
-        for run in paragraph.runs:
-            if run.text and any(k in run.text for k in ("（采购人）", "（响应供应商名称）", "（项目名称）", "_")):
-                run.text = _fill_text(run.text)
+    def _fill_paragraph_el(p_el) -> None:
+        """整段填充：遍历段落内全部 w:t 文本节点（含表格/控件/文本框内段落）。
+        占位符完整落在单个节点内时原位替换（保留格式）；
+        跨节点拆分的占位符合并到首个节点（该段格式随之归一）。"""
+        t_nodes = list(p_el.iter(qn("w:t")))
+        if not t_nodes:
+            return
+        full = "".join(t.text or "" for t in t_nodes)
+        if not any(k in full for k in _PLACEHOLDER_KEYS) and not _re.search(r"_{2,}", full):
+            return
+        for t in t_nodes:
+            text = t.text or ""
+            if any(k in text for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", text):
+                t.text = _fill_text(text)
+        remaining = "".join(t.text or "" for t in t_nodes)
+        if any(k in remaining for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", remaining):
+            merged = _fill_text(remaining)
+            for i, t in enumerate(t_nodes):
+                t.text = merged if i == 0 else ""
 
-    for p in doc.paragraphs:
-        _fill_runs(p)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    _fill_runs(p)
+    # 全文档（含表格、控件、文本框）逐段填充
+    for p_el in doc.element.body.iter(qn("w:p")):
+        _fill_paragraph_el(p_el)
+    # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）逐节点替换
+    for t_el in doc.element.body.iter(qn("w:t")):
+        text = t_el.text or ""
+        if any(k in text for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", text):
+            t_el.text = _fill_text(text)
+
+    def _add_heading_safe(doc, text: str, level: int):
+        """向底稿追加标题：不依赖源文档是否含 'Heading n' 样式——
+        国网等采购文件底稿常无内置标题样式，doc.add_heading 会因
+        'no style with name Heading 1' 抛 KeyError 导致整份导出回退。
+        改用普通段落 + 手动加粗/字号 + outlineLvl 保持 Word 导航层级。"""
+        from docx.oxml import OxmlElement
+
+        p = doc.add_paragraph()
+        run = p.add_run(str(text))
+        run.bold = True
+        run.font.name = "Times New Roman"
+        run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "黑体")
+        run.font.size = Pt(16 if level == 1 else 14)
+        p_pr = p._p.get_or_add_pPr()
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), str(max(int(level) - 1, 0)))
+        p_pr.append(outline)
+        return p
 
     doc.add_page_break()
-    doc.add_heading("补充响应内容（在采购文件模板基础上增加，格式自拟部分）", level=1)
+    _add_heading_safe(doc, "补充响应内容（在采购文件模板基础上增加，格式自拟部分）", 1)
     for node in model.get("supplement_nodes") or []:
         t = str(node.get("text") or "")
         ntype = node.get("type")
         if ntype == "heading":
-            doc.add_heading(t, level=2)
+            _add_heading_safe(doc, _fill_text(t), 2)
         elif ntype == "table" and node.get("rows"):
             rows = node["rows"]
             tb = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
@@ -62,11 +102,11 @@ def docx_from_template(source_path, model: dict) -> bytes:
                 for ci in range(len(tb.rows[ri].cells)):
                     cell = tb.rows[ri].cells[ci]
                     cell.text = ""
-                    run = cell.paragraphs[0].add_run(str(row[ci]) if ci < len(row) else "")
+                    run = cell.paragraphs[0].add_run(_fill_text(str(row[ci])) if ci < len(row) else "")
                     run.font.size = Pt(10.5)
-                    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+                    run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
         elif t.strip():
-            doc.add_paragraph(t)
+            doc.add_paragraph(_fill_text(t))
 
     buf = BytesIO()
     doc.save(buf)
@@ -85,8 +125,12 @@ async def docx_bytes_with_source(session, enterprise_id: int, model: dict, forma
         if fobj is not None and fobj.enterprise_id == enterprise_id:
             try:
                 return docx_from_template(StorageProvider().open(fobj.bucket, fobj.object_key), model)
-            except Exception:  # noqa: BLE001 底稿损坏/缺失时回退节点式
-                pass
+            except Exception as exc:  # noqa: BLE001 底稿损坏/缺失时回退节点式
+                logger.warning(
+                    "底稿式导出失败，回退节点式 file=%s/%s: %s",
+                    fobj.bucket, fobj.object_key, type(exc).__name__,
+                    exc_info=True,
+                )
     return docx_bytes(model, format_spec=format_spec)
 
 
