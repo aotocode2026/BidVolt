@@ -921,9 +921,35 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
             "project_id": int(project_id),
             "draft": fobj.original_name,
             "note": "按招标文件《响应文件格式》清单逐份成文：每份=该条目模板原文+填空（修订模式+批注来源）+对应撰写内容；"
-                    "全部改动可在 Word【审阅→所有标记】中逐处查看。",
+                    "全部改动可在 Word【审阅→所有标记】中逐处查看。附 Hermes 主会话全程记录（会话记录/主会话记录.md）。",
             "files": files_manifest,
         }
+        # 主会话全程记录（新方案运行时带上；无 agent_pipeline 任务则跳过）
+        try:
+            from sqlalchemy import select as _sa_select2
+
+            from app.constants import TaskType as _TaskType
+            from app.models.task import Task as _Task
+            from app.services.agent_pipeline import session_record_markdown
+
+            pipe_task = await session.scalar(
+                _sa_select2(_Task)
+                .where(
+                    _Task.enterprise_id == enterprise_id,
+                    _Task.project_id == int(project_id),
+                    _Task.task_type == _TaskType.AGENT_PIPELINE,
+                )
+                .order_by(_Task.id.desc())
+                .limit(1)
+            )
+            if pipe_task is not None:
+                record = await session_record_markdown(session, pipe_task)
+                name = "会话记录/主会话记录.md"
+                zf.writestr(name, record.encode("utf-8"))
+                files_manifest.append({"dir": "会话记录", "name": name, "bytes": len(record.encode("utf-8"))})
+                manifest["files"] = files_manifest
+        except Exception:  # noqa: BLE001 会话记录缺失不影响交付包主体
+            logger.warning("响应文件包附加主会话记录失败", exc_info=True)
         zf.writestr("manifest.json", _json.dumps(manifest, ensure_ascii=False, indent=2))
     return buf.getvalue()
 
