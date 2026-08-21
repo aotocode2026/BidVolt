@@ -493,6 +493,74 @@ async def _chat_with_retry(system: str, user: str, times: int = 2) -> str:
     raise last  # type: ignore[misc]
 
 
+async def _resolve_template_source(
+    session,
+    *,
+    enterprise_id: int,
+    project_id: int,
+    material_file_ids: list[int],
+    block_texts: dict[int, str],
+    label: str,
+) -> int | None:
+    """底稿源 docx 解析（产品要求：交付件只能基于底稿，不存在节点式生成）：
+    1) 项目材料里的 docx 采购文件优先（含模板标记的最优先，否则取最大的）；
+    2) 只有 pdf/txt 等非 docx 材料时，用解析出的原文逐字构造底稿 docx 落库，
+       让任何输入都有一份可填空、可追加的底稿。"""
+    import io as _io
+
+    from docx import Document as _Docx
+    from sqlalchemy import select as sa_select
+
+    from app.models.file import FileObject
+    from app.services.storage import StorageProvider
+
+    ids = [int(i) for i in material_file_ids]
+    if not ids:
+        return None
+    rows = (await session.scalars(sa_select(FileObject).where(FileObject.id.in_(ids)))).all()
+    docx_rows = [f for f in rows if (f.ext or "").strip(".").lower() == "docx"]
+    if docx_rows:
+        marked = [
+            f
+            for f in docx_rows
+            if any(k in (block_texts.get(int(f.id)) or "") for k in ("响应文件格式", "商务文件", "技术文件"))
+        ]
+        pool = marked or docx_rows
+        return max(pool, key=lambda f: f.size_bytes).id
+    source_text = "\n".join((block_texts.get(int(f.id)) or "") for f in rows).strip()[:400000]
+    if not source_text:
+        return None
+    # 原文逐字构造底稿 docx（段落按解析顺序），作为后续填空/追加的底稿
+    doc = _Docx()
+    for line in source_text.splitlines():
+        if line.strip():
+            doc.add_paragraph(line.strip())
+    buf = _io.BytesIO()
+    doc.save(buf)
+    data = buf.getvalue()
+    meta = StorageProvider().save(data, enterprise_id, f"{label or '采购文件'}底稿.docx")
+    await _set_rls_context(session, enterprise_id)
+    fobj = FileObject(
+        enterprise_id=enterprise_id,
+        project_id=int(project_id),
+        owner_type=2,
+        bucket=meta["bucket"],
+        object_key=meta["object_key"],
+        sha256=meta["sha256"],
+        original_name=f"{label or '采购文件'}（底稿转换）.docx",
+        size_bytes=meta["size_bytes"],
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ext="docx",
+        category="tender",
+        document_role="tender",
+        status=3,
+        parse_status={"message": "由采购文件原文逐字构造的底稿（原上传为非 docx 格式）"},
+    )
+    session.add(fobj)
+    await session.flush()
+    return fobj.id
+
+
 _STRUCTURE_SYSTEM = (
     "阅读招标文件里'响应文件格式'这一章。这一章分'价格文件''商务文件''技术文件'三部分，"
     "每部分按编号列出了应答人要提交的文件条目。"
@@ -1267,9 +1335,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             )
         )
     ).all()
-    structure_rows = sorted(
-        structure_rows, key=lambda r: (r.structured or {}).get("order", 0)
-    )
+    def _structure_order_key(r):
+        o = (r.structured or {}).get("order", 0)
+        try:
+            return (0, int(o))
+        except (TypeError, ValueError):
+            return (1, str(o))
+
+    structure_rows = sorted(structure_rows, key=_structure_order_key)
     req_by_type: dict[str, list[Requirement]] = {}
     for req in requirements:
         req_by_type.setdefault(req.req_type, []).append(req)
@@ -1598,24 +1671,21 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     biz_tpl = _fill_template_nodes(_template_nodes(tpl_by_role.get("business", [])))
     tech_tpl = _fill_template_nodes(_template_nodes(tpl_by_role.get("technical", [])))
     models = {1: _business_model(), 2: _technical_model(), 3: await _quote_model()}
-    # 底稿式导出元数据（Issue #8：复制采购文件原 docx 直接改，保留原版式）——
-    # 记录模板源文件/裁切区间/填空值，导出时按此在底稿上操作。
+    # 底稿式导出元数据（Issue #8 验收铁律 + 产品要求：交付件只能基于底稿，不存在节点式生成）。
+    # 底稿源 = 项目材料里的采购文件 docx；非 docx 材料时由原文逐字构造底稿 docx 落库。
     from app.models.doc import DocBlock as _DB2
 
     block_texts: dict[int, str] = {}
     for f in material_file_ids:
         bs = (await session.scalars(sa_select(_DB2.text_content).where(_DB2.file_id == f))).all()
         block_texts[f] = "\n".join(b or "" for b in bs)[:200000]
-    tpl_source_fid = next(
-        (
-            int(f)
-            for f in material_file_ids
-            if any(
-                k in (block_texts.get(int(f)) or "")
-                for k in ("响应文件格式", "商务文件", "技术文件")
-            )
-        ),
-        None,
+    tpl_source_fid = await _resolve_template_source(
+        session,
+        enterprise_id=task.enterprise_id,
+        project_id=project_id,
+        material_file_ids=material_file_ids,
+        block_texts=block_texts,
+        label=project_name,
     )
     tpl_meta = {
         "template_source_file_id": tpl_source_fid,
@@ -1625,14 +1695,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         "project_name": project_name,
         "supplier_name": ent_name,
     }
+    models[1].update(tpl_meta)
+    models[2].update(tpl_meta)
     if biz_tpl:
         models[1]["nodes"] = [{"id": "tpl-biz-h", "type": "heading", "text": "商务文件"}, *biz_tpl]
         models[1]["template_based"] = True
-        models[1].update(tpl_meta)
     if tech_tpl:
         models[2]["nodes"] = [{"id": "tpl-tech-h", "type": "heading", "text": "技术文件"}, *tech_tpl]
         models[2]["template_based"] = True
-        models[2].update(tpl_meta)
     enhanced: list[str] = []
     # Hermes 作为默认生成路径（用户决策）：由部署的 Hermes Agent 经 bidvolt MCP
     # （携带任务级 capability token）执行 bid-generate skill 完成生成；
@@ -1865,7 +1935,8 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 models[1]["nodes"].extend([*cover_nodes, *biz_doc["nodes"][1:]])
                 models[1]["supplement_nodes"] = [*cover_nodes, *biz_doc["nodes"][1:]]
             else:
-                models[1] = {"nodes": [biz_doc["nodes"][0], *cover_nodes, *biz_doc["nodes"][1:]]}
+                models[1]["nodes"] = [biz_doc["nodes"][0], *cover_nodes, *biz_doc["nodes"][1:]]
+                models[1]["supplement_nodes"] = [*cover_nodes, *biz_doc["nodes"][1:]]
             enhanced.append("business")
         if tech_doc is not None:
             if models[2].get("template_based"):
@@ -1873,7 +1944,8 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 models[2]["nodes"].extend(tech_doc["nodes"][1:] if len(tech_doc["nodes"]) > 1 else tech_doc["nodes"])
                 models[2]["supplement_nodes"] = tech_doc["nodes"][1:] if len(tech_doc["nodes"]) > 1 else tech_doc["nodes"]
             else:
-                models[2] = tech_doc
+                models[2]["nodes"] = tech_doc["nodes"]
+                models[2]["supplement_nodes"] = tech_doc["nodes"][1:] if len(tech_doc["nodes"]) > 1 else tech_doc["nodes"]
             enhanced.append("technical")
 
         # —— Agent 自检闭环（Hermes bid-generate skill 的 V1 内嵌实现）——
@@ -2241,7 +2313,14 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
                 if r.req_type == "doc_template"
                 and (r.structured or {}).get("role") == role
             ]
-            tpl_rows.sort(key=lambda r: (r.structured or {}).get("order", 0))
+            def _tpl_order_key(r):
+                o = (r.structured or {}).get("order", 0)
+                try:
+                    return (0, int(o))
+                except (TypeError, ValueError):
+                    return (1, str(o))
+
+            tpl_rows.sort(key=_tpl_order_key)
             missing_tpl = []
             for r in tpl_rows:
                 key = r.content.strip()[:24]

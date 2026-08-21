@@ -1,4 +1,4 @@
-"""DOCX 导出排版回归（Issue #8：字体统一、标题分级、目录）。"""
+"""DOCX 导出回归（Issue #8 + 产品要求：唯一生成路径=底稿式，不存在节点式生成）。"""
 
 from __future__ import annotations
 
@@ -6,75 +6,81 @@ import io
 
 from docx import Document
 
-from app.services.export_service import docx_bytes
+from app.services.export_service import docx_from_template
 
 
-def test_docx_fonts_and_heading_levels():
+def _make_source() -> bytes:
+    doc = Document()
+    doc.add_paragraph("第一章 投标人须知")
+    doc.add_paragraph("本采购由（采购人）实施，项目为（项目名称）。")
+    doc.add_paragraph("供应商名称：（响应供应商名称）")
+    doc.add_paragraph("联系电话：____")
+    tb = doc.add_table(rows=1, cols=2)
+    tb.rows[0].cells[0].text = "条款"
+    tb.rows[0].cells[1].text = "说明"
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_draft_export_keeps_whole_source_and_fills(tmp_path):
+    src = tmp_path / "source.docx"
+    src.write_bytes(_make_source())
     model = {
-        "nodes": [
-            {"id": "h0", "type": "heading", "text": "技术标"},
-            {"id": "h1", "type": "heading", "text": "一、技术方案总体说明"},
-            {"id": "p1", "type": "paragraph", "text": "项目理解与总体思路。"},
-            {"id": "h2", "type": "heading", "text": "第五章 技术和服务要求响应表"},
-            {"id": "h3", "type": "heading", "text": "1.1 逐条响应"},
-            {"id": "p2", "type": "paragraph", "text": "- 电压等级 10kV：满足。"},
-        ]
+        "buyer": "测试招标人",
+        "project_name": "测试采购项目",
+        "supplier_name": "测试供应商",
+        "supplement_nodes": [
+            {"type": "heading", "text": "一、总体响应说明"},
+            {"type": "paragraph", "text": "我方完全响应采购文件全部要求。"},
+        ],
     }
-    data = docx_bytes(model)
+    data = docx_from_template(str(src), model)
     doc = Document(io.BytesIO(data))
-
-    # 统一字体：Normal 样式含中文字体设置（eastAsia=宋体），西文 Times New Roman
-    normal = doc.styles["Normal"]
-    assert normal.font.name == "Times New Roman"
-    from docx.oxml.ns import qn
-
-    assert normal.element.rPr.rFonts.get(qn("w:eastAsia")) == "宋体"
-    assert normal.font.size is not None and normal.font.size.pt == 12
-
-    # 目录页存在，且包含章节标题
-    paras = [p for p in doc.paragraphs]
-    texts = [p.text for p in paras]
-    assert "目录" in texts
-    assert "一、技术方案总体说明" in texts
-    assert "第五章 技术和服务要求响应表" in texts
-
-    # 标题层级：文件标题 Title 居中；章 Heading 1；节 Heading 2
-    styles = {p.text: p.style.name for p in paras}
-    assert styles.get("技术标") == "Title"
-    assert styles.get("一、技术方案总体说明") == "Heading 1"
-    assert styles.get("第五章 技术和服务要求响应表") == "Heading 1"
-    assert styles.get("1.1 逐条响应") == "Heading 2"
-
-    # 列表项转 bullet 且去掉 "- " 前缀
-    assert any(p.style.name == "List Bullet" and p.text == "电压等级 10kV：满足。" for p in paras)
+    texts = [p.text for p in doc.paragraphs]
+    joined = "\n".join(texts)
+    # 整本保留：原段落都在，表格保留
+    assert "第一章 投标人须知" in texts
+    assert len(doc.tables) == 1
+    # 已知字段回填
+    assert "本采购由测试招标人实施，项目为测试采购项目。" in joined
+    assert "供应商名称：测试供应商" in joined
+    # 下划线空位 → 待补充
+    assert "联系电话：【待补充】" in joined
+    # 补充节追加
+    assert any("补充响应内容" in t for t in texts)
+    assert "一、总体响应说明" in texts
+    assert "我方完全响应采购文件全部要求。" in texts
 
 
-def test_docx_prefers_tender_format_spec():
-    """Issue #8：排版优先按招标文件格式要求；未要求处才用默认。"""
+def test_draft_export_fills_unknown_with_placeholder(tmp_path):
+    src = tmp_path / "source.docx"
+    src.write_bytes(_make_source())
+    model = {"buyer": "", "project_name": "", "supplier_name": "", "supplement_nodes": []}
+    data = docx_from_template(str(src), model)
+    joined = "\n".join(p.text for p in Document(io.BytesIO(data)).paragraphs)
+    assert "【待补充：招标人名称】" in joined
+    assert "【待补充：项目名称】" in joined
+    assert "【待补充：供应商名称】" in joined
+
+
+def test_draft_export_supplement_headings_bold_without_style_dependency(tmp_path):
+    """追加标题不依赖源文档是否含内置 Heading 样式（国网模板曾因此 KeyError 回退）。"""
+    src = tmp_path / "source.docx"
+    src.write_bytes(_make_source())
     model = {
-        "nodes": [
-            {"id": "h0", "type": "heading", "text": "商务标"},
-            {"id": "p1", "type": "paragraph", "text": "应答内容。"},
-        ]
+        "buyer": "",
+        "project_name": "",
+        "supplier_name": "",
+        "supplement_nodes": [
+            {"type": "heading", "text": "补充节标题"},
+            {"type": "paragraph", "text": "（采购人）应对本项目负责。"},
+        ],
     }
-    spec = {"font": "仿宋", "size": "四号", "line_spacing": "单倍行距", "toc_required": True}
-    data = docx_bytes(model, format_spec=spec)
-    doc = Document(io.BytesIO(data))
-    from docx.oxml.ns import qn
-
-    normal = doc.styles["Normal"]
-    assert normal.element.rPr.rFonts.get(qn("w:eastAsia")) == "仿宋"
-    assert normal.font.size.pt == 14  # 四号
-    assert normal.paragraph_format.line_spacing == 1.0
-
-
-def test_docx_default_format_without_spec():
-    model = {"nodes": [{"id": "p1", "type": "paragraph", "text": "正文"}]}
-    data = docx_bytes(model)
-    doc = Document(io.BytesIO(data))
-    from docx.oxml.ns import qn
-
-    normal = doc.styles["Normal"]
-    assert normal.element.rPr.rFonts.get(qn("w:eastAsia")) == "宋体"
-    assert normal.font.size.pt == 12  # 小四
-    assert normal.paragraph_format.line_spacing == 1.5
+    data = docx_from_template(str(src), model)
+    out = Document(io.BytesIO(data))
+    heads = [p for p in out.paragraphs if p.text == "补充节标题"]
+    assert heads and heads[0].runs[0].bold is True
+    # 补充节文本同样过填空
+    joined = "\n".join(p.text for p in out.paragraphs)
+    assert "【待补充：招标人名称】应对本项目负责。" in joined

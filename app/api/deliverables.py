@@ -176,25 +176,12 @@ async def download_version(
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ext = "xlsx"
     elif d.deliverable_type in (1, 2):
-        from app.models.requirement import Requirement
-
-        structure_rows = (
-            await session.scalars(
-                select(Requirement).where(
-                    Requirement.enterprise_id == user.enterprise_id,
-                    Requirement.project_id == d.project_id,
-                    Requirement.current.is_(True),
-                    Requirement.req_type == "doc_structure",
-                )
+        try:
+            data = await export_service.docx_bytes_with_source(
+                session, user.enterprise_id, content, project_id=d.project_id
             )
-        ).all()
-        format_spec = next(
-            ((r.structured or {}).get("spec") for r in structure_rows if (r.structured or {}).get("role") == "format"),
-            None,
-        )
-        data = await export_service.docx_bytes_with_source(
-            session, user.enterprise_id, content, format_spec=format_spec
-        )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ext = "docx"
     else:
