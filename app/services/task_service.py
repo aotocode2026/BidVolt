@@ -520,13 +520,28 @@ async def _resolve_template_source(
     rows = (await session.scalars(sa_select(FileObject).where(FileObject.id.in_(ids)))).all()
     docx_rows = [f for f in rows if (f.ext or "").strip(".").lower() == "docx"]
     if docx_rows:
-        marked = [
-            f
-            for f in docx_rows
-            if any(k in (block_texts.get(int(f.id)) or "") for k in ("响应文件格式", "商务文件", "技术文件"))
-        ]
-        pool = marked or docx_rows
-        return max(pool, key=lambda f: f.size_bytes).id
+        # 底稿候选分级：含"响应文件格式"章的最优先（模板正文），
+        # 其次同时含"商务文件+技术文件"，再次只含其一的弱标记（合同/规范书常引用到），
+        # 同级取最大文件（完整采购文件 > 公告/摘要）。
+        def _rank(f) -> int:
+            txt = block_texts.get(int(f.id)) or ""
+            if "响应文件格式" in txt:
+                return 2
+            if "商务文件" in txt and "技术文件" in txt:
+                return 1
+            if "商务文件" in txt or "技术文件" in txt:
+                return 0
+            return -1
+
+        ranked: list[tuple[int, int, object]] = []
+        for f in docx_rows:
+            r = _rank(f)
+            if r >= 0:
+                ranked.append((r, f.size_bytes or 0, f))
+        if ranked:
+            ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            return ranked[0][2].id
+        return max(docx_rows, key=lambda f: f.size_bytes).id
     source_text = "\n".join((block_texts.get(int(f.id)) or "") for f in rows).strip()[:400000]
     if not source_text:
         return None
