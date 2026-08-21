@@ -197,7 +197,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
     base_args = [
         "chat", "--cli",
-        "-t", "bidvolt,todo,delegation",
+        "-t", "bidvolt,todo,delegation,file",
         "-s", "bidvolt-agent-pipeline",
         "--no-restore-cwd", "--max-turns", "120",
     ]
@@ -226,7 +226,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             _repl_submit(master_fd, text)
 
         def _on_readable() -> None:
-            nonlocal buf_text, last_out_at, sent_first, session_id
+            nonlocal buf_text, last_out_at, sent_first, session_id, last_line
             try:
                 chunk = os.read(master_fd, 65536)
             except (BlockingIOError, OSError):
@@ -238,30 +238,33 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 except Exception:  # noqa: BLE001
                     pass
                 return
-            last_out_at = loop.time()
-            text = _strip_ansi(chunk.decode("utf-8", "replace"))
-            buf_text += text
-            if not sent_first and "Activated skills" in buf_text and "❯" in buf_text:
-                # 就绪后立即提交本轮首条消息
-                sent_first = True
-                _submit(first_message)
-            m = re.search(r"Session:\s*([\w-]+)", buf_text)
-            if m:
-                session_id = m.group(1)
-            for ln in text.split("\n"):
-                ln = ln.strip()
-                if not ln or _NOISE_RE.match(ln) or ln == last_line:
-                    continue
-                # 我方提交在 REPL 里的回显（含提示符前缀）不作为主会话输出
-                t = ln
-                for p in ("❯", ">", "›"):
-                    if t.startswith(p):
-                        t = t[len(p):].strip()
-                        break
-                if ln in echo_texts or t in echo_texts:
-                    continue
-                last_line = ln
-                pending.append(("hermes", ln))
+            try:
+                last_out_at = loop.time()
+                text = _strip_ansi(chunk.decode("utf-8", "replace"))
+                buf_text += text
+                if not sent_first and "Activated skills" in buf_text and "❯" in buf_text:
+                    # 就绪后立即提交本轮首条消息
+                    sent_first = True
+                    _submit(first_message)
+                m = re.search(r"Session:\s*([\w-]+)", buf_text)
+                if m:
+                    session_id = m.group(1)
+                for ln in text.split("\n"):
+                    ln = ln.strip()
+                    if not ln or _NOISE_RE.match(ln) or ln == last_line:
+                        continue
+                    # 我方提交在 REPL 里的回显（含提示符前缀）不作为主会话输出
+                    t = ln
+                    for p in ("❯", ">", "›"):
+                        if t.startswith(p):
+                            t = t[len(p):].strip()
+                            break
+                    if ln in echo_texts or t in echo_texts:
+                        continue
+                    last_line = ln
+                    pending.append(("hermes", ln))
+            except Exception:  # noqa: BLE001 回调内异常不得吞掉事件流
+                logger.exception("主会话输出解析失败（task=%s）", task.id)
 
         loop.add_reader(master_fd, _on_readable)
 
@@ -337,6 +340,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     marker = await _run_repl_round(resume_sid=None, first_message=prompt)
     sid, tail = await _repl_session_state(session, task)
     resume_rounds = 0
+    continuation = ""
     while marker is None and resume_rounds < RESUME_ROUNDS and sid:
         resume_rounds += 1
         continuation = (
@@ -357,6 +361,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "runtime": "hermes-main-session",
             "session_id": sid,
             "log_tail": tail[-800:],
+            "outcome": "complete",
             "note": "Agent 主会话端到端完成：计划/子任务/验收报告见会话控制台（事件流），session_id 可恢复。",
         }
         task.progress = {
@@ -365,13 +370,34 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "percent": 100,
             "current_work": "Agent 主会话完成（全部验收门通过）",
         }
-    else:
+    elif marker == MARK_INCOMPLETE:
+        # 主会话自主判定未闭环（如实标注，未冒充完成）：这是流程的最终结论，
+        # 不是执行失败——不再重试（重跑也不会改变硬约束），如实交付原因。
         reason = ""
-        m = re.search(re.escape(MARK_INCOMPLETE) + r"([^\n]*)", tail)
+        search_tail = tail.replace(prompt, "")
+        if continuation:
+            search_tail = search_tail.replace(continuation, "")
+        m = re.search(re.escape(MARK_INCOMPLETE) + r"([^\n]*)", search_tail)
         if m:
             reason = m.group(1).strip()
+        task.result = {
+            "runtime": "hermes-main-session",
+            "session_id": sid,
+            "log_tail": tail[-800:],
+            "outcome": "incomplete",
+            "reason": reason or "主会话判定未闭环（详见会话记录）",
+            "note": "Agent 主会话走完全部流程并如实判定未闭环（未冒充完成）：原因见 reason。"
+                    "补齐硬约束（如企业资料）后可重新发起 agent-run。会话控制台可回看全程。",
+        }
+        task.progress = {
+            "phase": "agent_pipeline",
+            "status": "done",
+            "percent": 100,
+            "current_work": "主会话完成（如实判定未闭环，原因见 result.reason）",
+        }
+    else:
         raise ValueError(
-            f"Agent 主会话未闭环：{reason or '主会话提前退出且未输出完成标记'}"
+            "Agent 主会话提前退出且未输出完成标记"
             f"（session_id={sid}，可恢复后续跑）"
         )
 
@@ -460,7 +486,7 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
         try:
             proc = await asyncio.create_subprocess_exec(
                 hermes_bin, "chat", "-q", message,
-                "-t", "bidvolt,todo,delegation", "--resume", sid,
+                "-t", "bidvolt,todo,delegation,file", "--resume", sid,
                 "--cli", "-Q", "--max-turns", "60", "--no-restore-cwd",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=env, cwd=env["HERMES_HOME"],
