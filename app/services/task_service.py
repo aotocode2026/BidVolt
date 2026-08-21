@@ -1940,7 +1940,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                 {"id": "llm-cover-h", "type": "heading", "text": "应答函"},
                 {"id": "llm-cover-1", "type": "paragraph", "text": f"致：{buyer_name or '【招标人名称】'}"},
                 {"id": "llm-cover-2", "type": "paragraph",
-                 "text": f"我方【供应商名称】已仔细研究《{project_name}》采购文件（含全部澄清与修改），"
+                 "text": f"我方{ent_name or '【供应商名称】'}已仔细研究《{project_name}》采购文件（含全部澄清与修改），"
                          "自愿参加本项目应答，并承诺完全响应采购文件要求（详见商务偏离表），应答报价详见价格文件。"},
             ]
             if models[1].get("template_based"):
@@ -2295,6 +2295,7 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
 
     issues: list[dict] = []
     texts: dict[int, str] = {}
+    tpl_based: dict[int, bool] = {}
     requirements = (
         await session.scalars(
             sa_select(Requirement).where(
@@ -2316,42 +2317,63 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
         if d.deliverable_type == 3:
             text = " ".join(str(c) for sheet in model.get("sheets", []) for row in sheet.get("rows", []) for c in row)
         else:
-            text = "\n".join(n.get("text", "") for n in model.get("nodes", []))
+            parts = [str(n.get("text") or "") for n in model.get("nodes", [])]
+            for n in model.get("nodes", []):
+                for row in n.get("rows") or []:
+                    parts.append(" | ".join(str(c) for c in row))
+            text = "\n".join(parts)
         texts[dtype] = text
-        if project.name not in text:
-            issues.append({"severity": "warning", "message": f"{name}未包含项目名称：{project.name}", "locate": d.id})
-        # 模板照搬校验（Issue #8 验收铁律：模板章节/表格一个不能少——缺一项报一项）
+        tpl_based[dtype] = bool(model.get("template_based"))
+        # 项目名称一致性：以招标项目名（生成时从招标文件派生，存于模型）为准；
+        # 底稿式成果的项目名在底稿封面上，必然存在，不按节点文本误报
+        doc_project_name = str(model.get("project_name") or project.name or "").strip()
+        if not tpl_based.get(dtype) and doc_project_name and doc_project_name not in text:
+            issues.append({"severity": "warning", "message": f"{name}未包含项目名称：{doc_project_name}", "locate": d.id})
+        # 模板照搬校验（Issue #8 验收铁律：模板章节/表格一个不能少——缺一项报一项）。
+        # 底稿式成果整本复制采购文件原 docx，模板由底稿保证；节点模型只是抽取子集，
+        # 不做文本比对误报，改为校验底稿源存在（导出唯一路径依赖它）。
         if dtype in (1, 2):
-            role = "business" if dtype == 1 else "technical"
-            tpl_rows = [
-                r for r in requirements
-                if r.req_type == "doc_template"
-                and (r.structured or {}).get("role") == role
-            ]
-            def _tpl_order_key(r):
-                o = (r.structured or {}).get("order", 0)
-                try:
-                    return (0, int(o))
-                except (TypeError, ValueError):
-                    return (1, str(o))
+            if model.get("template_based"):
+                if not model.get("template_source_file_id"):
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "message": f"{name}缺少采购文件底稿源（无法底稿式导出，请重新触发解析与生成）",
+                            "locate": d.id,
+                        }
+                    )
+            else:
+                role = "business" if dtype == 1 else "technical"
+                tpl_rows = [
+                    r for r in requirements
+                    if r.req_type == "doc_template"
+                    and (r.structured or {}).get("role") == role
+                ]
 
-            tpl_rows.sort(key=_tpl_order_key)
-            missing_tpl = []
-            for r in tpl_rows:
-                key = r.content.strip()[:24]
-                if key and key not in text:
-                    kind = (r.structured or {}).get("kind") or "paragraph"
-                    missing_tpl.append(f"{key}（{kind}）")
-            if missing_tpl:
-                issues.append(
-                    {
-                        "severity": "error",
-                        "message": f"{name}缺少采购文件模板条目 {len(missing_tpl)} 项："
-                        + "；".join(missing_tpl[:6])
-                        + ("…" if len(missing_tpl) > 6 else ""),
-                        "locate": d.id,
-                    }
-                )
+                def _tpl_order_key(r):
+                    o = (r.structured or {}).get("order", 0)
+                    try:
+                        return (0, int(o))
+                    except (TypeError, ValueError):
+                        return (1, str(o))
+
+                tpl_rows.sort(key=_tpl_order_key)
+                missing_tpl = []
+                for r in tpl_rows:
+                    key = r.content.strip()[:24]
+                    if key and key not in text:
+                        kind = (r.structured or {}).get("kind") or "paragraph"
+                        missing_tpl.append(f"{key}（{kind}）")
+                if missing_tpl:
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "message": f"{name}缺少采购文件模板条目 {len(missing_tpl)} 项："
+                            + "；".join(missing_tpl[:6])
+                            + ("…" if len(missing_tpl) > 6 else ""),
+                            "locate": d.id,
+                        }
+                    )
         # 【待补充】逐处列出缺失清单（Issue #8：每一处待补充必须在校核中指出）
         lines = [ln.strip() for ln in text.splitlines() if "【待补充】" in ln]
         for ln in lines[:12]:
@@ -2369,6 +2391,9 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
         if target is None:
             # 评分细则（路线图项：评分细则驱动评审）：评分项必须在任一成果中体现，否则列入缺失评分点
             if req.req_type == "score_rule":
+                # 底稿式成果整本含采购文件原文（评分标准表原文必然在内），不误报
+                if tpl_based.get(1) or tpl_based.get(2):
+                    continue
                 if (not texts.get(1) or req.content[:10] not in texts[1]) and (
                     not texts.get(2) or req.content[:10] not in texts[2]
                 ):
@@ -2381,6 +2406,10 @@ async def _review_issues(session: AsyncSession, *, enterprise_id: int, project_i
                     )
             continue
         dtype = 2 if target == "技术标" else 1
+        # 底稿式成果：整本复制采购文件原 docx，要求原文必然逐字保留在底稿内，
+        # 补充响应节负责逐条响应——不按节点文本做逐字比对误报"未响应"。
+        if tpl_based.get(dtype):
+            continue
         text = texts.get(dtype, "")
         if not text or req.content[:10] not in text:
             issues.append(

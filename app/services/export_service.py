@@ -29,14 +29,27 @@ def docx_from_template(source_path, model: dict) -> bytes:
     project_name = str(model.get("project_name") or "").strip()
     supplier = str(model.get("supplier_name") or "").strip()
 
-    _PLACEHOLDER_KEYS = ("（采购人）", "（响应供应商名称）", "（项目名称）")
+    _PLACEHOLDER_KEYS = (
+        "（采购人）", "（响应供应商名称）", "（项目名称）",
+        "【招标人名称】", "【供应商名称】", "【项目名称】",
+    )
 
     def _fill_text(text: str) -> str:
         out = text
         out = out.replace("（采购人）", buyer or "【待补充：招标人名称】")
         out = out.replace("（响应供应商名称）", supplier or "【待补充：供应商名称】")
         out = out.replace("（项目名称）", project_name or "【待补充：项目名称】")
+        out = out.replace("【招标人名称】", buyer or "【待补充：招标人名称】")
+        out = out.replace("【供应商名称】", supplier or "【待补充：供应商名称】")
+        out = out.replace("【项目名称】", project_name or "【待补充：项目名称】")
         out = _re.sub(r"_{2,}", "【待补充】", out)
+        # 带标签的空位原位回填（如"响应供应商名称：____（盖章）"）
+        if supplier:
+            out = _re.sub(r"响应供应商名称[：:]\s*【待补充】", f"响应供应商名称：{supplier}", out)
+        if project_name:
+            out = _re.sub(r"项目名称[：:]\s*【待补充】", f"项目名称：{project_name}", out)
+        if buyer:
+            out = _re.sub(r"(?:招标人|采购人)[：:]\s*【待补充】", f"招标人：{buyer}", out)
         return out
 
     def _fill_paragraph_el(p_el) -> None:
@@ -54,7 +67,12 @@ def docx_from_template(source_path, model: dict) -> bytes:
             if any(k in text for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", text):
                 t.text = _fill_text(text)
         remaining = "".join(t.text or "" for t in t_nodes)
-        if any(k in remaining for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", remaining):
+        needs_merge = (
+            any(k in remaining for k in _PLACEHOLDER_KEYS)
+            or _re.search(r"_{2,}", remaining)
+            or _re.search(r"(响应供应商名称|项目名称|招标人|采购人)[：:]\s*【待补充】", remaining)
+        )
+        if needs_merge:
             merged = _fill_text(remaining)
             for i, t in enumerate(t_nodes):
                 t.text = merged if i == 0 else ""
@@ -215,6 +233,7 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
     # 文档质量：仅记录/无正文、占位草稿、Markdown 残留、正文过短
     stub_marker = "草稿由 BidVolt 确定性生成"
     doc_texts: dict[int, str] = {}
+    tpl_based: dict[int, bool] = {}
     for d in deliverables:
         name = DELIVERABLE_NAMES.get(d.deliverable_type, f"成果{d.deliverable_type}")
         content = (contents or {}).get(d.id)
@@ -222,8 +241,13 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
             issues.append({"type": "文档质量", "severity": "error", "message": f"{name}：仅有成果记录，尚无正文", "locate": d.id})
             continue
         model = content.get("model") or {}
+        tpl_based[d.id] = bool(model.get("template_based"))
         nodes = model.get("nodes") or []
-        text = "\n".join(str(n.get("text") or "") for n in nodes)
+        parts = [str(n.get("text") or "") for n in nodes]
+        for n in nodes:
+            for row in n.get("rows") or []:
+                parts.append(" | ".join(str(c) for c in row))
+        text = "\n".join(parts)
         sheet_text = "\n".join(
             str(c or "")
             for sh in model.get("sheets") or []
@@ -245,19 +269,26 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
                 issues.append({"type": "文档质量", "severity": "warning", "message": f"{name}：尚未录入真实成本（请到报价页测算并应用）", "locate": d.id})
 
     # 结构合规：招标文件要求的章节必须逐章出现在对应成果中
+    # （底稿式成果整本复制采购文件原 docx，模板章节由底稿保证，节点模型只是抽取子集，
+    # 不按节点文本误报"缺少章节"）
     if structure:
+        by_type = {d.deliverable_type: d for d in deliverables}
         for item in structure:
             title = str(item.get("title") or "").strip()
             role = item.get("role")
             if not title or role not in role_type:
                 continue
-            text = doc_texts.get(role_type[role], "")
+            dtype = role_type[role]
+            d = by_type.get(dtype)
+            if d is not None and tpl_based.get(d.id):
+                continue
+            text = doc_texts.get(dtype, "")
             if title not in text:
                 issues.append(
                     {
                         "type": "结构合规",
                         "severity": "error",
-                        "message": f"{DELIVERABLE_NAMES.get(role_type[role], role)}缺少招标文件要求的章节：{title}",
+                        "message": f"{DELIVERABLE_NAMES.get(dtype, role)}缺少招标文件要求的章节：{title}",
                         "locate": None,
                     }
                 )
@@ -271,7 +302,10 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
             issues.append({"type": "要求覆盖", "severity": "error", "message": f"已解析 {n} 条要求，但成果仍为占位草稿，未逐条响应", "locate": None})
         if not n:
             issues.append({"type": "要求覆盖", "severity": "warning", "message": "项目未解析出招标要求，成果可能无法逐条响应招标文件", "locate": None})
-        # 逐条要求覆盖（对标的要求）：技术要求→技术标、资格要求→商务标逐条核对
+        # 逐条要求覆盖（对标的要求）：技术要求→技术标、资格要求→商务标逐条核对。
+        # 底稿式成果整本复制采购文件原 docx，要求原文必然逐字在底稿内——
+        # 不按节点文本做逐字比对误报"未响应"。
+        tpl_by_type = {d.deliverable_type: tpl_based.get(d.id, False) for d in deliverables}
         for req in requirements:
             req_type = req.get("req_type")
             content = str(req.get("content") or "").strip()
@@ -280,10 +314,14 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
             if req_type == "tech_requirement":
                 text = doc_texts.get(2, "")
                 target_name = "技术标"
+                target_type = 2
             elif req_type == "qualification":
                 text = doc_texts.get(1, "")
                 target_name = "商务标"
+                target_type = 1
             else:
+                continue
+            if tpl_by_type.get(target_type):
                 continue
             if not text or content[:10] not in text:
                 issues.append(
