@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1035.5" viewBox="0 0 1700 1035.5" font-family="Microsoft YaHei, SimHei, PingFang SC, sans-serif">
+<rect x="0" y="0" width="1700" height="1035.5" fill="#ffffff"/>
+<text x="30" y="38" font-size="24" font-weight="bold" fill="#1f2d3d">BidVolt · Agent 主会话端到端新方案 · 详细流程</text>
+<text x="32" y="58" font-size="12.5" fill="#5a6b7d">一个任务 = 一个 Hermes 主会话（PTY 长驻 REPL）：服务端只提供会话基础设施（令牌/事件流/催办/判定），流程全部由主会话自主编排——todo 计划 + delegate_task 子 agent + 验收循环，输出结束回执后由服务端逐份成文交付；旧方案完全隔离。</text>
+<rect x="44" y="76" width="208" height="943.5" rx="10" fill="#eef4fb"/>
+<text x="148.0" y="94" font-size="12.5" font-weight="bold" fill="#2f6db3" text-anchor="middle">用户 / 网页端</text>
+<rect x="268" y="76" width="252" height="943.5" rx="10" fill="#f3f6fa"/>
+<text x="394.0" y="94" font-size="12.5" font-weight="bold" fill="#3f5f85" text-anchor="middle">API 层（FastAPI · 新接口）</text>
+<rect x="536" y="76" width="300" height="943.5" rx="10" fill="#eef9f0"/>
+<text x="686.0" y="94" font-size="12.5" font-weight="bold" fill="#2f7d44" text-anchor="middle">任务执行（Worker · REPL 框架）</text>
+<rect x="852" y="76" width="300" height="943.5" rx="10" fill="#f6f2fb"/>
+<text x="1002.0" y="94" font-size="12.5" font-weight="bold" fill="#6a3fa0" text-anchor="middle">Hermes 主会话（自主编排）</text>
+<rect x="1168" y="76" width="240" height="943.5" rx="10" fill="#fdf0f0"/>
+<text x="1288.0" y="94" font-size="12.5" font-weight="bold" fill="#a03a3a" text-anchor="middle">子 Agent 群（后台运行）</text>
+<rect x="1424" y="76" width="248" height="943.5" rx="10" fill="#fdf6ec"/>
+<text x="1548.0" y="94" font-size="12.5" font-weight="bold" fill="#9a6b1f" text-anchor="middle">数据与存储</text>
+<line x1="34" y1="78.0" x2="1682" y2="78.0" stroke="#c9d4e0" stroke-width="1.2" stroke-dasharray="6 5"/>
+<text transform="rotate(-90 22 169)" x="22" y="169" font-size="12.5" font-weight="bold" fill="#2f6db3" text-anchor="middle">阶段 A · 发起与启动</text>
+<line x1="34" y1="304.0" x2="1682" y2="304.0" stroke="#c9d4e0" stroke-width="1.2" stroke-dasharray="6 5"/>
+<text transform="rotate(-90 22 440)" x="22" y="440" font-size="12.5" font-weight="bold" fill="#6a3fa0" text-anchor="middle">阶段 B · 主会话自主编排（todo 计划 + 子 agent 委派 + 验收循环）</text>
+<line x1="34" y1="620.0" x2="1682" y2="620.0" stroke="#c9d4e0" stroke-width="1.2" stroke-dasharray="6 5"/>
+<text transform="rotate(-90 22 711)" x="22" y="711" font-size="12.5" font-weight="bold" fill="#b06a00" text-anchor="middle">阶段 C · 成果落库与结束判定（回执协议）</text>
+<line x1="34" y1="846.0" x2="1682" y2="846.0" stroke="#c9d4e0" stroke-width="1.2" stroke-dasharray="6 5"/>
+<text transform="rotate(-90 22 929)" x="22" y="929" font-size="12.5" font-weight="bold" fill="#8a1f1f" text-anchor="middle">阶段 D · 逐份成文与交付</text>
+<rect x="58" y="108.0" width="180" height="62.5" rx="7" fill="#ffffff" stroke="#2f6db3" stroke-width="1.4"/>
+<rect x="58" y="108.0" width="180" height="20" rx="7" fill="#2f6db3" opacity="0.10"/>
+<text x="148.0" y="127.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">① 注册/登录/建项目/上传材料</text>
+<text x="66" y="148.0" font-size="10.8" fill="#41505f">10 份材料全部解析入库</text>
+<circle cx="71" cy="121.0" r="8.5" fill="#2f6db3"/><text x="71" y="124.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">A</text>
+<rect x="282" y="108.0" width="224" height="78.0" rx="7" fill="#ffffff" stroke="#2f6db3" stroke-width="1.4"/>
+<rect x="282" y="108.0" width="224" height="20" rx="7" fill="#2f6db3" opacity="0.10"/>
+<text x="394.0" y="127.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">② POST /agent-run</text>
+<text x="290" y="148.0" font-size="10.8" fill="#41505f">task_type=agent_pipeline（新任务类型）</text>
+<text x="290" y="163.5" font-size="10.8" fill="#41505f">旧任务类型/旧接口/旧 /demo 不动</text>
+<circle cx="295" cy="121.0" r="8.5" fill="#2f6db3"/><text x="295" y="124.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">A</text>
+<rect x="282" y="198.0" width="224" height="78.0" rx="7" fill="#ffffff" stroke="#2f6db3" stroke-width="1.4"/>
+<rect x="282" y="198.0" width="224" height="20" rx="7" fill="#2f6db3" opacity="0.10"/>
+<text x="394.0" y="217.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">③ 签发任务级 capability token</text>
+<text x="290" y="238.0" font-size="10.8" fill="#41505f">绑定 企业/项目/任务</text>
+<text x="290" y="253.5" font-size="10.8" fill="#41505f">MCP 工具白名单</text>
+<circle cx="295" cy="211.0" r="8.5" fill="#2f6db3"/><text x="295" y="214.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">A</text>
+<rect x="550" y="108.0" width="272" height="62.5" rx="7" fill="#ffffff" stroke="#2f6db3" stroke-width="1.4"/>
+<rect x="550" y="108.0" width="272" height="20" rx="7" fill="#2f6db3" opacity="0.10"/>
+<text x="686.0" y="127.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">④ Worker 领取任务</text>
+<text x="558" y="148.0" font-size="10.8" fill="#41505f">租约 + 心跳续期</text>
+<circle cx="563" cy="121.0" r="8.5" fill="#2f6db3"/><text x="563" y="124.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">A</text>
+<rect x="550" y="182.5" width="272" height="93.5" rx="7" fill="#ffffff" stroke="#2f6db3" stroke-width="1.4"/>
+<rect x="550" y="182.5" width="272" height="20" rx="7" fill="#2f6db3" opacity="0.10"/>
+<text x="686.0" y="201.5" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑤ PTY 长驻启动主会话</text>
+<text x="558" y="222.5" font-size="10.8" fill="#41505f">hermes chat --cli</text>
+<text x="558" y="238.0" font-size="10.8" fill="#41505f">-t bidvolt,todo,delegation,file</text>
+<text x="558" y="253.5" font-size="10.8" fill="#41505f">-s bidvolt-agent-pipeline</text>
+<circle cx="563" cy="195.5" r="8.5" fill="#2f6db3"/><text x="563" y="199.0" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">A</text>
+<rect x="1438" y="108.0" width="220" height="78.0" rx="7" fill="#ffffff" stroke="#2f6db3" stroke-width="1.4"/>
+<rect x="1438" y="108.0" width="220" height="20" rx="7" fill="#2f6db3" opacity="0.10"/>
+<text x="1548.0" y="127.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑥ 会话基础设施</text>
+<text x="1446" y="148.0" font-size="10.8" fill="#41505f">事件流表 AgentSessionEvent</text>
+<text x="1446" y="163.5" font-size="10.8" fill="#41505f">Hermes 会话库（可 --resume）</text>
+<circle cx="1451" cy="121.0" r="8.5" fill="#2f6db3"/><text x="1451" y="124.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">A</text>
+<rect x="866" y="334.0" width="272" height="62.5" rx="7" fill="#ffffff" stroke="#6a3fa0" stroke-width="1.4"/>
+<rect x="866" y="334.0" width="272" height="20" rx="7" fill="#6a3fa0" opacity="0.10"/>
+<text x="1002.0" y="353.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑦ todo 建立 A→G 计划</text>
+<text x="874" y="374.0" font-size="10.8" fill="#41505f">分析→提取→校验→撰写→校验→评审→交付</text>
+<circle cx="879" cy="347.0" r="8.5" fill="#6a3fa0"/><text x="879" y="350.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">B</text>
+<rect x="866" y="408.5" width="272" height="78.0" rx="7" fill="#ffffff" stroke="#6a3fa0" stroke-width="1.4"/>
+<rect x="866" y="408.5" width="272" height="20" rx="7" fill="#6a3fa0" opacity="0.10"/>
+<text x="1002.0" y="427.5" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑧ delegate_task 派专职子 agent</text>
+<text x="874" y="448.5" font-size="10.8" fill="#41505f">任务书写清：角色+目标+允许工具</text>
+<text x="874" y="464.0" font-size="10.8" fill="#41505f">+验收标准+溯源任务 id</text>
+<circle cx="879" cy="421.5" r="8.5" fill="#6a3fa0"/><text x="879" y="425.0" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">B</text>
+<rect x="1182" y="334.0" width="212" height="78.0" rx="7" fill="#ffffff" stroke="#6a3fa0" stroke-width="1.4"/>
+<rect x="1182" y="334.0" width="212" height="20" rx="7" fill="#6a3fa0" opacity="0.10"/>
+<text x="1288.0" y="353.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑨ 子 agent 后台执行</text>
+<text x="1190" y="374.0" font-size="10.8" fill="#41505f">分析 / 提取 / 校验 / 写作 / 评审</text>
+<text x="1190" y="389.5" font-size="10.8" fill="#41505f">经 MCP 工具读写（token+RLS 校验）</text>
+<circle cx="1195" cy="347.0" r="8.5" fill="#6a3fa0"/><text x="1195" y="350.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">B</text>
+<rect x="1182" y="424.0" width="212" height="78.0" rx="7" fill="#ffffff" stroke="#6a3fa0" stroke-width="1.4"/>
+<rect x="1182" y="424.0" width="212" height="20" rx="7" fill="#6a3fa0" opacity="0.10"/>
+<text x="1288.0" y="443.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑩ 结果自动回流主会话</text>
+<text x="1190" y="464.0" font-size="10.8" fill="#41505f">ASYNC DELEGATION BATCH COMPLETE</text>
+<text x="1190" y="479.5" font-size="10.8" fill="#41505f">作为新消息进入会话，无需轮询</text>
+<circle cx="1195" cy="437.0" r="8.5" fill="#6a3fa0"/><text x="1195" y="440.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">B</text>
+<rect x="866" y="498.5" width="272" height="93.5" rx="7" fill="#ffffff" stroke="#6a3fa0" stroke-width="1.4"/>
+<rect x="866" y="498.5" width="272" height="20" rx="7" fill="#6a3fa0" opacity="0.10"/>
+<text x="1002.0" y="517.5" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑪ 验收循环</text>
+<text x="874" y="538.5" font-size="10.8" fill="#41505f">报告过 → 进入下一门</text>
+<text x="874" y="554.0" font-size="10.8" fill="#41505f">不过 → 带报告回修再派</text>
+<text x="874" y="569.5" font-size="10.8" fill="#41505f">可并行步骤同时推进</text>
+<circle cx="879" cy="511.5" r="8.5" fill="#6a3fa0"/><text x="879" y="515.0" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">B</text>
+<rect x="1438" y="334.0" width="220" height="78.0" rx="7" fill="#ffffff" stroke="#6a3fa0" stroke-width="1.4"/>
+<rect x="1438" y="334.0" width="220" height="20" rx="7" fill="#6a3fa0" opacity="0.10"/>
+<text x="1548.0" y="353.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑫ 事件流全程落库</text>
+<text x="1446" y="374.0" font-size="10.8" fill="#41505f">服务指令/主会话每次回复/委派回执</text>
+<text x="1446" y="389.5" font-size="10.8" fill="#41505f">5s 节流批量写入</text>
+<circle cx="1451" cy="347.0" r="8.5" fill="#6a3fa0"/><text x="1451" y="350.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">B</text>
+<rect x="1182" y="650.0" width="212" height="93.5" rx="7" fill="#ffffff" stroke="#b06a00" stroke-width="1.4"/>
+<rect x="1182" y="650.0" width="212" height="20" rx="7" fill="#b06a00" opacity="0.10"/>
+<text x="1288.0" y="669.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑬ 三份成果落库</text>
+<text x="1190" y="690.0" font-size="10.8" fill="#41505f">商务标/技术标（supplement_nodes）</text>
+<text x="1190" y="705.5" font-size="10.8" fill="#41505f">报价单（sheets 结构）</text>
+<text x="1190" y="721.0" font-size="10.8" fill="#41505f">CAS 版本控制</text>
+<circle cx="1195" cy="663.0" r="8.5" fill="#b06a00"/><text x="1195" y="666.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">C</text>
+<rect x="866" y="650.0" width="272" height="78.0" rx="7" fill="#ffffff" stroke="#b06a00" stroke-width="1.4"/>
+<rect x="866" y="650.0" width="272" height="20" rx="7" fill="#b06a00" opacity="0.10"/>
+<text x="1002.0" y="669.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑭ 全部验收门通过</text>
+<text x="874" y="690.0" font-size="10.8" fill="#41505f">提取/撰写验收 + 评审</text>
+<text x="874" y="705.5" font-size="10.8" fill="#41505f">未闭环项如实标注【待补充】</text>
+<circle cx="879" cy="663.0" r="8.5" fill="#b06a00"/><text x="879" y="666.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">C</text>
+<rect x="866" y="740.0" width="272" height="78.0" rx="7" fill="#ffffff" stroke="#b06a00" stroke-width="1.4"/>
+<rect x="866" y="740.0" width="272" height="20" rx="7" fill="#b06a00" opacity="0.10"/>
+<text x="1002.0" y="759.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑮ 结束回执（协议）</text>
+<text x="874" y="780.0" font-size="10.8" fill="#41505f">最后一行：【PIPELINE_COMPLETE】</text>
+<text x="874" y="795.5" font-size="10.8" fill="#41505f">或【PIPELINE_INCOMPLETE】原因</text>
+<circle cx="879" cy="753.0" r="8.5" fill="#b06a00"/><text x="879" y="756.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">C</text>
+<rect x="550" y="650.0" width="272" height="93.5" rx="7" fill="#ffffff" stroke="#b06a00" stroke-width="1.4"/>
+<rect x="550" y="650.0" width="272" height="20" rx="7" fill="#b06a00" opacity="0.10"/>
+<text x="686.0" y="669.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑯ 服务端会话库轮询判定</text>
+<text x="558" y="690.0" font-size="10.8" fill="#41505f">30s 读 Hermes 会话库</text>
+<text x="558" y="705.5" font-size="10.8" fill="#41505f">判据=主会话最后一条回复</text>
+<text x="558" y="721.0" font-size="10.8" fill="#41505f">三级催办 · 提前退出自动续跑 · 2h 上限</text>
+<circle cx="563" cy="663.0" r="8.5" fill="#b06a00"/><text x="563" y="666.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">C</text>
+<rect x="1438" y="650.0" width="220" height="78.0" rx="7" fill="#ffffff" stroke="#b06a00" stroke-width="1.4"/>
+<rect x="1438" y="650.0" width="220" height="20" rx="7" fill="#b06a00" opacity="0.10"/>
+<text x="1548.0" y="669.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑰ 任务结果落库</text>
+<text x="1446" y="690.0" font-size="10.8" fill="#41505f">outcome=complete/incomplete</text>
+<text x="1446" y="705.5" font-size="10.8" fill="#41505f">reason + session_id</text>
+<circle cx="1451" cy="663.0" r="8.5" fill="#b06a00"/><text x="1451" y="666.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">C</text>
+<rect x="282" y="876.0" width="224" height="93.5" rx="7" fill="#ffffff" stroke="#8a1f1f" stroke-width="1.4"/>
+<rect x="282" y="876.0" width="224" height="20" rx="7" fill="#8a1f1f" opacity="0.10"/>
+<text x="394.0" y="895.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑱ 响应文件包（三目录）</text>
+<text x="290" y="916.0" font-size="10.8" fill="#41505f">价格/商务/技术文件逐份成文</text>
+<text x="290" y="931.5" font-size="10.8" fill="#41505f">每份=条目模板原文+填空</text>
+<text x="290" y="947.0" font-size="10.8" fill="#41505f">（修订模式+批注来源）+撰写内容</text>
+<circle cx="295" cy="889.0" r="8.5" fill="#8a1f1f"/><text x="295" y="892.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">D</text>
+<rect x="1438" y="876.0" width="220" height="78.0" rx="7" fill="#ffffff" stroke="#8a1f1f" stroke-width="1.4"/>
+<rect x="1438" y="876.0" width="220" height="20" rx="7" fill="#8a1f1f" opacity="0.10"/>
+<text x="1548.0" y="895.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑲ 附主会话全程记录</text>
+<text x="1446" y="916.0" font-size="10.8" fill="#41505f">会话记录/主会话记录.md</text>
+<text x="1446" y="931.5" font-size="10.8" fill="#41505f">全量消息流 + 子任务委派与验收结论</text>
+<circle cx="1451" cy="889.0" r="8.5" fill="#8a1f1f"/><text x="1451" y="892.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">D</text>
+<rect x="58" y="876.0" width="180" height="78.0" rx="7" fill="#ffffff" stroke="#8a1f1f" stroke-width="1.4"/>
+<rect x="58" y="876.0" width="180" height="20" rx="7" fill="#8a1f1f" opacity="0.10"/>
+<text x="148.0" y="895.0" font-size="12.5" font-weight="bold" fill="#24303c" text-anchor="middle">⑳ 下载验收</text>
+<text x="66" y="916.0" font-size="10.8" fill="#41505f">Word【审阅→所有标记】逐处对照</text>
+<text x="66" y="931.5" font-size="10.8" fill="#41505f">控制台回看 + 直接对话（--resume）</text>
+<circle cx="71" cy="889.0" r="8.5" fill="#8a1f1f"/><text x="71" y="892.5" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">D</text>
+<path d="M 238.0,139.2 L 260.0,139.2 L 260.0,147.0 L 282.0,147.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="282.0,147.0 274.7,150.3 274.7,143.7" fill="#5b7a9d"/>
+<path d="M 506.0,147.0 L 394.0,147.0 L 394.0,237.0 L 282.0,237.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="282.0,237.0 289.3,233.7 289.3,240.3" fill="#5b7a9d"/>
+<path d="M 506.0,237.0 L 528.0,237.0 L 528.0,139.2 L 550.0,139.2" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="550.0,139.2 542.7,142.5 542.7,136.0" fill="#5b7a9d"/>
+<path d="M 822.0,139.2 L 686.0,139.2 L 686.0,229.2 L 550.0,229.2" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="550.0,229.2 557.3,226.0 557.3,232.5" fill="#5b7a9d"/>
+<path d="M 822.0,229.2 L 1130.0,229.2 L 1130.0,147.0 L 1438.0,147.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1438.0,147.0 1430.7,150.3 1430.7,143.7" fill="#5b7a9d"/>
+<path d="M 822.0,229.2 L 844.0,229.2 L 844.0,365.2 L 866.0,365.2" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="866.0,365.2 858.7,368.5 858.7,362.0" fill="#5b7a9d"/>
+<rect x="810.0" y="348.25" width="68.0" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="844.0" y="359.75" font-size="10" fill="#5b7a9d" text-anchor="middle">喂入任务书</text>
+<path d="M 1138.0,365.2 L 1002.0,365.2 L 1002.0,447.5 L 866.0,447.5" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="866.0,447.5 873.3,444.2 873.3,450.8" fill="#5b7a9d"/>
+<path d="M 1138.0,447.5 L 1160.0,447.5 L 1160.0,373.0 L 1182.0,373.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1182.0,373.0 1174.7,376.3 1174.7,369.7" fill="#5b7a9d"/>
+<rect x="1143.4" y="356.0" width="33.2" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="1160.0" y="367.5" font-size="10" fill="#5b7a9d" text-anchor="middle">派单</text>
+<path d="M 1394.0,373.0 L 1288.0,373.0 L 1288.0,463.0 L 1182.0,463.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1182.0,463.0 1189.3,459.7 1189.3,466.3" fill="#5b7a9d"/>
+<rect x="1271.4" y="446.0" width="33.2" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="1288.0" y="457.5" font-size="10" fill="#5b7a9d" text-anchor="middle">完成</text>
+<path d="M 1394.0,463.0 L 1130.0,463.0 L 1130.0,545.2 L 866.0,545.2" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="866.0,545.2 873.3,542.0 873.3,548.5" fill="#5b7a9d"/>
+<rect x="1101.8" y="528.25" width="56.4" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="1130.0" y="539.75" font-size="10" fill="#5b7a9d" text-anchor="middle">报告回流</text>
+<path d="M 1138.0,545.2 L 1002.0,545.2 L 1002.0,447.5 L 866.0,447.5" fill="none" stroke="#c07800" stroke-width="1.6" stroke-dasharray="6 4"/>
+<polygon points="866.0,447.5 873.3,444.2 873.3,450.8" fill="#c07800"/>
+<rect x="927.4" y="430.5" width="149.2" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="1002.0" y="442.0" font-size="10" fill="#c07800" text-anchor="middle">验收不过 · 带报告回修</text>
+<path d="M 1394.0,373.0 L 1438.0,373.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1438.0,373.0 1430.7,376.3 1430.7,369.7" fill="#5b7a9d"/>
+<path d="M 1138.0,365.2 L 1288.0,365.2 L 1288.0,373.0 L 1438.0,373.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1438.0,373.0 1430.7,376.3 1430.7,369.7" fill="#5b7a9d"/>
+<path d="M 1138.0,545.2 L 1160.0,545.2 L 1160.0,696.8 L 1182.0,696.8" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1182.0,696.8 1174.7,700.0 1174.7,693.5" fill="#5b7a9d"/>
+<rect x="1085.4" y="679.75" width="149.2" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="1160.0" y="691.25" font-size="10" fill="#5b7a9d" text-anchor="middle">撰写子 agent 落库</text>
+<path d="M 1394.0,696.8 L 1130.0,696.8 L 1130.0,689.0 L 866.0,689.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="866.0,689.0 873.3,685.7 873.3,692.3" fill="#5b7a9d"/>
+<path d="M 1138.0,689.0 L 1002.0,689.0 L 1002.0,779.0 L 866.0,779.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="866.0,779.0 873.3,775.7 873.3,782.3" fill="#5b7a9d"/>
+<path d="M 1138.0,779.0 L 844.0,779.0 L 844.0,696.8 L 550.0,696.8" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="550.0,696.8 557.3,693.5 557.3,700.0" fill="#5b7a9d"/>
+<rect x="827.4" y="679.75" width="33.2" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="844.0" y="691.25" font-size="10" fill="#5b7a9d" text-anchor="middle">回执</text>
+<path d="M 822.0,696.8 L 1130.0,696.8 L 1130.0,689.0 L 1438.0,689.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1438.0,689.0 1430.7,692.3 1430.7,685.7" fill="#5b7a9d"/>
+<path d="M 1658.0,689.0 L 970.0,689.0 L 970.0,922.8 L 282.0,922.8" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="282.0,922.8 289.3,919.5 289.3,926.0" fill="#5b7a9d"/>
+<path d="M 506.0,922.8 L 972.0,922.8 L 972.0,915.0 L 1438.0,915.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1438.0,915.0 1430.7,918.3 1430.7,911.7" fill="#5b7a9d"/>
+<path d="M 1658.0,915.0 L 58.0,915.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="58.0,915.0 65.3,911.7 65.3,918.3" fill="#5b7a9d"/>
+<path d="M 822.0,696.8 L 844.0,696.8 L 844.0,545.2 L 866.0,545.2" fill="none" stroke="#c0392b" stroke-width="1.6" stroke-dasharray="6 4"/>
+<polygon points="866.0,545.2 858.7,548.5 858.7,542.0" fill="#c0392b"/>
+<rect x="781.0" y="528.25" width="126.0" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="844.0" y="539.75" font-size="10" fill="#c0392b" text-anchor="middle">无回执 · 三级催办</text>
+<path d="M 822.0,696.8 L 844.0,696.8 L 844.0,365.2 L 866.0,365.2" fill="none" stroke="#c07800" stroke-width="1.6" stroke-dasharray="6 4"/>
+<polygon points="866.0,365.2 858.7,368.5 858.7,362.0" fill="#c07800"/>
+<rect x="734.6" y="348.25" width="218.79999999999998" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="844.0" y="359.75" font-size="10" fill="#c07800" text-anchor="middle">提前退出 · --resume 续跑</text>
+<path d="M 1658.0,147.0 L 1548.0,147.0 L 1548.0,915.0 L 1438.0,915.0" fill="none" stroke="#5b7a9d" stroke-width="1.6"/>
+<polygon points="1438.0,915.0 1445.3,911.7 1445.3,918.3" fill="#5b7a9d"/>
+<rect x="1490.8" y="898.0" width="114.39999999999999" height="15" rx="3" fill="#ffffff" opacity="0.94"/><text x="1548.0" y="909.5" font-size="10" fill="#5b7a9d" text-anchor="middle">事件流渲染会话记录</text>
+</svg>
