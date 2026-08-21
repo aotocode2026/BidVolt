@@ -54,11 +54,17 @@ class _TrackedEditor:
         return r
 
     def _anchor(self, cid: int, before_el):
-        """在 before_el 之前插入 commentRangeStart/End 与 commentReference。"""
+        """在 before_el 之前插入 commentRangeStart（End 与 Reference 由调用方按序追加）。"""
         start = self._mk("w:commentRangeStart")
         start.set(self._qn("w:id"), str(cid))
+        before_el.addprevious(start)
+        return start
+
+    def _anchor_end_ref(self, cid: int, before_el) -> None:
+        """在 before_el 之前追加 commentRangeEnd 与 commentReference（须在改动内容之后）。"""
         end = self._mk("w:commentRangeEnd")
         end.set(self._qn("w:id"), str(cid))
+        before_el.addprevious(end)
         ref_r = self._mk("w:r")
         rpr = self._mk("w:rPr")
         rstyle = self._mk("w:rStyle")
@@ -68,10 +74,7 @@ class _TrackedEditor:
         ref = self._mk("w:commentReference")
         ref.set(self._qn("w:id"), str(cid))
         ref_r.append(ref)
-        before_el.addprevious(start)
-        before_el.addprevious(end)
         before_el.addprevious(ref_r)
-        return start
 
     def add_comment(self, text: str) -> int:
         self._seq["comment"] += 1
@@ -80,29 +83,32 @@ class _TrackedEditor:
         return cid
 
     def track_replace(self, t_el, old_text: str, new_text: str, comment: str) -> None:
-        """单个文本节点的替换：原文删除线 + 新文插入 + 批注（保留原 run 格式）。"""
+        """单个文本节点的替换：原文删除线 + 新文插入 + 批注（保留原 run 格式）。
+        元素顺序：commentRangeStart → del → ins → commentRangeEnd → commentReference。"""
         r_el = t_el.getparent()
-        del_el = self._mark("w:del")
-        del_el.append(self._run("w:delText", old_text, r_el))
-        ins_el = self._mark("w:ins")
-        ins_el.append(self._run("w:t", new_text, r_el))
         cid = self.add_comment(comment)
         self._anchor(cid, r_el)
+        del_el = self._mark("w:del")
+        del_el.append(self._run("w:delText", old_text, r_el))
         r_el.addprevious(del_el)
+        ins_el = self._mark("w:ins")
+        ins_el.append(self._run("w:t", new_text, r_el))
         r_el.addprevious(ins_el)
+        self._anchor_end_ref(cid, r_el)
         t_el.text = ""
 
     def track_paragraph_replace(self, t_nodes, old_full: str, new_full: str, comment: str) -> None:
         """整段替换（占位符跨 run 拆分时）：整段原文删除线 + 整段新文插入 + 批注。"""
         first_r = t_nodes[0].getparent()
-        del_el = self._mark("w:del")
-        del_el.append(self._run("w:delText", old_full, first_r))
-        ins_el = self._mark("w:ins")
-        ins_el.append(self._run("w:t", new_full, first_r))
         cid = self.add_comment(comment)
         self._anchor(cid, first_r)
+        del_el = self._mark("w:del")
+        del_el.append(self._run("w:delText", old_full, first_r))
         first_r.addprevious(del_el)
+        ins_el = self._mark("w:ins")
+        ins_el.append(self._run("w:t", new_full, first_r))
         first_r.addprevious(ins_el)
+        self._anchor_end_ref(cid, first_r)
         for t in t_nodes:
             t.text = ""
 
@@ -164,6 +170,19 @@ def docx_from_template(source_path, model: dict) -> bytes:
     doc = Document(str(source_path))
     editor = _TrackedEditor(doc)
 
+    # Word 显示修订标记的前提：settings.xml 须含 <w:trackChanges/>，
+    # 否则 w:ins/w:del 会被当作普通文本（插入可见、删除被吞）。
+    from docx.oxml import OxmlElement as _OxmlElement
+
+    settings_el = doc.settings.element
+    if settings_el.find(qn("w:trackChanges")) is None:
+        tc = _OxmlElement("w:trackChanges")
+        default_tab = settings_el.find(qn("w:defaultTabStop"))
+        if default_tab is not None:
+            default_tab.addprevious(tc)
+        else:
+            settings_el.append(tc)
+
     buyer = str(model.get("buyer") or "").strip()
     project_name = str(model.get("project_name") or "").strip()
     supplier = str(model.get("supplier_name") or "").strip()
@@ -175,6 +194,20 @@ def docx_from_template(source_path, model: dict) -> bytes:
 
     def _fill_text(text: str) -> str:
         out = text
+        # 标签紧邻空位：整体回填（模板里"办理____（项目名称）"的下划线才是字段本身，
+        # 标签只是提示；两者一起替换为真实值）
+        if project_name:
+            out = _re.sub(r"_{2,}\s*[（(【]\s*项目名称\s*[）)】]", project_name, out)
+        if buyer:
+            out = _re.sub(r"_{2,}\s*[（(【]\s*采购人\s*[）)】]", buyer, out)
+            out = _re.sub(r"_{2,}\s*【\s*招标人名称\s*】", buyer, out)
+        if supplier:
+            out = _re.sub(r"_{2,}\s*[（(【]\s*响应供应商名称\s*[）)】]", supplier, out)
+            out = _re.sub(r"_{2,}\s*【\s*供应商名称\s*】", supplier, out)
+        # 应答函裸标签形态（"致：采购人" 无括号，是主应答函称谓行）
+        if buyer:
+            out = _re.sub(r"(?m)^致[：:]\s*采购人\s*$", f"致：{buyer}", out)
+            out = _re.sub(r"(?m)^致[：:]\s*招标人\s*$", f"致：{buyer}", out)
         out = out.replace("（采购人）", buyer or "【待补充：招标人名称】")
         out = out.replace("（响应供应商名称）", supplier or "【待补充：供应商名称】")
         out = out.replace("（项目名称）", project_name or "【待补充：项目名称】")
@@ -196,11 +229,18 @@ def docx_from_template(source_path, model: dict) -> bytes:
         filled: list[str] = []
         if ("（采购人）" in old or "【招标人名称】" in old or "招标人：" in old) and buyer:
             filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告，系统确定性提取）")
+        elif ("致：" in old and "采购人" in old) and buyer:
+            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告，系统确定性提取）")
         if ("（响应供应商名称）" in old or "【供应商名称】" in old or "响应供应商名称" in old) and supplier:
             filled.append(f"供应商=「{supplier}」（来源：企业资料-企业名称）")
         if ("（项目名称）" in old or "【项目名称】" in old or "项目名称：" in old) and project_name:
             filled.append(f"项目名称=「{project_name}」（来源：招标文件封面/采购公告，系统确定性提取）")
         if filled:
+            if "【待补充" in new:
+                return (
+                    "系统回填：" + "；".join(filled)
+                    + "；本处其余空位（如授权人/被授权人等）未取得对应资料，原位标注【待补充】。请人工复核确认。"
+                )
             return "系统回填：" + "；".join(filled) + "。请人工复核确认。"
         if "【待补充" in new:
             return "模板空位未取得对应资料，系统原位标注【待补充】（不编造内容），请人工填写后确认。"
@@ -213,7 +253,8 @@ def docx_from_template(source_path, model: dict) -> bytes:
         if not t_nodes:
             return
         full = "".join(t.text or "" for t in t_nodes)
-        if not any(k in full for k in _PLACEHOLDER_KEYS) and not _re.search(r"_{2,}", full):
+        bare_zhia = bool(_re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", full))
+        if not any(k in full for k in _PLACEHOLDER_KEYS) and not _re.search(r"_{2,}", full) and not bare_zhia:
             return
         # 跨节点判断：任一占位符的整段计数 ≠ 各节点计数之和 → 拆分在多个 run 里
         cross = False
@@ -228,6 +269,8 @@ def docx_from_template(source_path, model: dict) -> bytes:
                 cross = True
         if _re.search(r"(响应供应商名称|项目名称|招标人|采购人)[：:]\s*_{2,}", full):
             cross = True  # 带标签空位常跨 run，整段处理
+        if _re.search(r"_{2,}\s*[（(【]\s*(?:项目名称|采购人|响应供应商名称|招标人名称|供应商名称)\s*[）)】]", full):
+            cross = True  # 标签紧邻空位（下划线紧贴占位标签）必须整段整体回填
         if cross:
             new_full = _fill_text(full)
             if new_full != full:
@@ -247,7 +290,11 @@ def docx_from_template(source_path, model: dict) -> bytes:
     # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）
     for t_el in doc.element.body.iter(qn("w:t")):
         text = t_el.text or ""
-        if any(k in text for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", text):
+        if (
+            any(k in text for k in _PLACEHOLDER_KEYS)
+            or _re.search(r"_{2,}", text)
+            or _re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", text)
+        ):
             new = _fill_text(text)
             if new != text:
                 editor.track_replace(t_el, text, new, _comment_for(text, new))
