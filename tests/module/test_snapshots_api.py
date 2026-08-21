@@ -74,9 +74,47 @@ def test_project_tasks_list(client):
 
 
 def test_deliverable_version_download(client):
-    h, _, did = _setup(client)
+    h, pid, did = _setup(client)
+    # 底稿式导出（唯一路径）：项目需有采购文件 docx 作底稿
+    import io
+
+    from docx import Document as _Docx
+
+    src = _Docx()
+    src.add_paragraph("采购文件原文。")
+    buf = io.BytesIO()
+    src.save(buf)
+    up = client.post(
+        "/api/v1/files/upload",
+        data={"target": "project", "project_id": str(pid)},
+        files=[("files", ("采购文件.docx", buf.getvalue(), "application/octet-stream"))],
+        headers=h,
+    )
+    assert up.status_code == 200
+
     r = client.get(f"/api/v1/deliverables/{did}/versions/1/download", headers=h)
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     assert "docx" in r.headers["content-disposition"]
     assert r.content[:2] == b"PK"  # docx = zip
+
+    # 无底稿的项目：下载明确报错，绝不节点式兜底
+    h2 = client.post(
+        "/api/v1/auth/register",
+        json={"email": "nosrc@test.com", "password": "Abc12345", "enterprise_name": "无底稿企业"},
+    ).json()["access_token"]
+    hh = {"Authorization": f"Bearer {h2}"}
+    pid2 = client.post("/api/v1/projects", json={"name": "P2"}, headers=hh).json()["project_id"]
+    did2 = client.post(
+        "/api/v1/deliverables",
+        json={"project_id": pid2, "deliverable_type": 1, "title": "商务标"},
+        headers=hh,
+    ).json()["deliverable_id"]
+    client.post(
+        f"/api/v1/deliverables/{did2}/versions",
+        json={"content": {"nodes": [{"id": "n1", "type": "paragraph", "text": "商务响应"}]}},
+        headers=hh,
+    )
+    r2 = client.get(f"/api/v1/deliverables/{did2}/versions/1/download", headers=hh)
+    assert r2.status_code == 409
+    assert "底稿" in r2.json()["detail"]

@@ -113,163 +113,72 @@ def docx_from_template(source_path, model: dict) -> bytes:
     return buf.getvalue()
 
 
-async def docx_bytes_with_source(session, enterprise_id: int, model: dict, format_spec=None) -> bytes:
-    """导出统一入口：模型带模板源文件（底稿式）时复制原 docx 直接改；
-    否则回退节点式生成。"""
+async def docx_bytes_with_source(
+    session, enterprise_id: int, model: dict, project_id: int | None = None
+) -> bytes:
+    """导出唯一路径（底稿式，Issue #8 验收铁律 + 产品要求）：复制采购文件原 docx 整本保留，
+    只做两件事——填空（已知字段回填/未知空位【待补充】）与文末追加"补充响应内容"。
+
+    不存在节点式生成，也不存在回退：拿不到底稿源文件就明确报错，绝不从节点重新排版。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.file import FileObject
+    from app.services.storage import StorageProvider
+
+    fobj = None
     fid = model.get("template_source_file_id") if isinstance(model, dict) else None
     if fid:
-        from app.models.file import FileObject
-        from app.services.storage import StorageProvider
-
-        fobj = await session.get(FileObject, int(fid))
-        if fobj is not None and fobj.enterprise_id == enterprise_id:
-            try:
-                return docx_from_template(StorageProvider().open(fobj.bucket, fobj.object_key), model)
-            except Exception as exc:  # noqa: BLE001 底稿损坏/缺失时回退节点式
-                logger.warning(
-                    "底稿式导出失败，回退节点式 file=%s/%s: %s",
-                    fobj.bucket, fobj.object_key, type(exc).__name__,
-                    exc_info=True,
+        try:
+            fobj = await session.get(FileObject, int(fid))
+        except (TypeError, ValueError):
+            fobj = None
+        if fobj is not None and (fobj.enterprise_id != enterprise_id or fobj.is_deleted):
+            fobj = None
+    # 旧成果没记底稿源（或记录已失效）时，从项目材料里找采购文件 docx 兜底
+    if fobj is None and project_id:
+        rows = (
+            await session.scalars(
+                sa_select(FileObject).where(
+                    FileObject.project_id == int(project_id),
+                    FileObject.enterprise_id == enterprise_id,
+                    FileObject.is_deleted.is_(False),
+                    FileObject.owner_type == 2,
                 )
-    return docx_bytes(model, format_spec=format_spec)
-
-
-_CN_SIZES = {
-    "初号": 42, "小初": 36, "一号": 26, "小一": 24, "二号": 22, "小二": 18,
-    "三号": 16, "小三": 15, "四号": 14, "小四": 12, "五号": 10.5, "小五": 9, "六号": 7.5,
-}
-
-
-def _resolve_format(spec: dict | None) -> dict:
-    """招标文件格式要求 → 排版参数；未要求处用默认（正文宋体小四、1.5 倍行距）。"""
-    if not spec:
-        return {"font": "宋体", "size": 12, "line_spacing": 1.5}
-    font = str(spec.get("font") or "").strip() or "宋体"
-    if "黑体" in font:
-        font = "黑体"
-    elif "仿宋" in font:
-        font = "仿宋"
-    elif "楷" in font:
-        font = "楷体"
-    else:
-        font = "宋体"
-    size_raw = str(spec.get("size") or "").strip()
-    size = _CN_SIZES.get(size_raw)
-    if size is None:
-        import re as _re
-
-        m = _re.search(r"(\d+(?:\.\d+)?)", size_raw)
-        size = float(m.group(1)) if m else 12
-    spacing_raw = str(spec.get("line_spacing") or "")
-    line_spacing = 1.5
-    if "单倍" in spacing_raw or "1.0" in spacing_raw:
-        line_spacing = 1.0
-    elif "2" in spacing_raw and "倍" in spacing_raw:
-        line_spacing = 2.0
-    return {"font": font, "size": size, "line_spacing": line_spacing}
-
-
-def docx_bytes(model: dict, format_spec: dict | None = None) -> bytes:
-    """DOCX 生成（Issue #8 反馈"字体大小粗细不一致、无标题目录结构"）：
-    - 字体/字号/行距优先按招标文件格式要求（format_spec，解析自响应文件格式章节），
-      未要求处默认正文宋体小四、1.5 倍行距；
-    - 标题分三级（文件标题 / 章 / 节），黑体加粗黑色，Word 导航窗格可见层级；
-    - 文首输出目录页（章节清单）。"""
-    import re
-
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.oxml.ns import qn
-    from docx.shared import Pt, RGBColor
-
-    fmt = _resolve_format(format_spec)
-    body_size = float(fmt["size"])
-    doc = Document()
-
-    def _style_font(name, east, size, bold):
-        style = doc.styles[name]
-        style.font.name = "Times New Roman"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), east)
-        style.font.size = Pt(size)
-        style.font.bold = bold
-        style.font.color.rgb = RGBColor(0, 0, 0)
-
-    _style_font("Normal", fmt["font"], body_size, False)
-    _style_font("Title", "黑体", body_size + 6, True)
-    _style_font("Heading 1", "黑体", body_size + 4, True)
-    _style_font("Heading 2", "黑体", body_size + 2, True)
-    _style_font("Heading 3", "黑体", body_size + 1, True)
-    doc.styles["Normal"].paragraph_format.line_spacing = float(fmt["line_spacing"])
-
-    def _heading_level(text: str, is_first: bool) -> int:
-        if is_first and text.strip() in ("商务标", "技术标", "报价单"):
-            return 0  # Title
-        if re.match(r"^第[一二三四五六七八九十百0-9]+[章部分节]", text.strip()):
-            return 1
-        if re.match(r"^[一二三四五六七八九十]+、", text.strip()):
-            return 1
-        return 2
-
-    nodes = model.get("nodes") or []
-    # 目录页：收集全部标题
-    toc: list[tuple[int, str]] = []
-    first_heading_seen = False
-    for node in nodes:
-        if node.get("type") == "heading":
-            text = str(node.get("text") or "").strip()
-            if not text:
-                continue
-            toc.append((_heading_level(text, not first_heading_seen), text))
-            first_heading_seen = True
-
-    if toc:
-        doc.add_paragraph("目录", style="Heading 1")
-        for level, title in toc:
-            if level == 0:
-                continue
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Pt(0 if level == 1 else 18)
-            run = p.add_run(title)
-            run.font.size = Pt(12 if level == 1 else 10.5)
-            run.font.bold = level == 1
-            run.font.name = "Times New Roman"
-            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
-
-    first_heading_seen = False
-    for node in nodes:
-        text = str(node.get("text") or "")
-        ntype = node.get("type")
-        if ntype == "heading":
-            level = _heading_level(text.strip(), not first_heading_seen)
-            first_heading_seen = True
-            if level == 0:
-                p = doc.add_paragraph(text, style="Title")
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            else:
-                doc.add_heading(text, level=level)
-        elif ntype == "table":
-            # 模板表格照搬（Issue #8：表格不能拍平成文字）
-            rows = node.get("rows") or []
-            if rows:
-                t = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
-                t.style = "Table Grid"
-                for ri, row in enumerate(rows):
-                    for ci in range(len(t.rows[ri].cells)):
-                        val = row[ci] if ci < len(row) else ""
-                        cell = t.rows[ri].cells[ci]
-                        cell.text = ""
-                        run = cell.paragraphs[0].add_run(str(val))
-                        run.font.name = "Times New Roman"
-                        run._element.rPr.rFonts.set(qn("w:eastAsia"), fmt["font"])
-                        run.font.size = Pt(max(body_size - 1, 9))
-        else:
-            if text.startswith("- "):
-                doc.add_paragraph(text[2:], style="List Bullet")
-            else:
-                doc.add_paragraph(text)
-    buf = BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+            )
+        ).all()
+        docx_rows = [f for f in rows if (f.ext or "").strip(".").lower() == "docx"]
+        fobj = next((f for f in docx_rows if f.document_role == "tender"), None) or (
+            max(docx_rows, key=lambda f: f.size_bytes) if docx_rows else None
+        )
+    if fobj is None:
+        raise ValueError(
+            "该成果缺少采购文件底稿：请确认项目已上传采购文件（docx/pdf 等均可），"
+            "重新触发【招标解析】和【生成标书】后再下载"
+        )
+    if (fobj.ext or "").strip(".").lower() != "docx":
+        raise ValueError(
+            "该成果的底稿源不是 docx（可能是历史数据）：请重新触发【招标解析】和【生成标书】后再下载"
+        )
+    try:
+        source_path = StorageProvider().open(fobj.bucket, fobj.object_key)
+    except FileNotFoundError as exc:
+        raise ValueError(
+            "采购文件底稿在存储中缺失：请重新上传采购文件并重新触发解析、生成后再下载"
+        ) from exc
+    try:
+        return docx_from_template(source_path, model)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 底稿损坏时明确报错，绝不回退节点式
+        logger.warning(
+            "底稿式导出失败 file=%s/%s: %s",
+            fobj.bucket, fobj.object_key, type(exc).__name__,
+            exc_info=True,
+        )
+        raise ValueError(
+            f"底稿导出失败（{type(exc).__name__}）：采购文件底稿可能已损坏，"
+            "请重新上传采购文件并重新触发解析、生成后再下载"
+        ) from exc
 
 
 def xlsx_bytes(model: dict) -> bytes:

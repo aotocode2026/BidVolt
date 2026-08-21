@@ -152,6 +152,13 @@ async def upsert_requirement(
         idempotency_clauses.append(Requirement.req_key == req_key)
     else:
         idempotency_clauses.append(Requirement.req_key.is_(None))
+    # 归一化 structured.order：LLM/Hermes 补抽常把序号写成字符串（"1"），
+    # 生成侧按 order 排序时 str 与 int 混排会抛 "'<' not supported between 'str' and 'int'"。
+    if isinstance(structured, dict) and isinstance(structured.get("order"), str):
+        try:
+            structured = {**structured, "order": int(structured["order"])}
+        except ValueError:
+            pass
     existing = await session.scalar(select(Requirement).where(*idempotency_clauses))
     if existing is not None:
         return existing

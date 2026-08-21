@@ -118,11 +118,17 @@ def test_full_business_flow(live_server):
             )
             deliverable_ids[dtype] = did
 
-        # 上传项目材料（解析）
+        # 上传项目材料（解析；docx 采购文件同时作为底稿式导出（唯一路径）的底稿源）
+        from docx import Document as _Docx
+
+        tender_doc = _Docx()
+        tender_doc.add_paragraph("资格要求：电力施工总承包三级")
+        tender_buf = io.BytesIO()
+        tender_doc.save(tender_buf)
         upload = c.post(
             "/api/v1/files/upload",
             data={"target": "project", "project_id": str(pid)},
-            files=[("files", ("招标文件.txt", "资格要求：电力施工总承包三级".encode(), "text/plain"))],
+            files=[("files", ("招标文件.docx", tender_buf.getvalue(), "application/octet-stream"))],
             headers=headers,
         )
         assert upload.json()["files"][0]["status"] == 3

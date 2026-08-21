@@ -155,6 +155,23 @@ def test_final_check_requirement_coverage_and_text_quality(client):
 
 def test_export_and_delivery_package(client):
     h, pid = _setup(client)
+    # 底稿式导出（唯一路径）：项目里必须有采购文件 docx 作底稿；无底稿时导出明确报错
+    from docx import Document as _Docx
+
+    src = _Docx()
+    src.add_paragraph("采购文件原文：投标人须知。")
+    src.add_paragraph("（项目名称）由（采购人）实施。")
+    buf = io.BytesIO()
+    src.save(buf)
+    up = client.post(
+        "/api/v1/files/upload",
+        data={"target": "project", "project_id": str(pid)},
+        files=[("files", ("采购文件.docx", buf.getvalue(), "application/octet-stream"))],
+        headers=h,
+    )
+    assert up.status_code == 200
+    assert up.json()["files"][0]["status"] == 3
+
     _add_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务响应"}]})
     _add_deliverable(client, h, pid, 2, {"nodes": [{"id": "n2", "text": "技术方案"}]})
     _add_deliverable(
@@ -178,6 +195,15 @@ def test_export_and_delivery_package(client):
     assert any(f["name"] == "manifest.json" for f in files)
     assert all(f["sha256"] for f in files)
 
+    # 底稿式：下载 docx 是整本底稿 + 填空 + 补充节（不是节点重排版）
+    docx_entry = next(f for f in files if f["name"].endswith(".docx"))
+    from app.services.storage import StorageProvider
+
+    p = StorageProvider().open(docx_entry["bucket"], docx_entry["object_key"])
+    out = _Docx(str(p))
+    texts = [par.text for par in out.paragraphs]
+    assert any("采购文件原文：投标人须知。" in t for t in texts)
+
     status = client.get(f"/api/v1/projects/{pid}/export/{job_id}", headers=h)
     assert status.json()["status"] == 2
 
@@ -188,6 +214,15 @@ def test_export_and_delivery_package(client):
         assert "manifest.json" in names
         assert any(n.endswith(".docx") for n in names)
         assert any(n.endswith(".xlsx") for n in names)
+
+
+def test_export_without_template_source_reports_clear_error(client):
+    """产品要求：没有底稿就明确报错，绝不回退节点式生成。"""
+    h, pid = _setup(client)
+    _add_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务"}]})
+    r = client.post(f"/api/v1/projects/{pid}/export", json={"formats": ["docx"]}, headers=h)
+    assert r.status_code == 409
+    assert "底稿" in r.json()["detail"]
 
 
 def test_export_requires_deliverable_export_permission(client):
