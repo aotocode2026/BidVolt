@@ -88,7 +88,7 @@ async def _next_seq(session: AsyncSession, task: Task) -> int:
     from sqlalchemy import select as sa_select
 
     cur = await session.scalar(
-        sa_select(sa_func(max(AgentSessionEvent.seq)).where(AgentSessionEvent.task_id == task.id))
+        sa_select(sa_func.max(AgentSessionEvent.seq)).where(AgentSessionEvent.task_id == task.id)
     )
     return int(cur or 0)
 
@@ -208,7 +208,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         args = list(base_args)
         if resume_sid:
             args += ["--resume", resume_sid]
-        proc, master_fd = _spawn_repl(hermes_bin, args, env, cap)
+        proc, master_fd = _spawn_repl(hermes_bin, args, env)
 
         buf_text = ""  # 已剥离 ANSI 的原始文本
         echo_texts: set[str] = set()
@@ -232,6 +232,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             except (BlockingIOError, OSError):
                 return
             if not chunk:
+                # 子进程已退出（EOF）：摘掉 reader，防止事件循环忙轮询
+                try:
+                    loop.remove_reader(master_fd)
+                except Exception:  # noqa: BLE001
+                    pass
                 return
             last_out_at = loop.time()
             text = _strip_ansi(chunk.decode("utf-8", "replace"))
@@ -309,7 +314,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     )
                     break
         finally:
-            loop.remove_reader(master_fd)
+            try:
+                loop.remove_reader(master_fd)
+            except Exception:  # noqa: BLE001 已因 EOF 摘除时重复摘除
+                pass
             await _flush()
             if round_marker is not None or proc.poll() is None:
                 _repl_submit(master_fd, "/exit")
