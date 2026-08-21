@@ -111,7 +111,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default=BASE)
     parser.add_argument("--tag", default="e2e")
-    parser.add_argument("--task-timeout", type=int, default=240)
+    parser.add_argument("--task-timeout", type=int, default=600)
     args = parser.parse_args()
     base = args.base.rstrip("/")
     tag = args.tag
