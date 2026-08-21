@@ -125,7 +125,7 @@ def test_bid_generate_agent_self_check_and_refine(client, monkeypatch):
     monkeypatch.setattr(settings, "minimax_api_key", "test-key")
 
     async def fake_chat(self, system, user):
-        if "结构解析" in system:
+        if "响应文件格式" in system:
             return ('{"business": [{"title": "一、应答函", "guide": "应答函"}], '
                     '"technical": [{"title": "一、技术参数响应表", "guide": "逐条响应"}], "notes": ""}')
         if "自检助手" in system:
@@ -181,7 +181,7 @@ def test_bid_generate_agent_closes_loop(client, monkeypatch):
     calls = {"check": 0}
 
     async def fake_chat(self, system, user):
-        if "结构解析" in system:
+        if "响应文件格式" in system:
             return ('{"business": [{"title": "一、应答函", "guide": "应答函"}], '
                     '"technical": [{"title": "一、技术参数响应表", "guide": "逐条响应"}], "notes": ""}')
         if "自检助手" in system:

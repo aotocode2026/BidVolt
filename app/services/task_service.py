@@ -327,12 +327,11 @@ async def _llm_extract_requirements(
     if not text.strip():
         return 0
     system = (
-        "你是投标文件解析助手。从招标材料中抽取资格要求、评分细则、否决条款、技术要求、报价规则、材料清单，"
-        "输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
-        "每条 content 必须是完整的整句要求（含主语与要求内容），禁止只输出表头、字段名、单位或孤立数字。"
-        "如要求为限价/最高限价，structured 必须含 {\"price_limit\": {\"amount\": 数值, \"unit\": \"万元\"}}。"
-        "如要求为评分细则，structured 必须含 {\"score_rule\": {\"weight\": 分值, \"criterion\": \"评分标准\"}}。"
-        "只依据给定材料，禁止编造。"
+        "阅读下面这份招标材料，把其中对投标人的要求整理出来：资格要求、评分细则、否决条款、"
+        "技术要求、报价规则、材料清单。输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
+        "content 写该要求的完整原句。限价要求把 structured 写成 {\"price_limit\": {\"amount\": 数值, \"unit\": \"万元\"}}；"
+        "评分细则把 structured 写成 {\"score_rule\": {\"weight\": 分值, \"criterion\": \"评分标准\"}}。"
+        "材料里有的才写。"
     )
     await _progress(45, "AI 抽取要求中（大文件需数分钟，请耐心等待）")
     reply = await LLMClient().chat(system, f"招标材料：\n{text}")
@@ -404,16 +403,15 @@ def _dedup_block_texts(blocks, limit: int = 30000) -> str:
 
 
 _STRUCTURE_SYSTEM = (
-    "你是投标文件结构解析助手。从招标文件'响应文件格式'章节中【逐项照搬】响应文件的组成清单，输出 JSON："
-    '{"business": [{"title": "...", "guide": "该条目的编制/格式要求摘要"}], '
-    '"technical": [...], "price": [...], "notes": "...", '
-    '"format": {"font": "字体要求(如宋体/仿宋/黑体)", "size": "字号要求(如小四/四号/12pt)", '
-    '"line_spacing": "行距要求(如1.5倍行距/单倍行距)", "toc_required": true|false, "other": "其他版式要求"}}。'
-    "铁律（Issue #8 产品复测：结构必须与招标模板逐项一致）："
-    "1) 逐项列出该章节'商务文件''技术文件''价格文件'下的全部文件条目，禁止归纳、合并、改写、漏项；"
-    "2) title 照搬招标文件原文的编号与名称（如'（一）法定代表人（单位负责人）授权委托书'、'1.技术偏差表'）；"
-    "3) 每个条目带 guide 摘要该条目的编制要求；format 仅当材料明确给出字体/字号/版式要求时填写，否则 null；"
-    "4) 如材料未给出明确组成清单，对应数组返回 []。只依据给定材料，禁止编造。"
+    "阅读招标文件里'响应文件格式'这一章。这一章分'价格文件''商务文件''技术文件'三部分，"
+    "每部分按编号列出了应答人要提交的文件条目。"
+    "把三部分里的文件条目整理出来，输出 JSON："
+    '{"business": [{"title": "条目名称（用原文编号与名称，如（一）法定代表人（单位负责人）授权委托书）", '
+    '"guide": "这一条目的填写说明摘要"}], "technical": [...], "price": [...], '
+    '"format": {"font": "...", "size": "...", "line_spacing": "...", "toc_required": true|false, "other": "..."}, '
+    '"notes": "..."}。'
+    "format 只在招标文件写了字体/字号/版式要求时给出，否则填 null。"
+    "招标文件里没有这份组成清单时，对应数组返回 []。"
 )
 
 
@@ -1084,13 +1082,17 @@ async def _run_hermes_parse_review(task: Task) -> dict | None:
         "2) bidvolt:get_project_material_blocks 读取招标文件原文；"
         "3) 对照材料补抽遗漏的资格要求/评分细则/否决条款/技术要求/报价规则/材料清单，"
         "经 bidvolt:upsert_requirements 落库（坐标必填、先查重不重复写入、不编造）；"
-        "4) 【模板清单复核】对照'第五章响应文件格式'的文件组成与表格，检查 doc_template 清单是否"
-        "缺失条目（如'投标（应答）文件自查表''履约能力及质量保证措施'等）或表格被遗漏；"
-        "缺失的经 bidvolt:upsert_requirements 以 req_type='doc_template' 补落库："
-        "content 照搬原文（禁止改写归纳），structured 含 role（business/technical/price）、"
-        "order（递增序号）、kind（heading/paragraph/table），表格带 rows 二维数组"
-        "（每行一个字符串数组，与原文表格逐格一致）；"
-        "5) 完成后用一句话总结（补抽要求 N 条、补模板 M 块）。任务 id=" + str(task.id) + "。"
+        "4) 【核对模板清单条目——只登记，不写内容】第五章'响应文件格式'（从'一、价格文件'起，"
+        "到'响应文件编制注意事项'或'商务评分标准'首次出现处止）逐条列出了响应文件要提交的"
+        "文件条目及其表格。请把【该区间内】出现的每个文件条目名称（如'法定代表人授权委托书'、"
+        "'技术偏差表'）与表格，和已有 doc_template 清单逐一比对："
+        "清单里缺少哪个条目，就用 bidvolt:upsert_requirements 以 req_type='doc_template' "
+        "登记【这一条条目本身】——content 只是该条目的名称或该表格本身，与该区间内原文逐字一致；"
+        "structured 含 role、order、kind（heading/paragraph/table），表格带 rows。"
+        "【禁止】不得登记区间外的任何内容：评分标准表（表头含'评审要素''评审内容''评分权重'）、"
+        "否决条款表、供应商须知/合同条款中的要求语句，都不是条目。不得替任何条目撰写正文、"
+        "不得在登记时填入要求文本。已登记过的条目不得重复登记。"
+        "5) 完成后用一句话总结（补抽要求 N 条、登记缺失条目 M 条）。任务 id=" + str(task.id) + "。"
     )
     env = dict(os.environ)
     env["BIDVOLT_CAPABILITY_TOKEN"] = cap
@@ -1400,6 +1402,29 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             )
         )
     ).all()
+    # 模板污染防护 v2（根因：Hermes 补模板任务此前无权威边界，把须知要求文本与评分标准表
+    # 贴进了 doc_template）。修法不是禁止 Hermes，而是：
+    # 1) 结构性过滤——只剔除“评分标准/权重表”类模板块（表头特征明确，不误伤正常模板条目）；
+    # 2) 同内容去重——Hermes 多轮补缺无稳定身份导致累积，按 content 归一去重。
+    _SCORE_TBL_HEADERS = ("评审要素", "评审内容", "评分权重", "分包编号")
+
+    def _is_score_table(r) -> bool:
+        st = r.structured or {}
+        if st.get("kind") != "table":
+            return False
+        rows = st.get("rows") or []
+        head = " ".join(rows[0]) if rows else ""
+        return any(k in head for k in _SCORE_TBL_HEADERS)
+
+    template_rows = [r for r in template_rows if not _is_score_table(r)]
+    seen_tpl: set[str] = set()
+    uniq_rows: list = []
+    for r in template_rows:
+        key = (r.content or "").strip()
+        if key and key not in seen_tpl:
+            seen_tpl.add(key)
+            uniq_rows.append(r)
+    template_rows = uniq_rows
     tpl_by_role: dict[str, list] = {"business": [], "technical": [], "price": []}
     for r in template_rows:
         role = (r.structured or {}).get("role")
@@ -1641,15 +1666,15 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             m = re.search(r"(\d+)\s*[-–]\s*\d+\s*字", guide or "")
             min_len = max(150, int(int(m.group(1)) * 0.6)) if m else 150
             system = (
-                f"你是投标文件撰写助手，为《{doc_name}》撰写一章正式正文。"
-                "要求：只依据给定材料与要求，禁止编造企业事实、业绩、人员、证书；"
-                "禁止沿用历史项目名称/招标人/金额/工期/人员姓名；资料不足处标注【待补充】；"
-                "直接输出 Markdown 正文（可用 ### 分小节），务必达到给定字数。"
+                f"你在为《{doc_name}》撰写其中一节。"
+                "写这一节时：对照下方给定的写作要求和招标文件原文相关段落，把该节应当回应的内容写出来；"
+                "企业事实类信息（公司名/资质/业绩/人员等）如果上下文里有就用，上下文里没有的留空，写上【待补充】。"
+                "正文用自然段落表达即可。"
             )
             user = (
-                f"章节：{title}\n写作要求：{guide}\n\n相关要求：\n{reqs_text}\n\n"
-                f"招标文件原文相关段落（必须以此为准撰写，不得偏离）：\n"
-                f"{_chapter_window(material_text, title, guide) or '（原文未直接提及本章节，严格按写作要求与相关要求撰写）'}\n\n"
+                f"这一节：{title}\n这一节的写作要求：{guide}\n\n与本项目相关的要求：\n{reqs_text}\n\n"
+                f"招标文件原文里和这一节相关的段落：\n"
+                f"{_chapter_window(material_text, title, guide) or '（原文没有直接提到这一节，按写作要求写即可）'}\n\n"
                 f"{common_context}"
             )
             reply = ""
