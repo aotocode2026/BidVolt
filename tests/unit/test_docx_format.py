@@ -124,7 +124,7 @@ def test_draft_export_supplement_headings_bold_without_style_dependency(tmp_path
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
-    assert _draft_label("采购文件.docx", "商务标") == "商务标(底稿:采购文件.docx)"
+    assert _draft_label("采购文件.docx", "商务标") == "商务标(底稿：采购文件.docx)"
     assert _draft_label(None, "商务标") == "商务标"
 
 
@@ -162,4 +162,4 @@ def test_draft_download_filename_marks_source(client):
     r = client.get(f"/api/v1/deliverables/{did}/versions/1/download", headers=h)
     assert r.status_code == 200
     disposition = unquote(r.headers["content-disposition"])
-    assert "底稿:采购文件.docx" in disposition, disposition
+    assert "底稿：采购文件.docx" in disposition, disposition
