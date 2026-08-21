@@ -355,9 +355,10 @@ async def template_source_name(session, enterprise_id: int, model: dict, project
 
 
 def _draft_label(draft_name: str | None, title: str) -> str:
-    """成果文件名：带底稿来源标注（产品要求：一眼可见底稿是谁）。"""
+    """成果文件名：带底稿来源标注（产品要求：一眼可见底稿是谁）。
+    用全角冒号：半角冒号在 Windows 文件名中非法，会导致本地保存失败。"""
     if draft_name:
-        return f"{title}(底稿:{draft_name})"
+        return f"{title}(底稿：{draft_name})"
     return title
 
 
