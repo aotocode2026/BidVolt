@@ -309,7 +309,7 @@ async def _llm_extract_requirements(
 
     from app.models.doc import DocBlock
     from app.services import requirement_service
-    from app.services.llm import LLMClient, llm_enabled, try_extract_json
+    from app.services.llm import llm_enabled, try_extract_json
 
     async def _progress(percent: int, work: str) -> None:
         if task is None:
@@ -344,23 +344,29 @@ async def _llm_extract_requirements(
         "材料里有的才写。"
     )
     json_hint = "请把结果用 JSON 输出：只输出 JSON 本身，开头结尾不加解释文字，不加 Markdown 代码块围栏。"
-    client = LLMClient()
     await _progress(45, "AI 抽取要求中（大文件需数分钟，请耐心等待）")
-    reply = await client.chat(system, f"招标材料：\n{text}")
-    parsed = try_extract_json(reply)
-    if parsed is None:
-        reply = await client.chat(system, f"招标材料：\n{text}\n\n{json_hint}")
+    try:
+        reply = await _chat_with_retry(system, f"招标材料：\n{text}")
         parsed = try_extract_json(reply)
-    items = _items_of(parsed)
-    if not items and parsed is not None:
-        # 抽取为空重试一次（Issue #8：解析 0 条不能静默通过）——更严格的纯 JSON 指令
-        await _progress(55, "首轮抽取为空，重试更严格指令…")
-        reply = await client.chat(
-            system + "输出 JSON 数组本身（不附加解释文字、Markdown 围栏或额外文字）；确实没有可抽取项时输出 []。",
-            f"招标材料：\n{text[:20000]}",
-        )
-        parsed = try_extract_json(reply)
+        if parsed is None:
+            reply = await _chat_with_retry(system, f"招标材料：\n{text}\n\n{json_hint}")
+            parsed = try_extract_json(reply)
         items = _items_of(parsed)
+        if not items and parsed is not None:
+            # 抽取为空重试一次（Issue #8：解析 0 条不能静默通过）——更严格的纯 JSON 指令
+            await _progress(55, "首轮抽取为空，重试更严格指令…")
+            reply = await _chat_with_retry(
+                system + "输出 JSON 数组本身（不附加解释文字、Markdown 围栏或额外文字）；确实没有可抽取项时输出 []。",
+                f"招标材料：\n{text[:20000]}",
+            )
+            parsed = try_extract_json(reply)
+            items = _items_of(parsed)
+    except Exception as exc:  # noqa: BLE001 云模型暂不可用时如实降级，不炸整个解析任务
+        await _progress(60, "AI 抽取未完成（云模型暂不可用）…")
+        return 0, (
+            f"AI 要求抽取未执行（云模型暂不可用：{type(exc).__name__}）："
+            "请稍后重新触发【招标解析】，或到要求页人工录入招标要求"
+        )
     warning = None
     if parsed is None:
         warning = (
@@ -420,7 +426,7 @@ async def _derive_tender_meta(material_text: str) -> dict:
     材料里没有的保持 None——系统项目名只是工作台标签，不能写进应答函/委托书等正式字段。"""
     import re as _re
 
-    from app.services.llm import LLMClient, llm_enabled, try_extract_json
+    from app.services.llm import llm_enabled, try_extract_json
 
     meta: dict = {}
     head = (material_text or "")[:4000]
@@ -449,7 +455,7 @@ async def _derive_tender_meta(material_text: str) -> dict:
             meta["buyer"] = m3.group(1)
     if llm_enabled():
         try:
-            reply = await LLMClient().chat(
+            reply = await _chat_with_retry(
                 "阅读招标文件开头的封面与采购公告，找出采购项目名称与招标人名称，"
                 '输出 JSON：{"project_name": "...", "buyer": "..."}；材料里没有的填 null。输出 JSON 本身。',
                 "招标文件开头：\n" + head,
@@ -469,6 +475,22 @@ async def _derive_tender_meta(material_text: str) -> dict:
         if "_" in v or len(core) < 4 or core in ("采购人", "招标人", "项目名称", "响应供应商名称"):
             meta.pop(k, None)
     return meta
+
+
+async def _chat_with_retry(system: str, user: str, times: int = 2) -> str:
+    """LLM 调用带瞬时故障重试：云模型高峰期常见 529/5xx/限流，
+    一次失败不应当让整个解析/生成任务报废。"""
+    from app.services.llm import LLMClient
+
+    last: Exception | None = None
+    for attempt in range(max(1, int(times))):
+        try:
+            return await LLMClient().chat(system, user)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if attempt < int(times) - 1:
+                await asyncio.sleep(2 * (attempt + 1))
+    raise last  # type: ignore[misc]
 
 
 _STRUCTURE_SYSTEM = (
@@ -529,7 +551,7 @@ async def _llm_extract_structure(
 
     from app.models.doc import DocBlock
     from app.services import requirement_service
-    from app.services.llm import LLMClient, llm_enabled
+    from app.services.llm import llm_enabled
 
     async def _progress(percent: int, work: str) -> None:
         if task is None:
@@ -555,17 +577,17 @@ async def _llm_extract_structure(
     text = _structure_window(full_text)
     try:
         await _progress(70, "AI 解析标书结构（响应文件格式要求）…")
-        reply = await LLMClient().chat(_STRUCTURE_SYSTEM, f"招标材料：\n{text}")
+        reply = await _chat_with_retry(_STRUCTURE_SYSTEM, f"招标材料：\n{text}")
         parsed = _parse_structure_reply(reply)
         if not parsed.get("business") or not parsed.get("technical"):
             # 结构抽取为空重试一次（更严格的纯 JSON 指令，与要求抽取同策略）
-            reply = await LLMClient().chat(
+            reply = await _chat_with_retry(
                 _STRUCTURE_SYSTEM + "输出 JSON 本身（不附加解释文字或 Markdown 围栏）。",
                 f"招标材料：\n{text[:30000]}",
             )
             parsed = _parse_structure_reply(reply)
     except Exception as exc:  # noqa: BLE001
-        return {"count": 0, "error": f"结构解析失败：{str(exc)[:200]}"}
+        return {"count": 0, "error": f"结构解析未完成（云模型暂不可用：{type(exc).__name__}），成果将按通用结构生成，请人工核对"}
     count = 0
     order = 0
     for role in ("price", "business", "technical"):
@@ -788,7 +810,7 @@ async def _llm_extract_score_rules(
 
     from app.models.doc import DocBlock
     from app.services import requirement_service
-    from app.services.llm import LLMClient, llm_enabled, try_extract_json
+    from app.services.llm import llm_enabled, try_extract_json
 
     if not llm_enabled():
         return 0
@@ -802,14 +824,19 @@ async def _llm_extract_score_rules(
     window = _score_rules_window(full_text)
     if not window.strip():
         return 0
-    client = LLMClient()
-    reply = await client.chat(_SCORE_RULES_SYSTEM, f"评分标准章节文本：\n{window}")
+    try:
+        reply = await _chat_with_retry(_SCORE_RULES_SYSTEM, f"评分标准章节文本：\n{window}")
+    except Exception:  # noqa: BLE001 云端暂不可用：评分细则留空，任务结果已如实注明
+        return 0
     parsed = try_extract_json(reply)
     if parsed is None:
-        reply = await client.chat(
-            _SCORE_RULES_SYSTEM,
-            f"评分标准章节文本：\n{window}\n\n请把结果用 JSON 输出：只输出 JSON 本身，开头结尾不加解释文字或 Markdown 围栏。",
-        )
+        try:
+            reply = await _chat_with_retry(
+                _SCORE_RULES_SYSTEM,
+                f"评分标准章节文本：\n{window}\n\n请把结果用 JSON 输出：只输出 JSON 本身，开头结尾不加解释文字或 Markdown 围栏。",
+            )
+        except Exception:  # noqa: BLE001
+            return 0
         parsed = try_extract_json(reply)
     if parsed is None:
         return 0
