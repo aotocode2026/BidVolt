@@ -173,7 +173,14 @@ async def export_project(
             else:
                 continue
             label = export_service.DELIVERABLE_NAMES.get(deliverable.deliverable_type, "成果")
-            name = f"{label}_v{deliverable.current_version_no}.{ext}"
+            if ext == "docx":
+                # 产品要求：文件名标注底稿来源
+                draft_name = await export_service.template_source_name(
+                    session, user.enterprise_id, model, project_id=project_id
+                )
+                name = f"{export_service._draft_label(draft_name, label)}.docx"
+            else:
+                name = f"{label}_v{deliverable.current_version_no}.{ext}"
             saved = storage.save(data, user.enterprise_id, name)
             files.append(
                 {

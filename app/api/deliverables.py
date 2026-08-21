@@ -188,7 +188,14 @@ async def download_version(
         data = json.dumps(content, ensure_ascii=False).encode("utf-8")
         media = "application/json"
         ext = "json"
-    fname = f"{d.title}_v{version_no}.{ext}"
+    if ext == "docx":
+        # 产品要求：文件名标注底稿来源，一眼可见成果基于哪份采购文件
+        draft_name = await export_service.template_source_name(
+            session, user.enterprise_id, content, project_id=d.project_id
+        )
+        fname = f"{export_service._draft_label(draft_name, d.title)}.docx"
+    else:
+        fname = f"{d.title}_v{version_no}.{ext}"
     return Response(
         content=data,
         media_type=media,
