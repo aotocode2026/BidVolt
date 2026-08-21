@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>BidVolt · Agent 主会话演示（新方案）</title>
+<style>
+body{font-family:"Microsoft YaHei",sans-serif;margin:24px;background:#f6f8fb;color:#1f2d3d}
+h1{font-size:20px}
+h2{font-size:15px;margin-top:18px}
+button{padding:6px 14px;margin:4px;cursor:pointer}
+input{padding:6px;margin:4px;width:280px}
+#log{background:#10202f;color:#d7e6f5;padding:12px;border-radius:8px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;min-height:200px;max-height:420px;overflow:auto}
+.badge{display:inline-block;background:#eef4fb;border:1px solid #2f6db3;color:#2f6db3;border-radius:4px;padding:2px 8px;font-size:12px;margin:4px}
+</style>
+</head>
+<body>
+<h1>BidVolt · Agent 主会话演示 <span class="badge">新方案</span> <span class="badge">旧 /demo 不受影响</span></h1>
+<div>
+  <input id="a-email" placeholder="邮箱（自动生成）">
+  <input id="a-pwd" placeholder="密码" value="Abc12345">
+  <input id="a-name" placeholder="企业名称" value="Agent演示企业">
+  <button onclick="register()">注册</button>
+  <button onclick="login()">登录</button>
+</div>
+<div>
+  <input id="p-name" placeholder="项目名称" value="Agent演示项目">
+  <button onclick="createProject()">创建项目</button>
+</div>
+<div>
+  <input type="file" id="f-file">
+  <button onclick="upload()">上传采购文件</button>
+</div>
+<div>
+  <button onclick="agentRun()">▶ Agent 主会话（端到端）</button>
+  <button onclick="refreshTask()">刷新任务状态</button>
+  <button onclick="openConsole()">打开会话控制台</button>
+  <button onclick="downloadPackage()">下载响应文件包</button>
+</div>
+<hr>
+<h2>会话控制台（服务 ↔ Hermes 主会话 全量消息；可直接对话）</h2>
+<div>
+  <input id="c-msg" placeholder="给主会话发消息（任务完成后可对话）" style="width:520px">
+  <button onclick="chatSend()">发送</button>
+  <button onclick="consoleClose()">关闭控制台</button>
+</div>
+<div id="console" style="display:none;background:#10202f;color:#cfe6f8;padding:12px;border-radius:8px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;min-height:260px;max-height:520px;overflow:auto"></div>
+<hr>
+<div id="log">就绪。此页面只调用新接口 /agent-run（task_type=agent_pipeline），与旧流程接口隔离。</div>
+<script>
+let token = localStorage.getItem("bidvolt_agent_token") || "";
+let projectId = localStorage.getItem("bidvolt_agent_pid") || "";
+let taskId = localStorage.getItem("bidvolt_agent_task") || "";
+let consoleSeq = 0;
+let consoleAbort = null;
+const BASE = location.origin;
+
+function log(s){document.getElementById("log").innerText += "\n" + s;}
+
+const KIND_LABEL = {
+  service: "🔵 服务 → 主会话",
+  hermes:  "🟢 主会话",
+  tool:    "🔧 工具/委派",
+  error:   "🔴 错误",
+  user:    "👤 客户 → 主会话",
+};
+
+function consoleAppend(seq, kind, content){
+  const el = document.getElementById("console");
+  const head = KIND_LABEL[kind] || kind;
+  const line = `\n\n=== ${head} [seq ${seq}] ===\n${content}`;
+  el.innerText += line;
+  el.scrollTop = el.scrollHeight;
+  consoleSeq = Math.max(consoleSeq, seq || 0);
+}
+
+async function openConsole(){
+  const el = document.getElementById("console");
+  el.style.display = "block";
+  el.innerText = "";
+  if(!taskId){ log("还没有任务，先点 Agent 主会话"); return; }
+  if(consoleAbort) consoleAbort.abort();
+  consoleAbort = new AbortController();
+  log("控制台已打开：补发历史事件 + 实时推送…");
+  try{
+    const resp = await fetch(`${BASE}/api/v1/projects/${projectId}/agent-run/${taskId}/stream?since=${consoleSeq}`, {
+      headers: {"Authorization": "Bearer " + token}, signal: consoleAbort.signal,
+    });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for(const part of parts){
+        const m = part.match(/^event: (\w+)\ndata: (.+)$/);
+        if(!m) continue;
+        if(m[1] === "end"){
+          const d = JSON.parse(m[2]);
+          consoleAppend(0, "service", "会话结束。status=" + d.status + " session_id=" + (d.session_id || ""));
+          return;
+        }
+        if(m[1] === "message"){
+          const d = JSON.parse(m[2]);
+          consoleAppend(d.seq, d.kind, d.content);
+        }
+      }
+    }
+  }catch(e){
+    if(e.name !== "AbortError") log("控制台流错误: " + e);
+  }
+}
+
+function consoleClose(){
+  if(consoleAbort) consoleAbort.abort();
+  consoleAbort = null;
+  document.getElementById("console").style.display = "none";
+}
+
+async function chatSend(){
+  const msg = document.getElementById("c-msg").value.trim();
+  if(!msg){log("先输入消息");return;}
+  if(!taskId){log("还没有任务");return;}
+  consoleAppend(++consoleSeq, "user", msg);
+  try{
+    const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/chat`, {message: msg});
+    consoleAppend(++consoleSeq, "hermes", d.reply || "(空回复)");
+    log("主会话已回复（session_id=" + d.session_id + "）");
+    document.getElementById("c-msg").value = "";
+  }catch(e){
+    consoleAppend(++consoleSeq, "error", String(e.message || e));
+  }
+}
+
+async function api(method, path, body){
+  const resp = await fetch(BASE + path, {method, headers:{"Content-Type":"application/json","Authorization":"Bearer "+token}, body: body?JSON.stringify(body):undefined});
+  const data = await resp.json().catch(()=>({}));
+  if(!resp.ok) throw new Error(data.detail || (resp.status + " " + resp.statusText));
+  return data;
+}
+
+async function register(){
+  const email = "agent-" + Date.now() + "@test.com";
+  document.getElementById("a-email").value = email;
+  const d = await api("POST","/api/v1/auth/register",{email,password:document.getElementById("a-pwd").value,enterprise_name:document.getElementById("a-name").value});
+  token = d.access_token; localStorage.setItem("bidvolt_agent_token", token);
+  log("注册成功 " + email);
+}
+async function login(){
+  const d = await api("POST","/api/v1/auth/login",{email:document.getElementById("a-email").value,password:document.getElementById("a-pwd").value});
+  token = d.access_token; localStorage.setItem("bidvolt_agent_token", token);
+  log("登录成功");
+}
+async function createProject(){
+  const d = await api("POST","/api/v1/projects",{name:document.getElementById("p-name").value});
+  projectId = d.project_id; localStorage.setItem("bidvolt_agent_pid", String(projectId));
+  log("项目创建 #" + projectId);
+}
+async function upload(){
+  const f = document.getElementById("f-file").files[0];
+  if(!f){log("先选文件");return;}
+  const fd = new FormData();
+  fd.append("target","project"); fd.append("project_id", String(projectId)); fd.append("files", f);
+  const resp = await fetch(BASE + "/api/v1/files/upload", {method:"POST", headers:{"Authorization":"Bearer "+token}, body:fd});
+  const d = await resp.json();
+  log("上传: " + JSON.stringify(d).slice(0,200));
+}
+async function agentRun(){
+  const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}});
+  taskId = d.task_id; localStorage.setItem("bidvolt_agent_task", String(taskId));
+  log("Agent 主会话任务 #" + taskId + " 已提交（task_type=agent_pipeline）");
+  poll();
+}
+async function poll(){
+  while(taskId){
+    await new Promise(r=>setTimeout(r,8000));
+    const d = await api("GET", `/api/v1/projects/${projectId}/agent-run/${taskId}`);
+    const prog = d.progress || {};
+    log(`任务 #${taskId} status=${d.status} ${prog.current_work || ""}`);
+    if(d.result && d.result.session_id) log("会话 session_id=" + d.result.session_id + "（可恢复）");
+    if(d.error) log("错误: " + JSON.stringify(d.error).slice(0,300));
+    if([3,4,5,6].includes(d.status)) break;
+  }
+}
+async function refreshTask(){
+  if(!taskId){log("还没有任务");return;}
+  const d = await api("GET", `/api/v1/projects/${projectId}/agent-run/${taskId}`);
+  log(JSON.stringify(d).slice(0,800));
+}
+async function downloadPackage(){
+  if(!projectId){log("先创建项目");return;}
+  const resp = await fetch(BASE + `/api/v1/projects/${projectId}/response-package`, {headers:{"Authorization":"Bearer "+token}});
+  if(!resp.ok){log("下载失败: " + resp.status);return;}
+  const blob = await resp.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "响应文件包.zip";
+  a.click();
+  log("响应文件包已下载 " + blob.size + " B");
+}
+</script>
+</body>
+</html>
