@@ -11,11 +11,149 @@ logger = logging.getLogger(__name__)
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 
 
+class _TrackedEditor:
+    """在 docx 上以 Word 修订模式记录全部改动（产品要求：验收可见、可追溯）。
+
+    - 每处改动：原文字标为删除（w:del + w:delText，Word 显示删除线），
+      新文字标为插入（w:ins + w:t）；
+    - 每处改动挂一条批注（w:comment），说明改了什么、依据来源；
+    - 文末补充节整体标记为插入，并批注"系统新增内容"。"""
+
+    def __init__(self, doc):
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        self._doc = doc
+        self._mk = OxmlElement
+        self._qn = qn
+        self._seq = {"ins": 100, "del": 200, "comment": 300}
+        self._now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.comments: list[tuple[int, str]] = []
+
+    def _mark(self, tag: str):
+        kind = "ins" if tag == "w:ins" else "del"
+        self._seq[kind] += 1
+        el = self._mk(tag)
+        el.set(self._qn("w:id"), str(self._seq[kind]))
+        el.set(self._qn("w:author"), "BidVolt")
+        el.set(self._qn("w:date"), self._now)
+        return el
+
+    def _run(self, tag: str, text: str, rpr_source=None):
+        r = self._mk("w:r")
+        if rpr_source is not None:
+            import copy as _copy
+
+            rpr = rpr_source.find(self._qn("w:rPr"))
+            if rpr is not None:
+                r.append(_copy.deepcopy(rpr))
+        t = self._mk(tag)
+        t.set(self._qn("xml:space"), "preserve")
+        t.text = text
+        r.append(t)
+        return r
+
+    def _anchor(self, cid: int, before_el):
+        """在 before_el 之前插入 commentRangeStart/End 与 commentReference。"""
+        start = self._mk("w:commentRangeStart")
+        start.set(self._qn("w:id"), str(cid))
+        end = self._mk("w:commentRangeEnd")
+        end.set(self._qn("w:id"), str(cid))
+        ref_r = self._mk("w:r")
+        rpr = self._mk("w:rPr")
+        rstyle = self._mk("w:rStyle")
+        rstyle.set(self._qn("w:val"), "CommentReference")
+        rpr.append(rstyle)
+        ref_r.append(rpr)
+        ref = self._mk("w:commentReference")
+        ref.set(self._qn("w:id"), str(cid))
+        ref_r.append(ref)
+        before_el.addprevious(start)
+        before_el.addprevious(end)
+        before_el.addprevious(ref_r)
+        return start
+
+    def add_comment(self, text: str) -> int:
+        self._seq["comment"] += 1
+        cid = self._seq["comment"]
+        self.comments.append((cid, text))
+        return cid
+
+    def track_replace(self, t_el, old_text: str, new_text: str, comment: str) -> None:
+        """单个文本节点的替换：原文删除线 + 新文插入 + 批注（保留原 run 格式）。"""
+        r_el = t_el.getparent()
+        del_el = self._mark("w:del")
+        del_el.append(self._run("w:delText", old_text, r_el))
+        ins_el = self._mark("w:ins")
+        ins_el.append(self._run("w:t", new_text, r_el))
+        cid = self.add_comment(comment)
+        self._anchor(cid, r_el)
+        r_el.addprevious(del_el)
+        r_el.addprevious(ins_el)
+        t_el.text = ""
+
+    def track_paragraph_replace(self, t_nodes, old_full: str, new_full: str, comment: str) -> None:
+        """整段替换（占位符跨 run 拆分时）：整段原文删除线 + 整段新文插入 + 批注。"""
+        first_r = t_nodes[0].getparent()
+        del_el = self._mark("w:del")
+        del_el.append(self._run("w:delText", old_full, first_r))
+        ins_el = self._mark("w:ins")
+        ins_el.append(self._run("w:t", new_full, first_r))
+        cid = self.add_comment(comment)
+        self._anchor(cid, first_r)
+        first_r.addprevious(del_el)
+        first_r.addprevious(ins_el)
+        for t in t_nodes:
+            t.text = ""
+
+    def track_insert_run(self, run) -> None:
+        """把已创建的 run 包进 w:ins（新增内容整体标记为插入）。"""
+        ins_el = self._mark("w:ins")
+        r_el = run._r
+        r_el.addprevious(ins_el)
+        ins_el.append(r_el)
+
+    def write_comments_part(self) -> None:
+        """把批注写入 word/comments.xml 部件并建立关系。"""
+        import html as _html
+
+        if not self.comments:
+            return
+        from docx.opc.constants import RELATIONSHIP_TYPE as _RT
+        from docx.opc.packuri import PackURI
+        from docx.opc.part import Part
+
+        rows = [
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+            '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        ]
+        for cid, text in self.comments:
+            rows.append(
+                f'<w:comment w:id="{cid}" w:author="BidVolt" w:date="{self._now}" w:initials="BV">'
+                f'<w:p><w:r><w:t xml:space="preserve">{_html.escape(text, quote=False)}</w:t></w:r></w:p>'
+                "</w:comment>"
+            )
+        rows.append("</w:comments>")
+        blob = "".join(rows).encode("utf-8")
+        part = Part(
+            PackURI("/word/comments.xml"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml",
+            blob,
+            self._doc.part.package,
+        )
+        rt_comments = getattr(
+            _RT, "COMMENTS",
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+        )
+        self._doc.part.relate_to(part, rt_comments)
+
+
 def docx_from_template(source_path, model: dict) -> bytes:
-    """底稿式导出（Issue #8 验收铁律）：复制采购文件原 docx，整本保留——
-    不抽取、不裁剪、不删改，只在底稿上做两件事：
-    1) 全局填空（已知字段回填，未知空位原位【待补充】）；
-    2) 文末追加"补充响应内容"（LLM 增补节）。
+    """底稿式导出（Issue #8 验收铁律 + 产品要求：改动全程修订模式可追溯）：
+    复制采购文件原 docx，整本保留——不抽取、不裁剪、不删改，只做两件事：
+    1) 全局填空（已知字段回填，未知空位原位【待补充】），每处改动以 Word
+       修订模式记录（原文删除线 + 新文插入），并挂批注说明来源；
+    2) 文末追加"补充响应内容"（LLM 增补节），整体标记为插入并批注。
     页面规格/字体/表格样式/分页/页眉页脚/全部原文天然保留。"""
     import re as _re
 
@@ -24,6 +162,7 @@ def docx_from_template(source_path, model: dict) -> bytes:
     from docx.shared import Pt
 
     doc = Document(str(source_path))
+    editor = _TrackedEditor(doc)
 
     buyer = str(model.get("buyer") or "").strip()
     project_name = str(model.get("project_name") or "").strip()
@@ -52,39 +191,66 @@ def docx_from_template(source_path, model: dict) -> bytes:
             out = _re.sub(r"(?:招标人|采购人)[：:]\s*【待补充】", f"招标人：{buyer}", out)
         return out
 
+    def _comment_for(old: str, new: str) -> str:
+        """修订批注：说明改了什么、依据来源（产品要求：批注必须说明来自哪里）。"""
+        filled: list[str] = []
+        if ("（采购人）" in old or "【招标人名称】" in old or "招标人：" in old) and buyer:
+            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告，系统确定性提取）")
+        if ("（响应供应商名称）" in old or "【供应商名称】" in old or "响应供应商名称" in old) and supplier:
+            filled.append(f"供应商=「{supplier}」（来源：企业资料-企业名称）")
+        if ("（项目名称）" in old or "【项目名称】" in old or "项目名称：" in old) and project_name:
+            filled.append(f"项目名称=「{project_name}」（来源：招标文件封面/采购公告，系统确定性提取）")
+        if filled:
+            return "系统回填：" + "；".join(filled) + "。请人工复核确认。"
+        if "【待补充" in new:
+            return "模板空位未取得对应资料，系统原位标注【待补充】（不编造内容），请人工填写后确认。"
+        return "系统按招标文件内容补充填写（模型推断，供参考），请人工复核确认。"
+
     def _fill_paragraph_el(p_el) -> None:
-        """整段填充：遍历段落内全部 w:t 文本节点（含表格/控件/文本框内段落）。
-        占位符完整落在单个节点内时原位替换（保留格式）；
-        跨节点拆分的占位符合并到首个节点（该段格式随之归一）。"""
+        """整段填充（修订模式）：占位符完整落在单节点内 → 该节点处修订替换；
+        跨节点拆分 → 整段修订替换；每处改动挂批注说明来源。"""
         t_nodes = list(p_el.iter(qn("w:t")))
         if not t_nodes:
             return
         full = "".join(t.text or "" for t in t_nodes)
         if not any(k in full for k in _PLACEHOLDER_KEYS) and not _re.search(r"_{2,}", full):
             return
+        # 跨节点判断：任一占位符的整段计数 ≠ 各节点计数之和 → 拆分在多个 run 里
+        cross = False
+        for k in _PLACEHOLDER_KEYS:
+            if full.count(k) != sum((t.text or "").count(k) for t in t_nodes):
+                cross = True
+                break
+        if not cross:
+            full_unders = len(_re.findall(r"_{2,}", full))
+            node_unders = sum(len(_re.findall(r"_{2,}", t.text or "")) for t in t_nodes)
+            if full_unders != node_unders:
+                cross = True
+        if _re.search(r"(响应供应商名称|项目名称|招标人|采购人)[：:]\s*_{2,}", full):
+            cross = True  # 带标签空位常跨 run，整段处理
+        if cross:
+            new_full = _fill_text(full)
+            if new_full != full:
+                editor.track_paragraph_replace(t_nodes, full, new_full, _comment_for(full, new_full))
+            return
         for t in t_nodes:
             text = t.text or ""
-            if any(k in text for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", text):
-                t.text = _fill_text(text)
-        remaining = "".join(t.text or "" for t in t_nodes)
-        needs_merge = (
-            any(k in remaining for k in _PLACEHOLDER_KEYS)
-            or _re.search(r"_{2,}", remaining)
-            or _re.search(r"(响应供应商名称|项目名称|招标人|采购人)[：:]\s*【待补充】", remaining)
-        )
-        if needs_merge:
-            merged = _fill_text(remaining)
-            for i, t in enumerate(t_nodes):
-                t.text = merged if i == 0 else ""
+            if not text:
+                continue
+            new = _fill_text(text)
+            if new != text:
+                editor.track_replace(t, text, new, _comment_for(text, new))
 
-    # 全文档（含表格、控件、文本框）逐段填充
+    # 全文档（含表格、控件、文本框）逐段填充（修订模式）
     for p_el in doc.element.body.iter(qn("w:p")):
         _fill_paragraph_el(p_el)
-    # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）逐节点替换
+    # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）
     for t_el in doc.element.body.iter(qn("w:t")):
         text = t_el.text or ""
         if any(k in text for k in _PLACEHOLDER_KEYS) or _re.search(r"_{2,}", text):
-            t_el.text = _fill_text(text)
+            new = _fill_text(text)
+            if new != text:
+                editor.track_replace(t_el, text, new, _comment_for(text, new))
 
     def _add_heading_safe(doc, text: str, level: int):
         """向底稿追加标题：不依赖源文档是否含 'Heading n' 样式——
@@ -106,12 +272,18 @@ def docx_from_template(source_path, model: dict) -> bytes:
         return p
 
     doc.add_page_break()
-    _add_heading_safe(doc, "补充响应内容（在采购文件模板基础上增加，格式自拟部分）", 1)
+    sup_head = _add_heading_safe(doc, "补充响应内容（在采购文件模板基础上增加，格式自拟部分）", 1)
+    # 补充节整体为系统新增：标题 run 标插入 + 批注说明来源
+    editor.track_insert_run(sup_head.runs[0])
+    editor.add_comment("本节为系统在采购文件模板基础上【新增】的补充响应内容："
+                       "由模型依据招标文件要求与企业资料撰写（企业事实以资料为准，未知处标【待补充】），"
+                       "请人工复核后确认。")
     for node in model.get("supplement_nodes") or []:
         t = str(node.get("text") or "")
         ntype = node.get("type")
         if ntype == "heading":
-            _add_heading_safe(doc, _fill_text(t), 2)
+            h = _add_heading_safe(doc, _fill_text(t), 2)
+            editor.track_insert_run(h.runs[0])
         elif ntype == "table" and node.get("rows"):
             rows = node["rows"]
             tb = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
@@ -123,25 +295,24 @@ def docx_from_template(source_path, model: dict) -> bytes:
                     run = cell.paragraphs[0].add_run(_fill_text(str(row[ci])) if ci < len(row) else "")
                     run.font.size = Pt(10.5)
                     run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
+                    editor.track_insert_run(run)
         elif t.strip():
-            doc.add_paragraph(_fill_text(t))
+            p = doc.add_paragraph(_fill_text(t))
+            for run in p.runs:
+                editor.track_insert_run(run)
+
+    editor.write_comments_part()
 
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
-async def docx_bytes_with_source(
-    session, enterprise_id: int, model: dict, project_id: int | None = None
-) -> bytes:
-    """导出唯一路径（底稿式，Issue #8 验收铁律 + 产品要求）：复制采购文件原 docx 整本保留，
-    只做两件事——填空（已知字段回填/未知空位【待补充】）与文末追加"补充响应内容"。
-
-    不存在节点式生成，也不存在回退：拿不到底稿源文件就明确报错，绝不从节点重新排版。"""
+async def _resolve_template_fobj(session, enterprise_id: int, model: dict, project_id: int | None = None):
+    """解析底稿源 FileObject：模型记录的底稿源优先；旧成果从项目材料兜底。找不到返回 None。"""
     from sqlalchemy import select as sa_select
 
     from app.models.file import FileObject
-    from app.services.storage import StorageProvider
 
     fobj = None
     fid = model.get("template_source_file_id") if isinstance(model, dict) else None
@@ -168,6 +339,39 @@ async def docx_bytes_with_source(
         fobj = next((f for f in docx_rows if f.document_role == "tender"), None) or (
             max(docx_rows, key=lambda f: f.size_bytes) if docx_rows else None
         )
+    return fobj
+
+
+async def template_source_name(session, enterprise_id: int, model: dict, project_id: int | None = None) -> str | None:
+    """底稿源文件名（下载文件名标注用）：找不到/非 docx 返回 None（文件名回退默认格式）。"""
+    try:
+        fobj = await _resolve_template_fobj(session, enterprise_id, model, project_id)
+    except (TypeError, ValueError):
+        return None
+    if fobj is None or (fobj.ext or "").strip(".").lower() != "docx":
+        return None
+    name = str(fobj.original_name or "").strip()
+    return name[:40] + "…" if len(name) > 40 else (name or None)
+
+
+def _draft_label(draft_name: str | None, title: str) -> str:
+    """成果文件名：带底稿来源标注（产品要求：一眼可见底稿是谁）。"""
+    if draft_name:
+        return f"{title}(底稿:{draft_name})"
+    return title
+
+
+async def docx_bytes_with_source(
+    session, enterprise_id: int, model: dict, project_id: int | None = None
+) -> bytes:
+    """导出唯一路径（底稿式，Issue #8 验收铁律 + 产品要求）：复制采购文件原 docx 整本保留，
+    只做两件事——填空（已知字段回填/未知空位【待补充】）与文末追加"补充响应内容"。
+    全部改动以 Word 修订模式（删除线/插入）+ 批注（来源说明）记录，验收直接可查。
+
+    不存在节点式生成，也不存在回退：拿不到底稿源文件就明确报错，绝不从节点重新排版。"""
+    from app.services.storage import StorageProvider
+
+    fobj = await _resolve_template_fobj(session, enterprise_id, model, project_id)
     if fobj is None:
         raise ValueError(
             "该成果缺少采购文件底稿：请确认项目已上传采购文件（docx/pdf 等均可），"
