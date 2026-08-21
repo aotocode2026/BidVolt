@@ -333,7 +333,7 @@ class _FillSession:
             editor.track_insert_run(h.runs[0])
         if comment:
             editor.add_comment(comment)
-        for node in nodes or []:
+        for node in _norm_supplement_nodes(nodes):
             t = str(node.get("text") or "")
             ntype = node.get("type")
             if ntype == "heading":
@@ -612,11 +612,26 @@ def _slice_role(region, span, rows):
     return out
 
 
+def _norm_supplement_nodes(nodes) -> list[dict]:
+    """撰写内容节点归一化：兼容 agent 落库的裸字符串/混合形状 → {type,text} 段落节点。"""
+    out = []
+    for n in nodes or []:
+        if isinstance(n, str):
+            t = n.strip()
+            if t:
+                out.append({"type": "paragraph", "text": t})
+        elif isinstance(n, dict):
+            out.append(n)
+        elif n is not None:
+            out.append({"type": "paragraph", "text": str(n)})
+    return out
+
+
 def _split_supplement(titles, nodes) -> tuple[list, list]:
     """把撰写内容按标题关键词分配到各条目标题；返回 (matched_by_title_index, rest_nodes)。"""
     sections = []
     cur = None
-    for n in nodes or []:
+    for n in _norm_supplement_nodes(nodes):
         if n.get("type") == "heading" and str(n.get("text") or "").strip():
             if cur is not None:
                 sections.append(cur)
@@ -1142,7 +1157,7 @@ def run_final_check(deliverables, requirements=None, contents=None, structure=No
             continue
         model = content.get("model") or {}
         tpl_based[d.id] = bool(model.get("template_based"))
-        nodes = model.get("nodes") or []
+        nodes = _norm_supplement_nodes(model.get("nodes") or [])
         parts = [str(n.get("text") or "") for n in nodes]
         for n in nodes:
             for row in n.get("rows") or []:
