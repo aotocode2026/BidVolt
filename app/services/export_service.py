@@ -9,12 +9,11 @@ DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 
 
 def docx_from_template(source_path, model: dict) -> bytes:
-    """底稿式导出（Issue #8 验收铁律的正解）：复制采购文件原 docx，在底稿上直接改——
-    保留原文档的页面规格/字体字号/表格样式/分页/页眉页脚，只做三件事：
-    1) 裁掉非响应模板部分（保留"响应文件格式"章节区间）；
-    2) 在模板上填空（已知字段回填，未知空位原位【待补充】）；
-    3) 在模板后追加"补充响应内容"（LLM 增补节）。
-    返回 docx bytes。"""
+    """底稿式导出（Issue #8 验收铁律）：复制采购文件原 docx，整本保留——
+    不抽取、不裁剪、不删改，只在底稿上做两件事：
+    1) 全局填空（已知字段回填，未知空位原位【待补充】）；
+    2) 文末追加"补充响应内容"（LLM 增补节）。
+    页面规格/字体/表格样式/分页/页眉页脚/全部原文天然保留。"""
     import re as _re
 
     from docx import Document
@@ -22,32 +21,6 @@ def docx_from_template(source_path, model: dict) -> bytes:
     from docx.shared import Pt
 
     doc = Document(str(source_path))
-    start_marker = str(model.get("template_start") or "响应文件格式")
-    end_markers = tuple(model.get("template_end") or ["商务评分标准", "技术评分标准", "响应文件编制注意事项"])
-
-    start_i = None
-    end_i = None
-    for i, p in enumerate(doc.paragraphs):
-        t = p.text.strip()
-        if start_i is None and (start_marker in t or "响应文件格式" in t):
-            start_i = i
-        if start_i is not None and any(k in t for k in end_markers):
-            end_i = i  # 取最后一个命中：模板区延续到评分标准表真正开始处
-    if start_i is None:
-        return docx_bytes(model)
-
-    body = doc.element.body
-    keep_from = doc.paragraphs[start_i]._element
-    keep_to = doc.paragraphs[end_i]._element if end_i is not None else None
-    in_range = False
-    for child in list(body):
-        if child is keep_from:
-            in_range = True
-        if not in_range:
-            body.remove(child)
-            continue
-        if keep_to is not None and child is keep_to:
-            break
 
     buyer = str(model.get("buyer") or "").strip()
     project_name = str(model.get("project_name") or "").strip()
