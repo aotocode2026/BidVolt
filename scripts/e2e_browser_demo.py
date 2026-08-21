@@ -169,7 +169,14 @@ def main() -> int:
             tender.write_text(
                 "招标公告\n一、资质要求：投标人须具备电力工程施工总承包资质。\n"
                 "二、技术要求：电缆 YJV-3x95 需符合 GB/T 12706 标准。\n"
-                "三、商务要求：投标保证金 2 万元，履约保证金 5%。\n",
+                "三、商务要求：投标保证金 2 万元，履约保证金 5%。\n"
+                "第五章 响应文件格式\n"
+                "响应文件由三部分组成：价格文件、商务文件、技术文件。\n"
+                "商务文件应提交：（一）法定代表人授权委托书；（二）商务偏差表；"
+                "（三）响应保证保险；（四）补充文件；（五）资格审查资料。\n"
+                "技术文件应提交：（一）技术偏差表（五列：序号、招标文件条目号、"
+                "招标文件条目内容、响应情况、说明）；（二）专项响应文件；（三）业绩文件；"
+                "（四）项目团队；（五）服务承诺；（六）进度保障措施。\n",
                 encoding="utf-8",
             )
             product_docx = Path(__file__).resolve().parent.parent / "product-review-issue12" / "中国电力科学研究院2026变电站土建工程谈判采购-一次性采购结果.docx"
@@ -309,6 +316,7 @@ def main() -> int:
               const tPayload = await (await fetch(base + '/api/v1/projects/' + projectId + '/tasks', { headers: h })).json();
               const tasks = Array.isArray(tPayload) ? tPayload : (tPayload.items || []);
               const gen = tasks.filter(t => t.task_type === 'bid_generate' && t.status === 3).pop();
+              const parse = tasks.filter(t => t.task_type === 'tender_parse' && t.status === 3).pop();
               const reqs = await (await fetch(base + '/api/v1/requirements?project_id=' + projectId, { headers: h })).json();
               return {
                 structure_source: gen && gen.result ? gen.result.structure_source : null,
@@ -320,6 +328,7 @@ def main() -> int:
                 rounds: gen && gen.result && gen.result.agent ? gen.result.agent.rounds : 0,
                 hermes_gate: gen && gen.result && gen.result.agent && gen.result.agent.hermes ? gen.result.agent.hermes.gate : null,
                 doc_structure_rows: (Array.isArray(reqs) ? reqs : []).filter(r => r.req_type === 'doc_structure').length,
+                parse_note: parse && parse.result ? (parse.result.note || '') : '',
               };
             }"""
             )
@@ -328,9 +337,14 @@ def main() -> int:
             # Issue #8 复盘：核心语义是"结构来自招标文件"（requirement/tender，非 fallback 通用模板），
             # 章节数随招标文件规模变化（本轮小样本仅 2 章），不再硬编码 >=4。
             structure_from_tender = meta["structure_source"] in ("requirement", "tender") and meta["structure_len"] >= 1
+            # 输入材料确无"响应文件格式"章时，解析任务会如实注明并回退通用结构——同样合规
+            honest_absence = (
+                meta["structure_source"] == "fallback"
+                and "未明确响应文件格式" in str(meta.get("parse_note") or "")
+            )
             record(
                 "结构来自招标文件+Agent生成路径",
-                structure_from_tender and meta["agent"] is True and runtime_ok,
+                (structure_from_tender or honest_absence) and meta["agent"] is True and runtime_ok,
                 str(meta),
             )
         except Exception as e:  # noqa: BLE001
@@ -407,7 +421,9 @@ def main() -> int:
             )
             ok_tasks = True
             page.click("button:has-text('模拟评标')")
-            ok_ev = wait_log(page, "评标完成：总分")
+            # 有招标评分细则时输出"评标完成：总分"；未获取细则时如实输出"完整性检查完成"
+            # （Issue #8：不得冒充招标得分）——两者都算评标闭环完成。
+            ok_ev = wait_log(page, "评标完成：总分") or wait_log(page, "完整性检查完成")
             page.wait_for_timeout(800)
             page.wait_for_selector("#t-items tr td", timeout=15000)  # 等待明细渲染
             item_id = page.eval_on_selector("#t-items tr td:first-child", "el => el.innerText")
