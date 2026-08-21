@@ -6,6 +6,7 @@ import io
 import json
 import zipfile
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -261,4 +262,49 @@ async def delivery_package(
         buffer,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="delivery_{project_id}.zip"'},
+    )
+
+
+@router.get("/{project_id}/response-package")
+async def response_package(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EXPORT)),
+) -> StreamingResponse:
+    """响应文件包（产品定版：按招标文件《响应文件格式》清单逐份成文）：
+    价格文件/商务文件/技术文件 三个目录，每份=条目模板原文+填空（修订批注）+对应撰写内容。"""
+    try:
+        data = await export_service.build_response_package(session, user.enterprise_id, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    buffer = io.BytesIO(data)
+    draft_name = "采购文件"
+    try:
+        from sqlalchemy import select as sa_select
+
+        from app.models.file import FileObject
+
+        rows = (
+            await session.scalars(
+                sa_select(FileObject).where(
+                    FileObject.project_id == project_id,
+                    FileObject.enterprise_id == user.enterprise_id,
+                    FileObject.is_deleted.is_(False),
+                    FileObject.owner_type == 2,
+                )
+            )
+        ).all()
+        docx_rows = [f for f in rows if (f.ext or "").strip(".").lower() == "docx"]
+        fobj = next((f for f in docx_rows if f.document_role == "tender"), None) or (
+            max(docx_rows, key=lambda f: f.size_bytes) if docx_rows else None
+        )
+        if fobj is not None:
+            draft_name = str(fobj.original_name or "").strip() or draft_name
+    except Exception:  # noqa: BLE001 文件名兜底
+        pass
+    fname = f"响应文件包(底稿：{draft_name}).zip"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
     )
