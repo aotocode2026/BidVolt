@@ -27,8 +27,7 @@ logger = logging.getLogger(__name__)
 
 # 主会话最大时长（秒）：端到端包含多轮子任务，给足预算
 PIPELINE_TIMEOUT = 3600
-# 事件落库节流：缓冲行数达到阈值或 5 秒到期时刷一次
-EVENT_FLUSH_LINES = 40
+# 事件落库节流：每 5 秒刷一次
 EVENT_FLUSH_SECONDS = 5
 
 _CHAT_LOCKS: dict[int, asyncio.Lock] = {}
@@ -128,7 +127,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     try:
         proc = await asyncio.create_subprocess_exec(
             hermes_bin, "chat", "-q", prompt,
-            "-t", "bidvolt", "-s", "bidvolt-agent-pipeline",
+            "-t", "bidvolt,todo,delegation", "-s", "bidvolt-agent-pipeline",
             "--cli", "--max-turns", "120", "--no-restore-cwd",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env=env, cwd=env["HERMES_HOME"],
@@ -137,7 +136,6 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         raise ValueError(f"Hermes 启动失败：{exc}") from exc
 
     buffer: list[tuple[str, str]] = []
-    flushed_at = asyncio.get_event_loop().time()
 
     async def _pump(stream, kind: str) -> None:
         while True:
@@ -149,28 +147,32 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 buffer.append((kind, text))
 
     async def _flush() -> None:
-        nonlocal flushed_at
         if buffer:
             batch, buffer[:] = list(buffer), []
             await _append_events(session, task, seq, batch)
-        flushed_at = asyncio.get_event_loop().time()
 
     pump_out = asyncio.create_task(_pump(proc.stdout, "hermes"))
     pump_err = asyncio.create_task(_pump(proc.stderr, "error"))
 
+    started = asyncio.get_event_loop().time()
     try:
         while True:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=EVENT_FLUSH_SECONDS)
                 break
-            except TimeoutError:
-                if len(buffer) >= EVENT_FLUSH_LINES or (asyncio.get_event_loop().time() - flushed_at) >= EVENT_FLUSH_SECONDS:
-                    await _flush()
-    except TimeoutError:
+            except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10：wait_for 抛 asyncio.TimeoutError（≠TimeoutError）
+                await _flush()
+                if (asyncio.get_event_loop().time() - started) > PIPELINE_TIMEOUT:
+                    proc.kill()
+                    await proc.wait()
+                    raise ValueError(
+                        "Agent 主会话超时（3600s）：会话可经 session_id 恢复，请稍后重试或缩短范围"
+                    ) from None
+    except asyncio.TimeoutError:  # noqa: UP041
         proc.kill()
-        await proc.communicate()
+        await proc.wait()
         await _flush()
-        raise ValueError("Agent 主会话超时（3600s）：会话可经 session_id 恢复，请稍后重试或缩短范围")
+        raise ValueError("Agent 主会话超时（3600s）：会话可经 session_id 恢复，请稍后重试或缩短范围") from None
     await asyncio.gather(pump_out, pump_err)
     await _flush()
 
@@ -239,13 +241,13 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
         try:
             proc = await asyncio.create_subprocess_exec(
                 hermes_bin, "chat", "-q", message,
-                "-t", "bidvolt", "--resume", sid,
+                "-t", "bidvolt,todo,delegation", "--resume", sid,
                 "--cli", "-Q", "--max-turns", "60", "--no-restore-cwd",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=env, cwd=env["HERMES_HOME"],
             )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=1800)
-        except TimeoutError:
+        except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
             raise ValueError("主会话本轮对话超时（1800s）：请稍后再试") from None
         raw = out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace")
         reply = _strip_session_trailer(raw).strip()

@@ -88,6 +88,8 @@ class TaskType:
     MOCK_EVALUATE = "mock_evaluate"
     TARGETED_EDIT = "targeted_edit"
     CHAT = "chat"
+    # 新方案（Agent 主会话端到端，与旧任务类型完全隔离）
+    AGENT_PIPELINE = "agent_pipeline"
 
     ALL = {
         ENTERPRISE_INGESTION,
@@ -98,4 +100,5 @@ class TaskType:
         MOCK_EVALUATE,
         TARGETED_EDIT,
         CHAT,
+        AGENT_PIPELINE,
     }

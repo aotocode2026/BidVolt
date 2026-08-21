@@ -156,6 +156,48 @@ def test_draft_label_format():
     assert _draft_label(None, "商务标") == "商务标"
 
 
+def test_xlsx_bytes_shape_tolerant():
+    """xlsx_bytes 兼容旧 {sheets} 与新方案 agent 落库的 {docModel:{sections}} 形状，
+    任何形状下都必须产出至少一个可见工作表（openpyxl 硬性要求）。"""
+    from openpyxl import load_workbook
+
+    from app.services.export_service import xlsx_bytes
+
+    def sheets_of(data):
+        wb = load_workbook(io.BytesIO(data))
+        assert len(wb.worksheets) >= 1, "必须至少有一个可见工作表"
+        return wb
+
+    # 旧形状：显式 sheets
+    wb = sheets_of(xlsx_bytes({"sheets": [{"name": "报价单", "rows": [["a", "1"]]}]}))
+    assert wb.active["A1"].value == "a"
+
+    # 新方案形状：docModel.sections（agent 主会话落库形态）
+    wb = sheets_of(
+        xlsx_bytes(
+            {
+                "docModel": {
+                    "title": "价格标",
+                    "sections": [
+                        {"title": "1. 响应函", "content": "我方承诺。/n 第二条。", "source": "block 1~9"},
+                    ],
+                }
+            }
+        )
+    )
+    ws = wb.active
+    assert ws["A1"].value == "条目"
+    assert "我方承诺。\n 第二条。" in str(ws["B2"].value)
+
+    # 空模型 / 完全无表数据：单可见工作表 + 说明行，不得 500
+    wb = sheets_of(xlsx_bytes({}))
+    assert wb.active["A1"].value is not None
+
+    # 被 {version_no, model} 包装的形状
+    wb = sheets_of(xlsx_bytes({"version_no": 2, "model": {"rows": [["x", "y"]]}}))
+    assert wb.active["A1"].value == "x"
+
+
 def test_draft_download_filename_marks_source(client):
     """下载文件名标注底稿来源（产品要求：一眼可见底稿是谁）。"""
     r = client.post(

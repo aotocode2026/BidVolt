@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     minimax_model: str = "MiniMax-M3"
     # 标书生成主路径（用户决策）：hermes = Hermes Agent 经 MCP 执行（质量门不达标自动回退内嵌闭环）
     bid_generate_agent: str = "hermes"
+    # 新方案（Agent 主会话端到端）开关：1=启用 /agent-run 新接口；0=新接口关闭，旧流程不受任何影响
+    agent_pipeline_enabled: int = 0
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_vl_model: str = "qwen-vl-max"

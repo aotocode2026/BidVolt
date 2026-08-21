@@ -64,6 +64,26 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "list_requirements",
         "search_knowledge",
     },
+    # 新方案：主会话端到端（主 agent 经 delegate_task 起子任务，工具白名单取并集；
+    # 子任务的工具收敛由 Hermes delegate_task 的 toolsets 参数控制）
+    "agent_pipeline": {
+        "search_assets",
+        "list_assets",
+        "get_asset",
+        "get_project_material_blocks",
+        "list_project_materials",
+        "get_deliverable_content",
+        "create_deliverable",
+        "save_deliverable",
+        "calculate_quote",
+        "get_history_price",
+        "get_requirement",
+        "list_requirements",
+        "upsert_requirements",
+        "save_material_match_results",
+        "list_material_matches",
+        "search_knowledge",
+    },
     "mock_evaluate": {
         "get_deliverable_content",
         "list_project_materials",
