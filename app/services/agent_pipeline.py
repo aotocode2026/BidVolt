@@ -39,8 +39,8 @@ PIPELINE_TIMEOUT = 7200
 EVENT_FLUSH_SECONDS = 5
 # 卡顿阈值：无任何新输出超过该时长则温和催办一次
 STALL_SECONDS = 600
-# 最多催办次数（催办后仍无进展视为卡死）
-NUDGE_LIMIT = 2
+# 最多催办次数（逐级加强，最后一次只索取结束标记；之后仍未输出则按会话记录判定收尾）
+NUDGE_LIMIT = 3
 # 主会话进程提前退出（未输出完成标记）时，自动 --resume 续跑的轮数上限
 RESUME_ROUNDS = 2
 # 完成标记轮询间隔（读 Hermes 会话库，判据=主会话最后一条回复，不受终端回显干扰）
@@ -202,9 +202,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         "--no-restore-cwd", "--max-turns", "120",
     ]
 
-    async def _run_repl_round(resume_sid: str | None, first_message: str) -> str | None:
+    async def _run_repl_round(resume_sid: str | None, first_message: str) -> tuple[str | None, str | None]:
         """启动（或 --resume）一个 REPL 进程，驱动到完成标记或进程退出。
-        返回：完成标记文本（COMPLETE/INCOMPLETE），或 None（进程先退出）。"""
+        返回 (完成标记文本, 会话 id)：标记为 COMPLETE/INCOMPLETE，或 None（进程先退出）。"""
         args = list(base_args)
         if resume_sid:
             args += ["--resume", resume_sid]
@@ -292,20 +292,33 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 # 进程提前退出且没有待刷事件
                 if proc.poll() is not None and not pending:
                     break
-                # 卡顿催办
+                # 卡顿催办：逐级加强，最后一级只索取结束标记
                 if loop.time() - last_out_at > STALL_SECONDS:
                     if nudges >= NUDGE_LIMIT:
                         logger.warning("主会话持续无输出，判定卡死（task=%s）", task.id)
                         round_marker = MARK_INCOMPLETE
                         pending.append(
-                            ("error", f"{MARK_INCOMPLETE}系统催办 {NUDGE_LIMIT} 次后主会话仍无输出，判定卡死")
+                            ("error", f"{MARK_INCOMPLETE}主会话未按协议输出结束标记（系统催办 {NUDGE_LIMIT} 次），"
+                                      "由服务端按会话记录判定收尾")
                         )
                         break
                     nudges += 1
-                    nudge = (
-                        "（系统提示）请继续推进流程：若子 agent 结果已返回请继续下一步；"
-                        f"全部完成后最后一行输出 {MARK_COMPLETE}。"
-                    )
+                    if nudges == 1:
+                        nudge = (
+                            "（系统提示）请继续推进流程：若子 agent 结果已返回请继续下一步；"
+                            f"全部完成后最后一行输出 {MARK_COMPLETE}。"
+                        )
+                    elif nudges == 2:
+                        nudge = (
+                            "（系统提示）请继续推进流程。注意：最终回复的**最后一行必须且只能**输出结束标记——"
+                            f"全部验收通过输出 {MARK_COMPLETE}；存在无法闭环项输出 {MARK_INCOMPLETE} 原因…。"
+                            "总结正文放在标记之前。"
+                        )
+                    else:
+                        nudge = (
+                            "（系统提示）请现在立即输出结束标记作为交付回执：最后一行只写 "
+                            f"{MARK_COMPLETE} 或 {MARK_INCOMPLETE}+原因，不要其他内容。"
+                        )
                     _submit(nudge)
                     pending.append(("service", nudge))
                     last_out_at = loop.time()
@@ -334,11 +347,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             except OSError:
                 pass
 
-        return round_marker
+        return round_marker, session_id
 
     # 第一轮 + 最多 RESUME_ROUNDS 轮自动续跑（主会话提前退出时）
-    marker = await _run_repl_round(resume_sid=None, first_message=prompt)
-    sid, tail = await _repl_session_state(session, task)
+    marker, sid = await _run_repl_round(resume_sid=None, first_message=prompt)
+    _, tail = await _repl_session_state(session, task)
     resume_rounds = 0
     continuation = ""
     while marker is None and resume_rounds < RESUME_ROUNDS and sid:
@@ -353,8 +366,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             session, task, seq,
             [("service", f"主会话提前退出（第 {resume_rounds} 次自动续跑）：--resume {sid} 继续。")],
         )
-        marker = await _run_repl_round(resume_sid=sid, first_message=continuation)
-        sid, tail = await _repl_session_state(session, task)
+        marker, sid = await _run_repl_round(resume_sid=sid, first_message=continuation)
+        _, tail = await _repl_session_state(session, task)
 
     if marker == MARK_COMPLETE:
         task.result = {

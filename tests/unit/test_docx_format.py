@@ -149,6 +149,23 @@ def test_draft_export_supplement_headings_bold_without_style_dependency(tmp_path
     assert _count_el(data, "ins") > 0
 
 
+def test_split_supplement_tolerates_string_nodes():
+    """撰写内容节点兼容裸字符串（新方案 agent 落库形状）与混合形状。"""
+    from app.services.export_service import _split_supplement
+
+    titles = ["（一）响应函及报价汇总表", "（二）报价明细表"]
+    nodes = [
+        {"type": "heading", "text": "（一）响应函及报价汇总表"},
+        "我方承诺……（字符串节点）",
+        {"type": "heading", "text": "（二）报价明细表"},
+        {"type": "paragraph", "text": "报价明细"},
+    ]
+    matched, rest = _split_supplement(titles, nodes)
+    assert len(matched[0]) == 2  # heading + 字符串节点（归一到 paragraph）分配到第 0 条
+    assert len(matched[1]) == 2  # heading + paragraph 分配到第 1 条
+    assert rest == []
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
