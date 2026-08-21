@@ -157,3 +157,12 @@ def extract_json(text: str) -> dict | list:
         return json.loads(first)
     except json.JSONDecodeError as exc:
         raise ValueError(f"LLM 输出 JSON 解析失败：{exc}") from exc
+
+
+def try_extract_json(text: str) -> dict | list | None:
+    """extract_json 的容错版：输出中没有可解析 JSON 时返回 None，由调用方决定降级策略
+    （解析任务各抽取环节不应因模型一次输出格式抖动而整体失败）。"""
+    try:
+        return extract_json(text)
+    except ValueError:
+        return None

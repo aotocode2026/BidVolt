@@ -297,16 +297,19 @@ async def _llm_extract_requirements(
     file_ids: list[int],
     task_id: int,
     task: Task | None = None,
-) -> int:
-    """从文件文本块抽取 Requirement（门禁内 LLM）。返回抽取条数；门禁关闭返回 0。
+) -> tuple[int, str | None]:
+    """从文件文本块抽取 Requirement（门禁内 LLM）。返回 (抽取条数, 警示文本或 None)；门禁关闭返回 (0, None)。
 
     task 提供时全程更新进度并落库（Issue #13：LLM 抽取阶段持续数分钟，
-    此前任务一直显示 queued 0%，产品以为"解析不出来"——必须让用户看到"AI 抽取中"）。"""
+    此前任务一直显示 queued 0%，产品以为"解析不出来"——必须让用户看到"AI 抽取中"）。
+
+    模型输出没有可解析 JSON 时：带更明确输出提示重试一次；仍失败不炸任务，
+    降级为 0 条并以警示文本显式回报（积极报错，不静默）。"""
     from sqlalchemy import select as sa_select
 
     from app.models.doc import DocBlock
     from app.services import requirement_service
-    from app.services.llm import LLMClient, extract_json, llm_enabled
+    from app.services.llm import LLMClient, llm_enabled, try_extract_json
 
     async def _progress(percent: int, work: str) -> None:
         if task is None:
@@ -315,17 +318,24 @@ async def _llm_extract_requirements(
         await session.commit()
         await _set_rls_context(session, task.enterprise_id)  # 事务级 RLS 上下文随 commit 失效，必须重建
 
+    def _items_of(parsed) -> list:
+        if isinstance(parsed, dict):
+            return parsed.get("requirements") or []
+        if isinstance(parsed, list):
+            return parsed
+        return []
+
     if not llm_enabled():
-        return 0
+        return 0, None
     file_ids = [int(i) for i in file_ids]
     if not file_ids:
-        return 0
+        return 0, None
     blocks = (
         await session.scalars(sa_select(DocBlock).where(DocBlock.file_id.in_(file_ids)))
     ).all()
     text = _dedup_block_texts(blocks, limit=60000)
     if not text.strip():
-        return 0
+        return 0, None
     system = (
         "阅读下面这份招标材料，把其中对投标人的要求整理出来：资格要求、评分细则、否决条款、"
         "技术要求、报价规则、材料清单。输出 JSON 数组，每项含 req_type/content/structured/coordinates/confidence。"
@@ -333,29 +343,30 @@ async def _llm_extract_requirements(
         "评分细则把 structured 写成 {\"score_rule\": {\"weight\": 分值, \"criterion\": \"评分标准\"}}。"
         "材料里有的才写。"
     )
+    json_hint = "请把结果用 JSON 输出：只输出 JSON 本身，开头结尾不加解释文字，不加 Markdown 代码块围栏。"
+    client = LLMClient()
     await _progress(45, "AI 抽取要求中（大文件需数分钟，请耐心等待）")
-    reply = await LLMClient().chat(system, f"招标材料：\n{text}")
-    parsed = extract_json(reply)
-    if isinstance(parsed, dict):
-        items = parsed.get("requirements", [])
-    elif isinstance(parsed, list):
-        items = parsed
-    else:
-        items = []
-    if not items:
+    reply = await client.chat(system, f"招标材料：\n{text}")
+    parsed = try_extract_json(reply)
+    if parsed is None:
+        reply = await client.chat(system, f"招标材料：\n{text}\n\n{json_hint}")
+        parsed = try_extract_json(reply)
+    items = _items_of(parsed)
+    if not items and parsed is not None:
         # 抽取为空重试一次（Issue #8：解析 0 条不能静默通过）——更严格的纯 JSON 指令
         await _progress(55, "首轮抽取为空，重试更严格指令…")
-        reply = await LLMClient().chat(
-            system + "只输出 JSON 数组本身，禁止任何解释、Markdown 围栏或额外文字；确实没有可抽取项时输出 []。",
+        reply = await client.chat(
+            system + "输出 JSON 数组本身（不附加解释文字、Markdown 围栏或额外文字）；确实没有可抽取项时输出 []。",
             f"招标材料：\n{text[:20000]}",
         )
-        parsed = extract_json(reply)
-        if isinstance(parsed, dict):
-            items = parsed.get("requirements", [])
-        elif isinstance(parsed, list):
-            items = parsed
-        else:
-            items = []
+        parsed = try_extract_json(reply)
+        items = _items_of(parsed)
+    warning = None
+    if parsed is None:
+        warning = (
+            "AI 要求抽取未获得可解析结果（模型输出中没有 JSON，已重试一次）："
+            "请到要求页人工录入招标要求，或重新触发【招标解析】"
+        )
     await _progress(60, f"AI 抽取完成（{len(items)} 条候选），正在过滤落库…")
     # 碎片与重复过滤（Issue #12）：历史重复块会诱导 LLM 输出"报价限价(万元)"这类孤立碎片；
     # 丢弃过短内容、纯数字/单位/表头碎片与重复条目，保证落库要求为完整整句。
@@ -386,7 +397,7 @@ async def _llm_extract_requirements(
             confidence=item.get("confidence"),
             source_task_id=task_id,
         )
-    return len(kept)
+    return len(kept), warning
 
 
 def _dedup_block_texts(blocks, limit: int = 30000) -> str:
@@ -400,6 +411,64 @@ def _dedup_block_texts(blocks, limit: int = 30000) -> str:
             seen.add(t)
             lines.append(t)
     return "\n".join(lines)[:limit]
+
+
+async def _derive_tender_meta(material_text: str) -> dict:
+    """从招标文件开头（封面/采购公告）抽取项目名称与招标人。
+
+    确定性正则优先（封面常按"名称 编号 招标人 采购方式"连排），LLM 小窗口兜底。
+    材料里没有的保持 None——系统项目名只是工作台标签，不能写进应答函/委托书等正式字段。"""
+    import re as _re
+
+    from app.services.llm import LLMClient, llm_enabled, try_extract_json
+
+    meta: dict = {}
+    head = (material_text or "")[:4000]
+    if not head.strip():
+        return meta
+    # 封面连排：项目名 采购编号 招标人 采购方式
+    m = _re.search(
+        r"([^\s\n]{8,60}?(?:采购|招标|磋商|谈判)[^\s\n]{0,40}?)\s+"
+        r"([A-Za-z0-9][A-Za-z0-9\-/]{4,24})\s+([^\s\n]{4,40}?)\s*"
+        r"(?:竞争性谈判|公开招标|询价|单一来源|竞争性磋商|竞价)",
+        head,
+    )
+    if m:
+        if any(k in m.group(1) for k in ("采购", "招标", "磋商", "谈判", "项目")):
+            meta["project_name"] = m.group(1)
+        if m.group(3) not in ("采购人", "招标人") and len(m.group(3)) >= 4:
+            meta["buyer"] = m.group(3)
+    # 显式标注兜底（排除模板自引用"项目名称：（项目名称）"这类占位）
+    if not meta.get("project_name"):
+        m2 = _re.search(r"项目名称[：:]\s*([^\s\n，,。；;（）()]{6,60})", head)
+        if m2:
+            meta["project_name"] = m2.group(1)
+    if not meta.get("buyer"):
+        m3 = _re.search(r"(?:招标人|采购人)[：:]\s*([^\s\n，,。；;（）()]{4,40})", head)
+        if m3:
+            meta["buyer"] = m3.group(1)
+    if llm_enabled():
+        try:
+            reply = await LLMClient().chat(
+                "阅读招标文件开头的封面与采购公告，找出采购项目名称与招标人名称，"
+                '输出 JSON：{"project_name": "...", "buyer": "..."}；材料里没有的填 null。输出 JSON 本身。',
+                "招标文件开头：\n" + head,
+            )
+            llm_meta = try_extract_json(reply)
+            if isinstance(llm_meta, dict):
+                for k in ("project_name", "buyer"):
+                    v = str(llm_meta.get(k) or "").strip()
+                    if v and v not in ("null", "None") and not meta.get(k):
+                        meta[k] = v
+        except Exception:  # noqa: BLE001 抽取失败保持确定性结果
+            pass
+    # 清洗：纯占位符（如"（采购人）"）或过短的值不采纳；含真实文字的括号（如"（第一批）"）保留
+    for k in list(meta):
+        v = str(meta[k])
+        core = v.strip("（）()【】")
+        if "_" in v or len(core) < 4 or core in ("采购人", "招标人", "项目名称", "响应供应商名称"):
+            meta.pop(k, None)
+    return meta
 
 
 _STRUCTURE_SYSTEM = (
@@ -491,7 +560,7 @@ async def _llm_extract_structure(
         if not parsed.get("business") or not parsed.get("technical"):
             # 结构抽取为空重试一次（更严格的纯 JSON 指令，与要求抽取同策略）
             reply = await LLMClient().chat(
-                _STRUCTURE_SYSTEM + "只输出 JSON 本身，禁止任何解释或 Markdown 围栏。",
+                _STRUCTURE_SYSTEM + "输出 JSON 本身（不附加解释文字或 Markdown 围栏）。",
                 f"招标材料：\n{text[:30000]}",
             )
             parsed = _parse_structure_reply(reply)
@@ -700,8 +769,8 @@ _SCORE_RULES_SYSTEM = (
     '[{"element": "评审要素名（照搬原文，如 绿色低碳评价）", '
     '"content": "评审内容原文（含分值区间，如 0-3分、优：9-10分）", '
     '"weight": 分值上限数字（区间取上限，如 3 或 10）}, ...]。'
-    "铁律：表格每行一条，逐条提取禁止归纳合并；分值取区间上限；"
-    "只依据给定材料，禁止编造；材料无评分标准表时输出 []。"
+    "表格每行对应一条：逐条提取，不把多行归纳合并；分值取区间上限；"
+    "只写材料里有的内容；材料没有评分标准表时输出 []。"
 )
 
 
@@ -719,7 +788,7 @@ async def _llm_extract_score_rules(
 
     from app.models.doc import DocBlock
     from app.services import requirement_service
-    from app.services.llm import LLMClient, extract_json, llm_enabled
+    from app.services.llm import LLMClient, llm_enabled, try_extract_json
 
     if not llm_enabled():
         return 0
@@ -733,8 +802,17 @@ async def _llm_extract_score_rules(
     window = _score_rules_window(full_text)
     if not window.strip():
         return 0
-    reply = await LLMClient().chat(_SCORE_RULES_SYSTEM, f"评分标准章节文本：\n{window}")
-    parsed = extract_json(reply)
+    client = LLMClient()
+    reply = await client.chat(_SCORE_RULES_SYSTEM, f"评分标准章节文本：\n{window}")
+    parsed = try_extract_json(reply)
+    if parsed is None:
+        reply = await client.chat(
+            _SCORE_RULES_SYSTEM,
+            f"评分标准章节文本：\n{window}\n\n请把结果用 JSON 输出：只输出 JSON 本身，开头结尾不加解释文字或 Markdown 围栏。",
+        )
+        parsed = try_extract_json(reply)
+    if parsed is None:
+        return 0
     if isinstance(parsed, dict):
         items = parsed.get("rules") or parsed.get("items") or []
     elif isinstance(parsed, list):
@@ -813,7 +891,7 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
     await session.commit()
     await _set_rls_context(session, task.enterprise_id)
 
-    extracted = await _llm_extract_requirements(
+    extracted, req_extract_warning = await _llm_extract_requirements(
         session,
         enterprise_id=task.enterprise_id,
         project_id=task.project_id,
@@ -962,7 +1040,9 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         notes.append("招标文件未明确响应文件格式要求，成果将按通用投标结构生成")
     if score_rules_extracted == 0 and llm_enabled():
         notes.append("未从材料抽取出评分标准表：评标将以内置完整性规则计分（不代表招标评标得分）")
-    if extracted == 0 and llm_enabled():
+    if req_extract_warning:
+        notes.append(req_extract_warning)
+    elif extracted == 0 and llm_enabled():
         notes.append("未从材料抽取出任何招标要求：请检查文件内容（扫描件/加密件需人工处理），或到要求页手动录入")
     if not llm_enabled():
         notes.append("云模型门禁关闭，未做语义抽取（仅完成文本解析）")
@@ -998,23 +1078,23 @@ async def _run_hermes_agent(task: Task) -> dict | None:
         return None
     prompt = (
         f"你是投标文件撰写 Agent。请使用 bidvolt-bid-generate skill 为项目 {task.project_id} 生成三份投标成果。"
-        "【硬性要求】本会话为非交互批处理模式：必须直接执行到底，每一步都真实调用 MCP 工具"
+        "本会话是一次非交互批处理任务：直接执行完整流程，每一步都真实调用 MCP 工具"
         "（工具名带 bidvolt: 前缀，如 bidvolt:list_requirements、bidvolt:search_assets、"
         "bidvolt:save_deliverable、bidvolt:calculate_quote），等待工具真实返回后再继续；"
-        "严禁只输出计划、A/B/C/D 方案、伪代码或虚构工具返回结果；"
-        "严禁询问用户或等待确认——直接生成并保存，完成后用一句话总结。"
+        "输出计划、A/B/C/D 方案或虚构工具结果不算完成，也无需向用户确认——"
+        "直接生成并保存，完成后用一句话总结。"
         "流程：1) bidvolt:list_requirements 建立要求基线——其中 req_type=doc_structure 是招标文件"
-        "'响应文件格式'章节的文件组成清单，成果章节必须逐项照搬该清单（标题与顺序不得改写）；"
-        "req_type=score_rule 是评分细则，正文必须逐条响应；"
-        "2) bidvolt:get_project_material_blocks 阅读招标文件【原文】，每章正文必须以原文相关段落为依据撰写"
-        "（抽取信息仅是骨架，禁止脱离原文编造条款）；"
+        "'响应文件格式'章节的文件组成清单，成果章节逐项照搬该清单（标题与顺序与清单一致）；"
+        "req_type=score_rule 是评分细则，正文逐条响应；"
+        "2) bidvolt:get_project_material_blocks 阅读招标文件【原文】，每章正文以原文相关段落为依据撰写"
+        "（抽取信息是骨架，正文依据原文，不脱离原文编造条款）；"
         "3) bidvolt:search_assets 取企业事实；"
         "4) 若项目尚无成果记录，先调用 bidvolt:create_deliverable 创建商务标/技术标/报价单三份记录"
         "（project_id 填 " + str(task.project_id) + "，deliverable_type 分别 1/2/3）；"
         "5) 逐份撰写并调用 bidvolt:save_deliverable 保存新版本"
         "（注意：expected_version_no 必须等于该成果【当前版本号】——新创建的记录当前版本号为 0，"
         "首次保存传 0；后续保存前先用 bidvolt:get_deliverable_content 读回当前版本号再传）；"
-        "禁止编造企业事实；无资料处标注【待补充】；报价只建议不落库。任务 id=" + str(task.id) + "。"
+        "企业事实以 search_assets 返回为准；无资料处标注【待补充】；报价只建议不落库。任务 id=" + str(task.id) + "。"
     )
     env = dict(os.environ)
     env["BIDVOLT_CAPABILITY_TOKEN"] = cap
@@ -1075,9 +1155,9 @@ async def _run_hermes_parse_review(task: Task) -> dict | None:
         return {"ok": False, "error": f"capability 签发失败：{exc}"}
     prompt = (
         f"你是招标文件解析复核 Agent。项目 {task.project_id} 已完成一轮要求与模板抽取，请复核并补缺。"
-        "【硬性要求】本会话为非交互批处理模式：必须直接执行到底，每一步真实调用 MCP 工具"
-        "（工具名带 bidvolt: 前缀），等待工具真实返回后再继续；严禁只输出计划、方案或虚构工具返回结果；"
-        "严禁询问用户或等待确认。"
+        "本会话是一次非交互批处理任务：直接执行完整流程，每一步调用 MCP 工具"
+        "（工具名带 bidvolt: 前缀），等待工具真实返回后再继续；输出计划或虚构的工具结果"
+        "不算完成，过程中也无需向用户确认。"
         "流程：1) bidvolt:list_requirements 查看已有要求与 doc_template 模板清单；"
         "2) bidvolt:get_project_material_blocks 读取招标文件原文；"
         "3) 对照材料补抽遗漏的资格要求/评分细则/否决条款/技术要求/报价规则/材料清单，"
@@ -1089,9 +1169,9 @@ async def _run_hermes_parse_review(task: Task) -> dict | None:
         "清单里缺少哪个条目，就用 bidvolt:upsert_requirements 以 req_type='doc_template' "
         "登记【这一条条目本身】——content 只是该条目的名称或该表格本身，与该区间内原文逐字一致；"
         "structured 含 role、order、kind（heading/paragraph/table），表格带 rows。"
-        "【禁止】不得登记区间外的任何内容：评分标准表（表头含'评审要素''评审内容''评分权重'）、"
-        "否决条款表、供应商须知/合同条款中的要求语句，都不是条目。不得替任何条目撰写正文、"
-        "不得在登记时填入要求文本。已登记过的条目不得重复登记。"
+        "登记范围只包含该区间内的条目本身：评分标准表（表头含'评审要素''评审内容''评分权重'）、"
+        "否决条款表、供应商须知/合同条款中的要求语句不在条目范围；登记时只写条目名称或表格原文，"
+        "正文留待生成阶段撰写；同一条目只登记一次。"
         "5) 完成后用一句话总结（补抽要求 N 条、登记缺失条目 M 条）。任务 id=" + str(task.id) + "。"
     )
     env = dict(os.environ)
@@ -1226,6 +1306,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         )
     )
     project_name = project.name if project is not None else f"项目{project_id}"
+    buyer_name = (project.buyer or "") if project is not None else ""
 
     # 当前项目材料文本块（生成依据，逐段响应要求）
     from app.models.doc import DocBlock
@@ -1244,6 +1325,14 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         )
     ).all()
     material_text = "\n".join(b.text_content or "" for b in material_blocks)[:160000] or "（项目未上传招标材料）"
+
+    # 招标文件自述的项目名称/招标人优先（Issue #8：底稿填空与正文引用以招标文件为准，
+    # 系统项目名只是工作台标签，不能写进应答函/委托书等正式字段）
+    tender_meta = await _derive_tender_meta(material_text)
+    if tender_meta.get("project_name"):
+        project_name = tender_meta["project_name"]
+    if tender_meta.get("buyer"):
+        buyer_name = tender_meta["buyer"]
 
 
     # 历史知识检索（Issue #4）：为技术标提供专业写法素材（来源可追溯，结果仅入任务元数据）
@@ -1271,7 +1360,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     ) or "（无历史参考素材）"
 
     def _business_model() -> dict:
-        buyer = (project.buyer or "") if project is not None else ""
+        buyer = buyer_name
         nodes = [
             {"id": "n0", "type": "heading", "text": "商务标"},
             {"id": "n1", "type": "heading", "text": "应答函"},
@@ -1343,12 +1432,12 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     # —— 标书结构（流程化：解析阶段已确认并落库 doc_structure；与 LLM 门禁无关）——
     DEFAULT_BUSINESS_CHAPTERS = [
         ("一、企业基本情况", "结合企业事实介绍公司概况、资质能力、经营状况，300-600 字，无企业事实处标【待补充】"),
-        ("二、商务条款逐项响应", "对每条资格/商务要求逐条编号响应（要求原文→我方响应承诺→是否偏离），全部条款不得遗漏，500-1200 字"),
+        ("二、商务条款逐项响应", "对每条资格/商务要求逐条编号响应（要求原文→我方响应承诺→是否偏离），覆盖全部条款，500-1200 字"),
         ("三、商务偏离表与承诺", "无偏离声明或逐项偏离说明；对投标保证金、履约、付款方式、报价有效期等条款给出明确承诺，300-600 字"),
     ]
     DEFAULT_TECH_CHAPTERS = [
         ("一、技术方案总体说明", "项目理解、总体思路、重点难点分析与对策、技术路线，600-1000 字"),
-        ("二、技术和服务要求逐项响应", "对每条技术要求逐条编号响应（要求原文→我方响应→是否偏离），全部条款不得遗漏，无依据处标【待补充】，800-1500 字"),
+        ("二、技术和服务要求逐项响应", "对每条技术要求逐条编号响应（要求原文→我方响应→是否偏离），覆盖全部条款，无依据处标【待补充】，800-1500 字"),
         ("三、分项实施方案", "按采购范围分项说明工作内容、实施步骤、技术措施、进度安排，600-1200 字"),
         ("四、质量保障措施", "质量管理体系、过程控制、检验与验收标准，400-800 字"),
         ("五、安全与应急预案", "安全措施、应急预案、保密与信息安全措施，300-600 字"),
@@ -1457,7 +1546,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         已知字段回填（招标人/项目名称/供应商名称），未知空位原位标注【待补充：字段名】。"""
         import re as _re
 
-        buyer = (project.buyer or "") if project is not None else ""
+        buyer = buyer_name
         out = text
         # 具名字段优先回填
         out = out.replace("（采购人）", buyer or "【待补充：招标人名称】")
@@ -1505,7 +1594,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         "template_source_file_id": tpl_source_fid,
         "template_start": "响应文件格式",
         "template_end": ["商务评分标准", "技术评分标准", "响应文件编制注意事项"],
-        "buyer": (project.buyer or "") if project is not None else "",
+        "buyer": buyer_name,
         "project_name": project_name,
         "supplier_name": ent_name,
     }
@@ -1653,10 +1742,10 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         ) or "（未解析到资格/商务要求）"
 
         common_context = (
-            f"项目名称：{project_name}\n招标人：{project.buyer if project else '未提供'}\n"
+            f"项目名称：{project_name}\n招标人：{buyer_name or '未提供'}\n"
             f"企业产品/能力事实：\n{fact_text[:3000]}\n"
             f"当前招标材料摘录：\n{material_text[:12000]}\n"
-            f"历史参考素材（仅作专业写法参考，不得复制其中项目事实）：\n{knowledge_text[:4000]}"
+            f"历史参考素材（仅作专业写法参考，项目事实以本项目材料为准）：\n{knowledge_text[:4000]}"
         )
 
         chapter_sem = asyncio.Semaphore(4)  # 控制并发，避免云模型限流/超时
@@ -1735,7 +1824,6 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         await _gen_progress(60, "分章生成完成，执行 Agent 自检补缺（对照全部要求）…")
         if biz_doc is not None:
             # 应答函格式页（路线图项）：正式商务标首部必须含应答函（字段未知处【待补充】，禁止编造）
-            buyer_name = (project.buyer or "") if project is not None else ""
             cover_nodes = [
                 {"id": "llm-cover-h", "type": "heading", "text": "应答函"},
                 {"id": "llm-cover-1", "type": "paragraph", "text": f"致：{buyer_name or '【招标人名称】'}"},
@@ -1807,7 +1895,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                     try:
                         refine_reply = await client.chat(
                             f"你是投标文件撰写助手。已生成的《{doc_name}》缺少对以下要求的响应，"
-                            "请撰写补充章节逐条覆盖这些要求；只依据给定要求，禁止编造；直接输出 Markdown。",
+                            "请撰写补充章节逐条覆盖这些要求；内容以给定要求为依据；直接输出 Markdown。",
                             "缺失要求：\n" + "\n".join(f"- {r}" for r in miss_reqs) + f"\n\n{common_context}",
                         )
                     except Exception:  # noqa: BLE001
@@ -1855,8 +1943,8 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         pending = text.count("【待补充】") + text.count("待补充")
         lines = [
             "本说明为非投标正文，正式提交前请删除本段。",
-            f"本《{doc_name}》中的待补充占位，是系统遵守“禁止编造企业事实”边界的结果："
-            "未取得真实来源的内容一律如实标注，绝不虚构资质、业绩、人员或数字。",
+            f"本《{doc_name}》中的待补充占位，是系统在“企业事实以资料为准”边界下的结果："
+            "未取得真实来源的内容一律如实标注，不虚构资质、业绩、人员或数字。",
             "待补充占位的补齐路径：",
             f"1. 企业事实类（名称/资质/业绩/人员/报价）：当前企业资料库有 {gaps.get('enterprise_assets', 0)} 份资料，"
             "请在资料页导入营业执照/资质证书/业绩合同并做“企业资料导入分类”后重新生成，将自动回填；",
