@@ -493,6 +493,60 @@ async def _chat_with_retry(system: str, user: str, times: int = 2) -> str:
     raise last  # type: ignore[misc]
 
 
+_FORMAL_RESPONSE_GUIDE = (
+    "以正式投标文件行文撰写：针对招标文件各项要求逐条直接成文响应（把要求内容融入句子，"
+    "如'针对……要求，我方……'），不出现'要求原文：''我方响应：''是否偏离：'等分析性标签；"
+    "无依据处标【待补充】。"
+)
+_PROSE_ITEM_KEYWORDS = (
+    "格式自拟", "理解", "规划", "措施", "服务承诺", "进度保障", "进度", "履约",
+    "专项响应", "实施方案", "技术方案", "团队", "业绩",
+)
+
+
+async def _prose_item_plans(
+    session, enterprise_id: int, project_id: int
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """撰写计划来自招标文件本身（产品定版：系统不自造章节）：
+    读出底稿"响应文件格式"章的大纲级条目，仅对需要撰写正文的条目
+    （格式自拟/理解/规划/措施/承诺/进度等）生成计划；表格函件类条目只填空、不写正文。"""
+    from docx import Document
+
+    from app.services.export_service import (
+        _clean_item_name,
+        _locate_item_slices,
+        _resolve_package_template_fobj,
+    )
+    from app.services.storage import StorageProvider
+
+    try:
+        fobj = await _resolve_package_template_fobj(session, enterprise_id, project_id)
+    except Exception:  # noqa: BLE001
+        return [], []
+    if fobj is None:
+        return [], []
+    try:
+        path = StorageProvider().open(fobj.bucket, fobj.object_key)
+    except (FileNotFoundError, ValueError):
+        return [], []
+    doc = Document(str(path))
+    slices = _locate_item_slices(doc, {"price": [], "business": [], "technical": []})
+    out_biz: list[tuple[str, str]] = []
+    out_tech: list[tuple[str, str]] = []
+    for role, out in (("business", out_biz), ("technical", out_tech)):
+        for heading, _elems in slices.get(role, []):
+            if not any(k in heading for k in _PROSE_ITEM_KEYWORDS):
+                continue  # 表格/函件类条目：填空即可，不撰写正文
+            title = _clean_item_name(heading)
+            guide = (
+                f"以正式投标文件行文撰写《{title}》的响应内容：结合招标文件对应要求与项目实际"
+                "直接成文，不出现'要求原文：''我方响应：''是否偏离：'等分析性标签；"
+                "无依据处标【待补充】，600-1500 字。"
+            )
+            out.append((title, guide))
+    return out_biz, out_tech
+
+
 async def _resolve_template_source(
     session,
     *,
@@ -1544,23 +1598,10 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         rows.append(["说明", "", "", f"确定性测算草稿，用户确认后生效（样本来源：{sample_source}）"])
         return {"type": "sheet", "sheets": [{"name": "报价单", "rows": rows}]}
 
-    # —— 标书结构（流程化：解析阶段已确认并落库 doc_structure；与 LLM 门禁无关）——
-    DEFAULT_BUSINESS_CHAPTERS = [
-        ("一、企业基本情况", "结合企业事实介绍公司概况、资质能力、经营状况，300-600 字，无企业事实处标【待补充】"),
-        ("二、商务条款逐项响应", "对每条资格/商务要求逐条编号响应（要求原文→我方响应承诺→是否偏离），覆盖全部条款，500-1200 字"),
-        ("三、商务偏离表与承诺", "无偏离声明或逐项偏离说明；对投标保证金、履约、付款方式、报价有效期等条款给出明确承诺，300-600 字"),
-    ]
-    DEFAULT_TECH_CHAPTERS = [
-        ("一、技术方案总体说明", "项目理解、总体思路、重点难点分析与对策、技术路线，600-1000 字"),
-        ("二、技术和服务要求逐项响应", "对每条技术要求逐条编号响应（要求原文→我方响应→是否偏离），覆盖全部条款，无依据处标【待补充】，800-1500 字"),
-        ("三、分项实施方案", "按采购范围分项说明工作内容、实施步骤、技术措施、进度安排，600-1200 字"),
-        ("四、质量保障措施", "质量管理体系、过程控制、检验与验收标准，400-800 字"),
-        ("五、安全与应急预案", "安全措施、应急预案、保密与信息安全措施，300-600 字"),
-        ("六、人员配置与组织机构", "项目组织架构、岗位职责、人员投入计划，300-600 字"),
-        ("七、售后服务承诺", "服务内容、响应时限、备品备件、培训与技术支持，400-800 字"),
-        ("八、进度与交付", "里程碑计划、交付物清单、验收标准与方式，300-600 字"),
-    ]
-
+    # —— 撰写计划（产品定版：来自招标文件自己的清单条目，系统不自造章节）——
+    # 优先级：解析落库的 doc_structure（招标文件"响应文件格式"组成清单）→
+    # 底稿大纲级条目（（一）（二）…，只给需要写正文的"格式自拟"类条目生成计划）→
+    # 都没有时，按已解析要求直接成文一章（材料里有的才写）。
     def _chapters_from_rows(rows: list, role: str) -> list[tuple[str, str]]:
         return [
             (r.content, (r.structured or {}).get("guide") or "按招标文件该部分要求撰写，内容详实")
@@ -1574,10 +1615,18 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         structure_source = "requirement"
         structure_summary = [t for t, _ in biz_chapters] + [t for t, _ in tech_chapters]
     else:
-        structure_source = "fallback"
-        biz_chapters = list(DEFAULT_BUSINESS_CHAPTERS)
-        tech_chapters = list(DEFAULT_TECH_CHAPTERS)
+        biz_chapters, tech_chapters = await _prose_item_plans(
+            session, task.enterprise_id, project_id
+        )
         structure_summary = [t for t, _ in biz_chapters] + [t for t, _ in tech_chapters]
+        if biz_chapters or tech_chapters:
+            structure_source = "tender-items"
+        else:
+            # 底稿无"响应文件格式"章：按已解析要求直接成文（后续内嵌闭环会再尝试 LLM 解析结构）
+            structure_source = "fallback"
+            biz_chapters = [("响应内容", _FORMAL_RESPONSE_GUIDE)]
+            tech_chapters = [("响应内容", _FORMAL_RESPONSE_GUIDE)]
+            structure_summary = ["响应内容"]
     agent_meta: dict = {
         "plan_sections": len(biz_chapters) + len(tech_chapters),
         "knowledge_refs": 0,
@@ -1892,10 +1941,10 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
                             )
                     except Exception:  # noqa: BLE001
                         return reply
+                    if attempt > 0:
+                        chapter_expansions["n"] += 1  # 每发生一次重写即计数（成功与否都算发生过）
                     if len(reply.strip()) >= min_len:
                         return reply
-                    if attempt > 0:
-                        chapter_expansions["n"] += 1
                 return reply
 
         # 结构优先级：解析落库（requirement）→ 生成时再解析材料（tender）→ 通用章节（fallback，已在门禁外确定）

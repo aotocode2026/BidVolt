@@ -594,9 +594,9 @@ def test_bid_generate_llm_generates_business_and_technical(client, monkeypatch):
     monkeypatch.setattr(settings, "minimax_api_key", "test-key")
 
     async def fake_chat(self, system, user):
-        if "技术和服务要求逐项响应" in user:
+        if "电压等级" in user:
             return (
-                "### 逐项响应明细\n本部分对全部技术要求逐条响应：\n"
+                "### 响应内容\n本部分对全部技术要求逐条响应：\n"
                 "1. 电压等级 10kV——完全满足招标要求，无偏离。\n"
                 "2. 抗短路能力 30kA——完全满足招标要求，无偏离。\n"
                 "其余条款均完全响应招标文件要求，无负偏离，并提供出厂试验报告作为证明。"
@@ -643,14 +643,13 @@ def test_bid_generate_llm_generates_business_and_technical(client, monkeypatch):
     biz = next(d for d in deliverables if d["deliverable_type"] == 1)
     biz_content = client.get(f"/api/v1/deliverables/{biz['deliverable_id']}/content", headers=h).json()
     biz_text = "\n".join(n.get("text", "") for n in biz_content["model"]["nodes"])
-    assert "商务条款逐项响应" in biz_text  # 新流程的章节标题
+    assert "逐条响应商务条款" in biz_text  # 撰写计划来自招标文件条目（系统不自造章节）
     assert "无偏离声明" in biz_text
 
     tech = next(d for d in deliverables if d["deliverable_type"] == 2)
     tech_content = client.get(f"/api/v1/deliverables/{tech['deliverable_id']}/content", headers=h).json()
     tech_text = "\n".join(n.get("text", "") for n in tech_content["model"]["nodes"])
-    assert "技术方案总体说明" in tech_text
-    assert "技术和服务要求逐项响应" in tech_text
+    assert "响应内容" in tech_text
     assert "电压等级 10kV" in tech_text
     assert "抗短路能力 30kA" in tech_text
     assert "草稿由 BidVolt 确定性生成" not in tech_text  # 关键回归：不得退回 stub

@@ -410,6 +410,10 @@ _KEYWORD_GROUPS = [
     (("项目团队", "人员"), ("团队", "人员")),
     (("服务承诺", "售后"), ("服务承诺", "售后")),
     (("进度保障", "进度", "工期"), ("进度", "工期")),
+    # 容器条目（补充文件/专项响应文件）内的子表单章节归入容器文件
+    (("专项响应", "补充文件"),
+     ("业绩", "团队", "理解", "规划", "履约", "服务承诺", "进度", "保证金",
+      "关系说明", "基本情况", "支撑材料", "规范书", "凭证", "社保", "自查")),
 ]
 
 
@@ -629,14 +633,21 @@ def _split_supplement(titles, nodes) -> tuple[list, list]:
         head = sec["head"]
         probe = head + "".join(str(n.get("text") or "") for n in sec["nodes"][:3])
         hit = None
-        for idx, title in enumerate(titles):
-            for tkeys, skeys in _KEYWORD_GROUPS:
-                if any(tk in title for tk in tkeys):
-                    if any(sk in probe for sk in skeys):
-                        hit = idx
-                        break
-            if hit is not None:
-                break
+        # 标题与条目名完全一致的优先（生成阶段按条目名成章）
+        if head:
+            for idx, title in enumerate(titles):
+                if head == title or title.startswith(head) or head.startswith(title):
+                    hit = idx
+                    break
+        if hit is None:
+            for idx, title in enumerate(titles):
+                for tkeys, skeys in _KEYWORD_GROUPS:
+                    if any(tk in title for tk in tkeys):
+                        if any(sk in probe for sk in skeys):
+                            hit = idx
+                            break
+                if hit is not None:
+                    break
         if hit is not None:
             matched[hit].extend(sec["nodes"])
         else:
@@ -664,9 +675,16 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
     for child in list(body):
         if child.tag != qn("w:sectPr"):
             body.remove(child)
+    # 模板切片必须插在 sectPr 之前（OOXML：sectPr 是 body 最后一个元素；
+    # 插在其后 Word 会忽略内容，导致首空白页+正文丢失）
+    sect_pr = body.find(qn("w:sectPr"))
     if elements:
         for kind, el in elements:
-            body.append(_copy.deepcopy(el))
+            node = _copy.deepcopy(el)
+            if sect_pr is not None:
+                sect_pr.addprevious(node)
+            else:
+                body.append(node)
     elif row is not None:
         # 清单重建：底稿中未定位到该条目标题时，按解析清单内容成文并如实批注
         st = row.structured or {}

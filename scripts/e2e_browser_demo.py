@@ -336,7 +336,7 @@ def main() -> int:
             runtime_ok = meta["runtime"] in ("hermes", "hermes-fallback")
             # Issue #8 复盘：核心语义是"结构来自招标文件"（requirement/tender，非 fallback 通用模板），
             # 章节数随招标文件规模变化（本轮小样本仅 2 章），不再硬编码 >=4。
-            structure_from_tender = meta["structure_source"] in ("requirement", "tender") and meta["structure_len"] >= 1
+            structure_from_tender = meta["structure_source"] in ("requirement", "tender", "tender-items") and meta["structure_len"] >= 1
             # 输入材料确无"响应文件格式"章时，解析任务会如实注明并回退通用结构——同样合规
             honest_absence = (
                 meta["structure_source"] == "fallback"
