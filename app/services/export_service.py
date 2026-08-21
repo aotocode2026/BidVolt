@@ -8,6 +8,115 @@ from io import BytesIO
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 
 
+def docx_from_template(source_path, model: dict) -> bytes:
+    """底稿式导出（Issue #8 验收铁律的正解）：复制采购文件原 docx，在底稿上直接改——
+    保留原文档的页面规格/字体字号/表格样式/分页/页眉页脚，只做三件事：
+    1) 裁掉非响应模板部分（保留"响应文件格式"章节区间）；
+    2) 在模板上填空（已知字段回填，未知空位原位【待补充】）；
+    3) 在模板后追加"补充响应内容"（LLM 增补节）。
+    返回 docx bytes。"""
+    import re as _re
+
+    from docx import Document
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    doc = Document(str(source_path))
+    start_marker = str(model.get("template_start") or "响应文件格式")
+    end_markers = tuple(model.get("template_end") or ["商务评分标准", "技术评分标准", "响应文件编制注意事项"])
+
+    start_i = None
+    end_i = None
+    for i, p in enumerate(doc.paragraphs):
+        t = p.text.strip()
+        if start_i is None and (start_marker in t or "响应文件格式" in t):
+            start_i = i
+        if start_i is not None and any(k in t for k in end_markers):
+            end_i = i  # 取最后一个命中：模板区延续到评分标准表真正开始处
+    if start_i is None:
+        return docx_bytes(model)
+
+    body = doc.element.body
+    keep_from = doc.paragraphs[start_i]._element
+    keep_to = doc.paragraphs[end_i]._element if end_i is not None else None
+    in_range = False
+    for child in list(body):
+        if child is keep_from:
+            in_range = True
+        if not in_range:
+            body.remove(child)
+            continue
+        if keep_to is not None and child is keep_to:
+            break
+
+    buyer = str(model.get("buyer") or "").strip()
+    project_name = str(model.get("project_name") or "").strip()
+    supplier = str(model.get("supplier_name") or "").strip()
+
+    def _fill_text(text: str) -> str:
+        out = text
+        out = out.replace("（采购人）", buyer or "【待补充：招标人名称】")
+        out = out.replace("（响应供应商名称）", supplier or "【待补充：供应商名称】")
+        out = out.replace("（项目名称）", project_name or "【待补充：项目名称】")
+        out = _re.sub(r"_{2,}", "【待补充】", out)
+        return out
+
+    def _fill_runs(paragraph) -> None:
+        for run in paragraph.runs:
+            if run.text and any(k in run.text for k in ("（采购人）", "（响应供应商名称）", "（项目名称）", "_")):
+                run.text = _fill_text(run.text)
+
+    for p in doc.paragraphs:
+        _fill_runs(p)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    _fill_runs(p)
+
+    doc.add_page_break()
+    doc.add_heading("补充响应内容（在采购文件模板基础上增加，格式自拟部分）", level=1)
+    for node in model.get("supplement_nodes") or []:
+        t = str(node.get("text") or "")
+        ntype = node.get("type")
+        if ntype == "heading":
+            doc.add_heading(t, level=2)
+        elif ntype == "table" and node.get("rows"):
+            rows = node["rows"]
+            tb = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+            tb.style = "Table Grid"
+            for ri, row in enumerate(rows):
+                for ci in range(len(tb.rows[ri].cells)):
+                    cell = tb.rows[ri].cells[ci]
+                    cell.text = ""
+                    run = cell.paragraphs[0].add_run(str(row[ci]) if ci < len(row) else "")
+                    run.font.size = Pt(10.5)
+                    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        elif t.strip():
+            doc.add_paragraph(t)
+
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+async def docx_bytes_with_source(session, enterprise_id: int, model: dict, format_spec=None) -> bytes:
+    """导出统一入口：模型带模板源文件（底稿式）时复制原 docx 直接改；
+    否则回退节点式生成。"""
+    fid = model.get("template_source_file_id") if isinstance(model, dict) else None
+    if fid:
+        from app.models.file import FileObject
+        from app.services.storage import StorageProvider
+
+        fobj = await session.get(FileObject, int(fid))
+        if fobj is not None and fobj.enterprise_id == enterprise_id:
+            try:
+                return docx_from_template(StorageProvider().open(fobj.bucket, fobj.object_key), model)
+            except Exception:  # noqa: BLE001 底稿损坏/缺失时回退节点式
+                pass
+    return docx_bytes(model, format_spec=format_spec)
+
+
 _CN_SIZES = {
     "初号": 42, "小初": 36, "一号": 26, "小一": 24, "二号": 22, "小二": 18,
     "三号": 16, "小三": 15, "四号": 14, "小四": 12, "五号": 10.5, "小五": 9, "六号": 7.5,

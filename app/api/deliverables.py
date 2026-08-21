@@ -192,7 +192,9 @@ async def download_version(
             ((r.structured or {}).get("spec") for r in structure_rows if (r.structured or {}).get("role") == "format"),
             None,
         )
-        data = export_service.docx_bytes(content, format_spec=format_spec)
+        data = await export_service.docx_bytes_with_source(
+            session, user.enterprise_id, content, format_spec=format_spec
+        )
         media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ext = "docx"
     else:

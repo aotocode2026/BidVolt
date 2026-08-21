@@ -178,7 +178,9 @@ async def export_project(
         )
         for fmt in formats:
             if fmt == "docx" and deliverable.deliverable_type in (1, 2):
-                data = export_service.docx_bytes(model, format_spec=format_spec)
+                data = await export_service.docx_bytes_with_source(
+                    session, user.enterprise_id, model, format_spec=format_spec
+                )
                 ext = "docx"
             elif fmt == "xlsx" and deliverable.deliverable_type == 3:
                 data = export_service.xlsx_bytes(model)
