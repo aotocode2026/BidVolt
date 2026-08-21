@@ -7,7 +7,6 @@ import zipfile
 from urllib.parse import unquote
 
 from docx import Document
-from docx.oxml.ns import qn
 
 from app.services.export_service import docx_from_template
 
@@ -18,6 +17,12 @@ def _make_source() -> bytes:
     doc.add_paragraph("本采购由（采购人）实施，项目为（项目名称）。")
     doc.add_paragraph("供应商名称：（响应供应商名称）")
     doc.add_paragraph("联系电话：____")
+    doc.add_paragraph("致：采购人")
+    # 授权委托书形态：标签紧邻空位（下划线才是字段本身）
+    doc.add_paragraph(
+        "特授权____代表我方全权办理____（项目名称）（采购编号）（分标编号）（包号）"
+        "项目的响应、谈判、签约、执行等具体工作。"
+    )
     tb = doc.add_table(rows=1, cols=2)
     tb.rows[0].cells[0].text = "条款"
     tb.rows[0].cells[1].text = "说明"
@@ -76,6 +81,11 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     assert "本采购由测试招标人实施，项目为测试采购项目。" in joined
     assert "供应商名称：测试供应商" in joined
     assert "联系电话：【待补充】" in joined
+    # 应答函裸标签形态：致：采购人 → 致：真实招标人
+    assert "致：测试招标人" in joined
+    # 标签紧邻空位整体回填：____（项目名称）→ 项目名，而不是【待补充】+项目名
+    assert "全权办理测试采购项目（采购编号）" in joined
+    assert "【待补充】测试采购项目" not in joined
     # 补充节追加
     assert "补充响应内容" in joined
     assert "我方完全响应采购文件全部要求。" in joined
@@ -83,9 +93,27 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     assert _count_el(data, "ins") > 0
     assert _count_el(data, "del") > 0
     assert _count_el(data, "commentReference") > 0
+    # Word 显示修订的前提：settings.xml 含 trackChanges
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        settings = zf.read("word/settings.xml").decode("utf-8")
+    assert "<w:trackChanges" in settings
     # 批注部件存在且说明来源
     comments = _comment_texts(data)
     assert "来源" in comments and "BidVolt" in comments
+    # 批注范围顺序：commentRangeStart → del → ins → commentRangeEnd → commentReference
+    root = _doc_xml(data)
+    for p in root.iter():
+        if p.tag.split("}")[-1] != "p":
+            continue
+        tags = [ch.tag.split("}")[-1] for ch in p if isinstance(ch.tag, str)]
+        if "commentRangeStart" not in tags:
+            continue
+        i_start = tags.index("commentRangeStart")
+        i_del = tags.index("del")
+        i_ins = tags.index("ins")
+        i_end = tags.index("commentRangeEnd")
+        i_ref = next(i for i, t in enumerate(tags) if t == "r")
+        assert i_start < i_del < i_ins < i_end < i_ref, tags
 
 
 def test_draft_export_fills_unknown_with_placeholder(tmp_path):
