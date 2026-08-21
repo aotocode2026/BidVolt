@@ -154,48 +154,45 @@ class _TrackedEditor:
         self._doc.part.relate_to(part, rt_comments)
 
 
-def docx_from_template(source_path, model: dict) -> bytes:
-    """底稿式导出（Issue #8 验收铁律 + 产品要求：改动全程修订模式可追溯）：
-    复制采购文件原 docx，整本保留——不抽取、不裁剪、不删改，只做两件事：
-    1) 全局填空（已知字段回填，未知空位原位【待补充】），每处改动以 Word
-       修订模式记录（原文删除线 + 新文插入），并挂批注说明来源；
-    2) 文末追加"补充响应内容"（LLM 增补节），整体标记为插入并批注。
-    页面规格/字体/表格样式/分页/页眉页脚/全部原文天然保留。"""
-    import re as _re
+class _FillSession:
+    """一次成文的填空会话：修订模式填空 + 批注来源 + 补充内容追加。
+    整本成文（docx_from_template）与逐份成文（响应文件包）共用同一套规则。"""
 
-    from docx import Document
-    from docx.oxml.ns import qn
-    from docx.shared import Pt
+    def __init__(self, doc, buyer: str, project_name: str, supplier: str):
+        import re as _re
 
-    doc = Document(str(source_path))
-    editor = _TrackedEditor(doc)
+        from docx.oxml import OxmlElement as _OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Pt
 
-    # Word 显示修订标记的前提：settings.xml 须含 <w:trackChanges/>，
-    # 否则 w:ins/w:del 会被当作普通文本（插入可见、删除被吞）。
-    from docx.oxml import OxmlElement as _OxmlElement
+        self.doc = doc
+        self.editor = _TrackedEditor(doc)
+        self.buyer = buyer
+        self.project_name = project_name
+        self.supplier = supplier
+        self._re = _re
+        self._qn = qn
+        self._Pt = Pt
+        self._PLACEHOLDER_KEYS = (
+            "（采购人）", "（响应供应商名称）", "（项目名称）",
+            "【招标人名称】", "【供应商名称】", "【项目名称】",
+        )
+        # Word 显示修订标记的前提：settings.xml 须含 <w:trackChanges/>，
+        # 否则 w:ins/w:del 会被当作普通文本（插入可见、删除被吞）。
+        settings_el = doc.settings.element
+        if settings_el.find(qn("w:trackChanges")) is None:
+            tc = _OxmlElement("w:trackChanges")
+            default_tab = settings_el.find(qn("w:defaultTabStop"))
+            if default_tab is not None:
+                default_tab.addprevious(tc)
+            else:
+                settings_el.append(tc)
 
-    settings_el = doc.settings.element
-    if settings_el.find(qn("w:trackChanges")) is None:
-        tc = _OxmlElement("w:trackChanges")
-        default_tab = settings_el.find(qn("w:defaultTabStop"))
-        if default_tab is not None:
-            default_tab.addprevious(tc)
-        else:
-            settings_el.append(tc)
-
-    buyer = str(model.get("buyer") or "").strip()
-    project_name = str(model.get("project_name") or "").strip()
-    supplier = str(model.get("supplier_name") or "").strip()
-
-    _PLACEHOLDER_KEYS = (
-        "（采购人）", "（响应供应商名称）", "（项目名称）",
-        "【招标人名称】", "【供应商名称】", "【项目名称】",
-    )
-
-    def _fill_text(text: str) -> str:
+    def fill(self, text: str) -> str:
+        _re = self._re
+        buyer, project_name, supplier = self.buyer, self.project_name, self.supplier
         out = text
-        # 标签紧邻空位：整体回填（模板里"办理____（项目名称）"的下划线才是字段本身，
-        # 标签只是提示；两者一起替换为真实值）
+        # 标签紧邻空位：整体回填（"办理____（项目名称）"的下划线才是字段本身）
         if project_name:
             out = _re.sub(r"_{2,}\s*[（(【]\s*项目名称\s*[）)】]", project_name, out)
         if buyer:
@@ -224,8 +221,9 @@ def docx_from_template(source_path, model: dict) -> bytes:
             out = _re.sub(r"(?:招标人|采购人)[：:]\s*【待补充】", f"招标人：{buyer}", out)
         return out
 
-    def _comment_for(old: str, new: str) -> str:
+    def comment(self, old: str, new: str) -> str:
         """修订批注：说明改了什么、依据来源（产品要求：批注必须说明来自哪里）。"""
+        buyer, project_name, supplier = self.buyer, self.project_name, self.supplier
         filled: list[str] = []
         if ("（采购人）" in old or "【招标人名称】" in old or "招标人：" in old) and buyer:
             filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告，系统确定性提取）")
@@ -246,67 +244,71 @@ def docx_from_template(source_path, model: dict) -> bytes:
             return "模板空位未取得对应资料，系统原位标注【待补充】（不编造内容），请人工填写后确认。"
         return "系统按招标文件内容补充填写（模型推断，供参考），请人工复核确认。"
 
-    def _fill_paragraph_el(p_el) -> None:
-        """整段填充（修订模式）：占位符完整落在单节点内 → 该节点处修订替换；
-        跨节点拆分 → 整段修订替换；每处改动挂批注说明来源。"""
-        t_nodes = list(p_el.iter(qn("w:t")))
-        if not t_nodes:
-            return
-        full = "".join(t.text or "" for t in t_nodes)
-        bare_zhia = bool(_re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", full))
-        if not any(k in full for k in _PLACEHOLDER_KEYS) and not _re.search(r"_{2,}", full) and not bare_zhia:
-            return
-        # 跨节点判断：任一占位符的整段计数 ≠ 各节点计数之和 → 拆分在多个 run 里
-        cross = False
-        for k in _PLACEHOLDER_KEYS:
-            if full.count(k) != sum((t.text or "").count(k) for t in t_nodes):
-                cross = True
-                break
-        if not cross:
-            full_unders = len(_re.findall(r"_{2,}", full))
-            node_unders = sum(len(_re.findall(r"_{2,}", t.text or "")) for t in t_nodes)
-            if full_unders != node_unders:
-                cross = True
-        if _re.search(r"(响应供应商名称|项目名称|招标人|采购人)[：:]\s*_{2,}", full):
-            cross = True  # 带标签空位常跨 run，整段处理
-        if _re.search(r"_{2,}\s*[（(【]\s*(?:项目名称|采购人|响应供应商名称|招标人名称|供应商名称)\s*[）)】]", full):
-            cross = True  # 标签紧邻空位（下划线紧贴占位标签）必须整段整体回填
-        if cross:
-            new_full = _fill_text(full)
-            if new_full != full:
-                editor.track_paragraph_replace(t_nodes, full, new_full, _comment_for(full, new_full))
-            return
-        for t in t_nodes:
-            text = t.text or ""
-            if not text:
-                continue
-            new = _fill_text(text)
-            if new != text:
-                editor.track_replace(t, text, new, _comment_for(text, new))
+    def apply_to_doc(self) -> None:
+        """全文档（含表格、控件、文本框）逐段填空（修订模式+批注）。"""
+        _re = self._re
+        qn = self._qn
+        editor = self.editor
+        keys = self._PLACEHOLDER_KEYS
+        fill = self.fill
+        comment = self.comment
 
-    # 全文档（含表格、控件、文本框）逐段填充（修订模式）
-    for p_el in doc.element.body.iter(qn("w:p")):
-        _fill_paragraph_el(p_el)
-    # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）
-    for t_el in doc.element.body.iter(qn("w:t")):
-        text = t_el.text or ""
-        if (
-            any(k in text for k in _PLACEHOLDER_KEYS)
-            or _re.search(r"_{2,}", text)
-            or _re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", text)
-        ):
-            new = _fill_text(text)
-            if new != text:
-                editor.track_replace(t_el, text, new, _comment_for(text, new))
+        def _fill_paragraph_el(p_el) -> None:
+            t_nodes = list(p_el.iter(qn("w:t")))
+            if not t_nodes:
+                return
+            full = "".join(t.text or "" for t in t_nodes)
+            bare_zhia = bool(_re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", full))
+            if not any(k in full for k in keys) and not _re.search(r"_{2,}", full) and not bare_zhia:
+                return
+            cross = False
+            for k in keys:
+                if full.count(k) != sum((t.text or "").count(k) for t in t_nodes):
+                    cross = True
+                    break
+            if not cross:
+                full_unders = len(_re.findall(r"_{2,}", full))
+                node_unders = sum(len(_re.findall(r"_{2,}", t.text or "")) for t in t_nodes)
+                if full_unders != node_unders:
+                    cross = True
+            if _re.search(r"(响应供应商名称|项目名称|招标人|采购人)[：:]\s*_{2,}", full):
+                cross = True  # 带标签空位常跨 run，整段处理
+            if _re.search(r"_{2,}\s*[（(【]\s*(?:项目名称|采购人|响应供应商名称|招标人名称|供应商名称)\s*[）)】]", full):
+                cross = True  # 标签紧邻空位必须整段整体回填
+            if cross:
+                new_full = fill(full)
+                if new_full != full:
+                    editor.track_paragraph_replace(t_nodes, full, new_full, comment(full, new_full))
+                return
+            for t in t_nodes:
+                text = t.text or ""
+                if not text:
+                    continue
+                new = fill(text)
+                if new != text:
+                    editor.track_replace(t, text, new, comment(text, new))
 
-    def _add_heading_safe(doc, text: str, level: int):
-        """向底稿追加标题：不依赖源文档是否含 'Heading n' 样式——
-        国网等采购文件底稿常无内置标题样式，doc.add_heading 会因
-        'no style with name Heading 1' 抛 KeyError 导致整份导出回退。
-        改用普通段落 + 手动加粗/字号 + outlineLvl 保持 Word 导航层级。"""
+        for p_el in self.doc.element.body.iter(qn("w:p")):
+            _fill_paragraph_el(p_el)
+        # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）
+        for t_el in self.doc.element.body.iter(qn("w:t")):
+            text = t_el.text or ""
+            if (
+                any(k in text for k in keys)
+                or _re.search(r"_{2,}", text)
+                or _re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", text)
+            ):
+                new = fill(text)
+                if new != text:
+                    editor.track_replace(t_el, text, new, comment(text, new))
+
+    def add_heading_safe(self, text: str, level: int):
+        """追加标题：不依赖源文档是否含 'Heading n' 样式（国网等采购文件底稿常无内置标题样式）。"""
         from docx.oxml import OxmlElement
 
-        p = doc.add_paragraph()
+        qn = self._qn
+        Pt = self._Pt
+        p = self.doc.add_paragraph()
         run = p.add_run(str(text))
         run.bold = True
         run.font.name = "Times New Roman"
@@ -318,40 +320,593 @@ def docx_from_template(source_path, model: dict) -> bytes:
         p_pr.append(outline)
         return p
 
-    doc.add_page_break()
-    sup_head = _add_heading_safe(doc, "补充响应内容（在采购文件模板基础上增加，格式自拟部分）", 1)
-    # 补充节整体为系统新增：标题 run 标插入 + 批注说明来源
-    editor.track_insert_run(sup_head.runs[0])
-    editor.add_comment("本节为系统在采购文件模板基础上【新增】的补充响应内容："
-                       "由模型依据招标文件要求与企业资料撰写（企业事实以资料为准，未知处标【待补充】），"
-                       "请人工复核后确认。")
-    for node in model.get("supplement_nodes") or []:
-        t = str(node.get("text") or "")
-        ntype = node.get("type")
-        if ntype == "heading":
-            h = _add_heading_safe(doc, _fill_text(t), 2)
+    def append_supplement(self, nodes, heading_text: str | None = None, comment: str | None = None, page_break: bool = True) -> None:
+        """把撰写内容追加为修订插入（w:ins）+ 批注；heading_text 为 None 时不加总标题。"""
+        Pt = self._Pt
+        qn = self._qn
+        editor = self.editor
+        fill = self.fill
+        if page_break:
+            self.doc.add_page_break()
+        if heading_text:
+            h = self.add_heading_safe(heading_text, 1)
             editor.track_insert_run(h.runs[0])
-        elif ntype == "table" and node.get("rows"):
-            rows = node["rows"]
-            tb = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+        if comment:
+            editor.add_comment(comment)
+        for node in nodes or []:
+            t = str(node.get("text") or "")
+            ntype = node.get("type")
+            if ntype == "heading":
+                h = self.add_heading_safe(fill(t), 2)
+                editor.track_insert_run(h.runs[0])
+            elif ntype == "table" and node.get("rows"):
+                rows = node["rows"]
+                tb = self.doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+                tb.style = "Table Grid"
+                for ri, row in enumerate(rows):
+                    for ci in range(len(tb.rows[ri].cells)):
+                        cell = tb.rows[ri].cells[ci]
+                        cell.text = ""
+                        run = cell.paragraphs[0].add_run(fill(str(row[ci])) if ci < len(row) else "")
+                        run.font.size = Pt(10.5)
+                        run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
+                        editor.track_insert_run(run)
+            elif t.strip():
+                p = self.doc.add_paragraph(fill(t))
+                for run in p.runs:
+                    editor.track_insert_run(run)
+
+    def finish(self) -> bytes:
+        self.editor.write_comments_part()
+        buf = BytesIO()
+        self.doc.save(buf)
+        return buf.getvalue()
+
+
+def docx_from_template(source_path, model: dict) -> bytes:
+    """底稿式整本成文（保留能力）：复制采购文件原 docx，整本保留——
+    填空（修订模式+批注来源）+ 文末追加"补充响应内容"（修订插入+批注）。
+    页面规格/字体/表格样式/分页/页眉页脚/全部原文天然保留。"""
+    from docx import Document
+
+    doc = Document(str(source_path))
+    sess = _FillSession(
+        doc,
+        str(model.get("buyer") or "").strip(),
+        str(model.get("project_name") or "").strip(),
+        str(model.get("supplier_name") or "").strip(),
+    )
+    sess.apply_to_doc()
+    sess.append_supplement(
+        model.get("supplement_nodes") or [],
+        heading_text="补充响应内容（在采购文件模板基础上增加，格式自拟部分）",
+        comment="本节为系统在采购文件模板基础上【新增】的补充响应内容："
+                "由模型依据招标文件要求与企业资料撰写（企业事实以资料为准，未知处标【待补充】），"
+                "请人工复核后确认。",
+    )
+    return sess.finish()
+
+
+# ---------- 响应文件包：按招标文件"响应文件格式"清单逐份成文（产品定版） ----------
+
+_RESPONSE_ROLE_DIRS = {"price": "价格文件", "business": "商务文件", "technical": "技术文件"}
+_ROLE_TITLE_KEYS = {
+    "price": ("价格文件", "报价文件", "价格部分"),
+    "business": ("商务文件",),
+    "technical": ("技术文件",),
+}
+_END_MARKERS = ("商务评分标准", "技术评分标准", "响应文件编制注意事项")
+# 撰写内容 → 条目的匹配关键词组（条目标题关键词, 内容标题关键词）
+_KEYWORD_GROUPS = [
+    (("响应函", "应答函"), ("应答函", "响应函")),
+    (("授权委托",), ("授权委托",)),
+    (("商务偏差", "偏离表", "商务条款"), ("偏离", "偏差表")),
+    (("保证保险", "保证金"), ("保证金", "保证保险")),
+    (("资格审查", "资格"), ("资格审查", "资格")),
+    (("自查",), ("自查",)),
+    (("技术偏差", "参数响应"), ("技术偏差", "参数响应", "逐条响应")),
+    (("专项响应", "实施方案", "技术方案"), ("专项响应", "实施方案", "技术方案")),
+    (("业绩",), ("业绩",)),
+    (("项目团队", "人员"), ("团队", "人员")),
+    (("服务承诺", "售后"), ("服务承诺", "售后")),
+    (("进度保障", "进度", "工期"), ("进度", "工期")),
+]
+
+
+def _norm_text(s: str) -> str:
+    import re as _re
+
+    return _re.sub(r"\s+", "", s or "")
+
+
+def _strip_num(s: str) -> str:
+    import re as _re
+
+    return _re.sub(r"^[（(]?[一二三四五六七八九十百0-9]+[）)、.、:：\s]*", "", s)
+
+
+def _elem_text(el) -> str:
+    return "".join(el.itertext())
+
+
+def _iter_body_elems(doc):
+    from docx.oxml.ns import qn
+
+    for child in doc.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield ("p", child)
+        elif child.tag == qn("w:tbl"):
+            yield ("tbl", child)
+
+
+def _locate_item_slices(doc, items_by_role: dict) -> dict:
+    """按底稿大纲级别切分条目（v2，优先）：outlineLvl=1 为部分标题（价格/商务/技术文件），
+    outlineLvl=2 为文件条目标题（（一）响应函…）。返回 {role: [(heading, elements)]}。
+    返回空结果时调用方回退行级清单匹配。"""
+    from docx.oxml.ns import qn as _qn
+
+    elems = list(_iter_body_elems(doc))
+    # 章起点：最后一次出现"响应文件格式"（跳过目录里的 TOC 同名条目）
+    start = None
+    for i in range(len(elems) - 1, -1, -1):
+        kind, el = elems[i]
+        if kind == "p" and "响应文件格式" in _elem_text(el):
+            start = i
+            break
+    if start is None:
+        return {}
+    end = None
+    for i in range(start + 1, len(elems)):
+        kind, el = elems[i]
+        t = _norm_text(_elem_text(el))
+        # 结束标记只认短标题行（评分标准章标题），正文中的长句引用不截断区域
+        if kind == "p" and len(t) <= 24 and any(m in t for m in _END_MARKERS):
+            end = i
+            break
+    if end is None:
+        end = len(elems)
+    region = elems[start + 1 : end]
+
+    def outline_of(el) -> int | None:
+        ppr = el.find(_qn("w:pPr"))
+        if ppr is None:
+            return None
+        lvl = ppr.find(_qn("w:outlineLvl"))
+        if lvl is None:
+            return None
+        try:
+            return int(lvl.get(_qn("w:val")))
+        except (TypeError, ValueError):
+            return None
+
+    import re as _re
+
+    items: list[tuple[str, str, list]] = []  # (role, heading_text, elems)
+    cur_role: str | None = None
+    cur_item: str | None = None
+    cur_buf: list = []
+
+    def flush_item() -> None:
+        nonlocal cur_item, cur_buf
+        if cur_item is not None and cur_role is not None:
+            items.append((cur_role, cur_item, cur_buf))
+        cur_item, cur_buf = None, []
+
+    for kind, el in region:
+        if kind != "p":
+            cur_buf.append((kind, el))
+            continue
+        lvl = outline_of(el)
+        t = _norm_text(_elem_text(el)).strip()
+        if lvl == 1:
+            flush_item()
+            if "价格文件" in t:
+                cur_role = "price"
+            elif "商务文件" in t:
+                cur_role = "business"
+            elif "技术文件" in t:
+                cur_role = "technical"
+            cur_buf.append((kind, el))  # 部分标题并入首条目
+        elif lvl == 2 and cur_role is not None and _re.match(r"^[（(][一二三四五六七八九十百0-9]+[）)]", t):
+            # 条目边界：（一）（二）…开头的大纲2级标题；"1."式次级标题归入当前条目
+            flush_item()
+            cur_item = t
+            cur_buf = [(kind, el)]
+        else:
+            cur_buf.append((kind, el))
+    flush_item()
+    result: dict[str, list] = {"price": [], "business": [], "technical": []}
+    for role, heading, elems in items:
+        if role in result:
+            result[role].append((heading, elems))
+    return result
+
+
+def _locate_item_slices_by_rows(doc, items_by_role: dict) -> dict:
+    """行级清单匹配（兜底：底稿无大纲级别信号时用）。返回 {role: [(row, elements|None)]}。"""
+    elems = list(_iter_body_elems(doc))
+    start = None
+    for i in range(len(elems) - 1, -1, -1):
+        kind, el = elems[i]
+        if kind == "p" and "响应文件格式" in _elem_text(el):
+            start = i
+            break
+    if start is None:
+        return {role: [(r, None) for r in rows] for role, rows in items_by_role.items()}
+    end = None
+    for i in range(start + 1, len(elems)):
+        kind, el = elems[i]
+        t = _norm_text(_elem_text(el))
+        if kind == "p" and len(t) <= 24 and any(m in t for m in _END_MARKERS):
+            end = i
+            break
+    if end is None:
+        end = len(elems)
+    region = elems[start:end]
+    pos: dict[str, int] = {}
+    for i, (kind, el) in enumerate(region):
+        if kind != "p":
+            continue
+        t = _norm_text(_elem_text(el))
+        if not (1 <= len(t) <= 12):
+            continue  # 角色标题是短段落；含多个角色词的说明行不参与匹配
+        for role, keys in _ROLE_TITLE_KEYS.items():
+            if role in pos:
+                continue
+            if any(t == k or t.endswith(k) for k in keys):
+                pos[role] = i
+    ordered = sorted(pos.items(), key=lambda kv: kv[1])
+    spans = {}
+    for idx, (role, p) in enumerate(ordered):
+        nxt = ordered[idx + 1][1] if idx + 1 < len(ordered) else len(region)
+        spans[role] = (p, nxt)
+    return {role: _slice_role(region, spans.get(role), rows) for role, rows in items_by_role.items()}
+
+
+def _clean_item_name(heading: str) -> str:
+    """条目标题清洗为文件名：去掉"（在投标工具…）"等上传路径说明尾巴。"""
+    for cut in ("（在投标工具", "（上传投标工具", "（上传招投标", "（可在系统", "（如谈判", "（如有", "（如选择"):
+        idx = heading.find(cut)
+        if idx > 0:
+            heading = heading[:idx]
+    return heading
+
+
+def _slice_role(region, span, rows):
+    if span is None:
+        return [(r, None) for r in rows]
+    lo, hi = span
+    seg = region[lo:hi]
+
+    def t_at(i):
+        return _norm_text(_elem_text(seg[i][1]))
+
+    markers = []
+    for r in rows:
+        key = _strip_num(_norm_text(r.content or ""))[:16]
+        if not key:
+            continue
+        for i in range(len(seg)):
+            kind, _el = seg[i]
+            txt = t_at(i)
+            if kind == "p" and key in txt and 2 <= len(txt) <= 200:
+                markers.append((i, r))
+                break
+    markers.sort(key=lambda m: m[0])
+    out = []
+    matched_ids = set()
+    for idx, (mpos, r) in enumerate(markers):
+        matched_ids.add(r.id)
+        mend = markers[idx + 1][0] if idx + 1 < len(markers) else len(seg)
+        elems = seg[mpos:mend]
+        if idx == 0 and mpos > 0:
+            elems = seg[0:mpos] + elems  # 部分标题行及其后说明并入首条目
+        out.append((r, elems))
+    for r in rows:
+        if r.id not in matched_ids:
+            out.append((r, None))
+    return out
+
+
+def _split_supplement(titles, nodes) -> tuple[list, list]:
+    """把撰写内容按标题关键词分配到各条目标题；返回 (matched_by_title_index, rest_nodes)。"""
+    sections = []
+    cur = None
+    for n in nodes or []:
+        if n.get("type") == "heading" and str(n.get("text") or "").strip():
+            if cur is not None:
+                sections.append(cur)
+            cur = {"head": str(n.get("text") or "").strip(), "nodes": [n]}
+        else:
+            if cur is None:
+                cur = {"head": "", "nodes": []}
+            cur["nodes"].append(n)
+    if cur is not None:
+        sections.append(cur)
+    matched: list[list] = [[] for _ in titles]
+    rest: list = []
+    for sec in sections:
+        head = sec["head"]
+        probe = head + "".join(str(n.get("text") or "") for n in sec["nodes"][:3])
+        hit = None
+        for idx, title in enumerate(titles):
+            for tkeys, skeys in _KEYWORD_GROUPS:
+                if any(tk in title for tk in tkeys):
+                    if any(sk in probe for sk in skeys):
+                        hit = idx
+                        break
+            if hit is not None:
+                break
+        if hit is not None:
+            matched[hit].extend(sec["nodes"])
+        else:
+            rest.extend(sec["nodes"])
+    return matched, rest
+
+
+def _safe_filename(title: str, max_len: int = 40) -> str:
+    import re as _re
+
+    name = _re.sub(r'[\\/:*?"<>|\r\n\t]', "_", _norm_text(title) or "条目")
+    return name[:max_len] or "条目"
+
+
+def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supplier, extra_nodes) -> bytes:
+    """组装一份条目文件：底稿中该条目区间原文整段复制（保留格式）+ 填空（修订批注）
+    + 对应撰写内容（修订插入+批注）。未定位到区间的条目用清单内容重建。"""
+    import copy as _copy
+
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    new = Document(str(source_path))
+    body = new.element.body
+    for child in list(body):
+        if child.tag != qn("w:sectPr"):
+            body.remove(child)
+    if elements:
+        for kind, el in elements:
+            body.append(_copy.deepcopy(el))
+    elif row is not None:
+        # 清单重建：底稿中未定位到该条目标题时，按解析清单内容成文并如实批注
+        st = row.structured or {}
+        if st.get("kind") == "table" and st.get("rows"):
+            rows = st["rows"]
+            tb = new.add_table(rows=len(rows), cols=max(len(r) for r in rows))
             tb.style = "Table Grid"
-            for ri, row in enumerate(rows):
+            for ri, rrow in enumerate(rows):
                 for ci in range(len(tb.rows[ri].cells)):
                     cell = tb.rows[ri].cells[ci]
                     cell.text = ""
-                    run = cell.paragraphs[0].add_run(_fill_text(str(row[ci])) if ci < len(row) else "")
-                    run.font.size = Pt(10.5)
-                    run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
-                    editor.track_insert_run(run)
-        elif t.strip():
-            p = doc.add_paragraph(_fill_text(t))
-            for run in p.runs:
-                editor.track_insert_run(run)
+                    cell.paragraphs[0].add_run(str(rrow[ci]) if ci < len(rrow) else "")
+        elif (row.content or "").strip():
+            new.add_paragraph(str(row.content).strip())
+    sess = _FillSession(new, buyer, project_name, supplier)
+    sess.apply_to_doc()
+    if extra_nodes:
+        sess.append_supplement(
+            extra_nodes,
+            heading_text="响应内容（系统撰写，修订插入，请复核）",
+            comment="本节为系统针对本条目撰写的响应内容（依据招标文件要求与企业资料，未知处标【待补充】），"
+                    "以修订插入标记，请人工复核后确认。",
+        )
+    elif row is not None and elements is None:
+        sess.editor.add_comment("该条目在底稿中未定位到原文区间，本文件按解析清单内容重建（可能不完整），"
+                                "请对照采购文件原件核对。")
+    return sess.finish()
 
-    editor.write_comments_part()
 
-    buf = BytesIO()
-    doc.save(buf)
+async def _resolve_package_template_fobj(session, enterprise_id: int, project_id: int):
+    """响应文件包底稿源：按内容分级选择——含"响应文件格式"章的采购文件最优先，
+    同级取最大文件（完整采购文件 > 公告/规范书等）。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.doc import DocBlock
+    from app.models.file import FileObject
+
+    rows = (
+        await session.scalars(
+            sa_select(FileObject).where(
+                FileObject.project_id == int(project_id),
+                FileObject.enterprise_id == enterprise_id,
+                FileObject.is_deleted.is_(False),
+                FileObject.owner_type == 2,
+            )
+        )
+    ).all()
+    docx_rows = [f for f in rows if (f.ext or "").strip(".").lower() == "docx"]
+    if not docx_rows:
+        return None
+    texts: dict[int, str] = {}
+    for f in docx_rows:
+        bs = (
+            await session.scalars(
+                sa_select(DocBlock.text_content).where(DocBlock.file_id == f.id)
+            )
+        ).all()
+        texts[f.id] = "\n".join(b or "" for b in bs)[:200000]
+
+    def _rank(f) -> int:
+        t = texts.get(f.id) or ""
+        if "响应文件格式" in t:
+            return 2
+        if "商务文件" in t and "技术文件" in t:
+            return 1
+        if "商务文件" in t or "技术文件" in t:
+            return 0
+        return -1
+
+    ranked = [(_rank(f), f.size_bytes or 0, f) for f in docx_rows]
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    if ranked[0][0] >= 0:
+        return ranked[0][2]
+    return max(docx_rows, key=lambda f: f.size_bytes)
+
+
+async def build_response_package(session, enterprise_id: int, project_id: int) -> bytes:
+    """响应文件包（产品定版：按招标文件清单逐份成文）：
+    价格文件/商务文件/技术文件 三个目录，每个清单条目一份 docx——
+    该条目模板原文（自底稿整段复制，保留格式）+ 填空（修订+批注来源）
+    + 对应撰写内容（修订插入+批注）。附 报价单.xlsx 与 manifest.json。"""
+    import io as _io
+    import json as _json
+    import zipfile as _zip
+
+    from sqlalchemy import select as sa_select
+
+    from app.models.deliverable import Deliverable
+    from app.models.project import Project
+    from app.models.requirement import Requirement
+    from app.services import deliverable_service
+    from app.services.storage import StorageProvider
+
+    # 1) 底稿源 docx（响应文件格式章最优先，避免误选技术规范书等）
+    fobj = await _resolve_package_template_fobj(session, enterprise_id, project_id)
+    if fobj is None or (fobj.ext or "").strip(".").lower() != "docx":
+        raise ValueError("缺少采购文件底稿：请先上传采购文件并完成【招标解析】后再打包")
+    source_path = StorageProvider().open(fobj.bucket, fobj.object_key)
+    from docx import Document
+
+    src_doc = Document(str(source_path))
+
+    # 2) 模板清单（响应文件格式，逐字落库）
+    tpl_rows = (
+        await session.scalars(
+            sa_select(Requirement).where(
+                Requirement.enterprise_id == enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+                Requirement.req_type == "doc_template",
+            )
+        )
+    ).all()
+    items_by_role: dict[str, list] = {"price": [], "business": [], "technical": []}
+    for r in tpl_rows:
+        role = (r.structured or {}).get("role")
+        if role in items_by_role:
+            items_by_role[role].append(r)
+
+    def _ok(r):
+        o = (r.structured or {}).get("order", 0)
+        try:
+            return (0, int(o))
+        except (TypeError, ValueError):
+            return (1, str(o))
+
+    for role in items_by_role:
+        items_by_role[role].sort(key=_ok)
+
+    # 3) 成果模型（企业字段 + 撰写内容 + 报价单）
+    buyer = project_name = supplier = ""
+    biz_nodes, tech_nodes = [], []
+    quote_model = None
+    dls = (
+        await session.scalars(
+            sa_select(Deliverable).where(
+                Deliverable.enterprise_id == enterprise_id,
+                Deliverable.project_id == project_id,
+            )
+        )
+    ).all()
+    for d in dls:
+        if d.current_version_no == 0:
+            continue
+        try:
+            _, model = await deliverable_service.get_version_content(session, d.id, d.current_version_no)
+        except Exception:  # noqa: BLE001
+            continue
+        if d.deliverable_type == 1:
+            buyer = str(model.get("buyer") or "").strip() or buyer
+            project_name = str(model.get("project_name") or "").strip() or project_name
+            supplier = str(model.get("supplier_name") or "").strip() or supplier
+            biz_nodes = model.get("supplement_nodes") or []
+        elif d.deliverable_type == 2:
+            tech_nodes = model.get("supplement_nodes") or []
+        elif d.deliverable_type == 3:
+            quote_model = model
+    if not buyer or not project_name:
+        project = await session.get(Project, int(project_id))
+        if project is not None:
+            if not buyer:
+                buyer = (project.buyer or "").strip()
+            if not project_name:
+                project_name = (project.name or "").strip()
+
+    # 4) 底稿切片（大纲级别优先，行级清单兜底）+ 撰写内容分配
+    slices = _locate_item_slices(src_doc, items_by_role)
+    outline_ok = any(slices.get(r) for r in ("price", "business", "technical"))
+    if not outline_ok:
+        row_slices = _locate_item_slices_by_rows(src_doc, items_by_role)
+    biz_titles = (
+        [_clean_item_name(h) for h, _e in slices.get("business", [])]
+        if outline_ok
+        else [str(r.content or "") for r in items_by_role["business"]]
+    )
+    tech_titles = (
+        [_clean_item_name(h) for h, _e in slices.get("technical", [])]
+        if outline_ok
+        else [str(r.content or "") for r in items_by_role["technical"]]
+    )
+    biz_matched, biz_rest = _split_supplement(biz_titles, biz_nodes)
+    tech_matched, tech_rest = _split_supplement(tech_titles, tech_nodes)
+
+    # 5) 组装 zip（三目录 + manifest）
+    buf = _io.BytesIO()
+    files_manifest = []
+    with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
+        for role, dir_name in _RESPONSE_ROLE_DIRS.items():
+            role_slices = slices.get(role, [])
+            matched_map = biz_matched if role == "business" else (tech_matched if role == "technical" else [[] for _ in role_slices])
+            rest_nodes = biz_rest if role == "business" else (tech_rest if role == "technical" else [])
+            if role_slices:
+                for idx, (heading, elems) in enumerate(role_slices):
+                    data = _assemble_item_docx(
+                        source_path, None, elems,
+                        buyer=buyer, project_name=project_name, supplier=supplier,
+                        extra_nodes=matched_map[idx] if idx < len(matched_map) else [],
+                    )
+                    name = f"{dir_name}/{_safe_filename(_clean_item_name(heading))}.docx"
+                    zf.writestr(name, data)
+                    files_manifest.append({"dir": dir_name, "name": name, "bytes": len(data)})
+            else:
+                # 兜底：按行级清单逐份（底稿无大纲信号时）
+                rows = items_by_role[role]
+                for idx, r in enumerate(rows):
+                    elems = None
+                    for rr, ee in row_slices.get(role, []):
+                        if rr.id == r.id:
+                            elems = ee
+                            break
+                    data = _assemble_item_docx(
+                        source_path, r, elems,
+                        buyer=buyer, project_name=project_name, supplier=supplier,
+                        extra_nodes=matched_map[idx] if idx < len(matched_map) else [],
+                    )
+                    name = f"{dir_name}/{_safe_filename(r.content)}.docx"
+                    zf.writestr(name, data)
+                    files_manifest.append({"dir": dir_name, "name": name, "bytes": len(data)})
+            if rest_nodes:
+                data = _assemble_item_docx(
+                    source_path, None, None,
+                    buyer=buyer, project_name=project_name, supplier=supplier,
+                    extra_nodes=rest_nodes,
+                )
+                name = f"{dir_name}/补充响应内容.docx"
+                zf.writestr(name, data)
+                files_manifest.append({"dir": dir_name, "name": name, "bytes": len(data)})
+            if role == "price" and quote_model is not None:
+                xlsx = xlsx_bytes(quote_model)
+                name = f"{dir_name}/报价单.xlsx"
+                zf.writestr(name, xlsx)
+                files_manifest.append({"dir": dir_name, "name": name, "bytes": len(xlsx)})
+        manifest = {
+            "project_id": int(project_id),
+            "draft": fobj.original_name,
+            "note": "按招标文件《响应文件格式》清单逐份成文：每份=该条目模板原文+填空（修订模式+批注来源）+对应撰写内容；"
+                    "全部改动可在 Word【审阅→所有标记】中逐处查看。",
+            "files": files_manifest,
+        }
+        zf.writestr("manifest.json", _json.dumps(manifest, ensure_ascii=False, indent=2))
     return buf.getvalue()
 
 

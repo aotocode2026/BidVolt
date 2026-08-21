@@ -225,6 +225,92 @@ def test_export_without_template_source_reports_clear_error(client):
     assert "底稿" in r.json()["detail"]
 
 
+def test_response_package_by_item_list(client):
+    """产品定版：按招标文件《响应文件格式》清单逐份成文，装进三个目录。"""
+    h, pid = _setup(client)
+    # 底稿：含"响应文件格式"章 + 商务/技术两部分条目
+    from docx import Document as _Docx
+
+    src = _Docx()
+    src.add_paragraph("第五章 响应文件格式")
+    src.add_paragraph("响应文件由三部分组成：价格文件、商务文件、技术文件。")
+    src.add_paragraph("商务文件")
+    src.add_paragraph("（一）响应函")
+    src.add_paragraph("致：（采购人）")
+    src.add_paragraph("（二）商务偏差表")
+    tb = src.add_table(rows=2, cols=3)
+    tb.rows[0].cells[0].text = "序号"
+    tb.rows[0].cells[1].text = "条目"
+    tb.rows[0].cells[2].text = "响应"
+    tb.rows[1].cells[0].text = "1"
+    tb.rows[1].cells[1].text = "供货期"
+    tb.rows[1].cells[2].text = "满足"
+    src.add_paragraph("技术文件")
+    src.add_paragraph("（一）技术偏差表")
+    src.add_paragraph("技术偏差内容")
+    src.add_paragraph("响应文件编制注意事项")
+    buf = io.BytesIO()
+    src.save(buf)
+    up = client.post(
+        "/api/v1/files/upload",
+        data={"target": "project", "project_id": str(pid)},
+        files=[("files", ("采购文件.docx", buf.getvalue(), "application/octet-stream"))],
+        headers=h,
+    )
+    assert up.status_code == 200
+
+    # 模板清单（响应文件格式逐字落库）
+    r = client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={"requirements": [
+            {"req_type": "doc_template", "content": "（一）响应函",
+             "structured": {"role": "business", "order": 1, "kind": "paragraph"}, "coordinates": [{"file_id": 1}]},
+            {"req_type": "doc_template", "content": "（二）商务偏差表",
+             "structured": {"role": "business", "order": 2, "kind": "table",
+                            "rows": [["序号", "条目", "响应"], ["1", "供货期", "满足"]]}, "coordinates": [{"file_id": 1}]},
+            {"req_type": "doc_template", "content": "（一）技术偏差表",
+             "structured": {"role": "technical", "order": 1, "kind": "paragraph"}, "coordinates": [{"file_id": 1}]},
+        ]},
+        headers=h,
+    )
+    assert r.status_code == 201
+
+    _add_deliverable(client, h, pid, 1, {
+        "buyer": "测试招标人", "project_name": "测试采购项目", "supplier_name": "测试供应商",
+        "supplement_nodes": [
+            {"type": "heading", "text": "应答函"},
+            {"type": "paragraph", "text": "我方已仔细研究采购文件全部内容。"},
+            {"type": "heading", "text": "三、商务偏离表与承诺"},
+            {"type": "paragraph", "text": "无偏离声明。"},
+        ],
+    })
+    _add_deliverable(client, h, pid, 3, {"type": "sheet", "sheets": [{"name": "报价单", "rows": [["a", "1"]]}]})
+
+    pkg = client.get(f"/api/v1/projects/{pid}/response-package", headers=h)
+    assert pkg.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(pkg.content)) as zf:
+        names = set(zf.namelist())
+        assert "商务文件/（一）响应函.docx" in names, names
+        assert "商务文件/（二）商务偏差表.docx" in names
+        assert "技术文件/（一）技术偏差表.docx" in names
+        assert "价格文件/报价单.xlsx" in names
+        assert "manifest.json" in names
+    # 响应函 = 底稿切片 + 填空 + 对应撰写内容
+    from lxml import etree
+
+    with zipfile.ZipFile(io.BytesIO(pkg.content)) as zf:
+        inner = zipfile.ZipFile(io.BytesIO(zf.read("商务文件/（一）响应函.docx")))
+        root = etree.fromstring(inner.read("word/document.xml"))
+        text = "".join(root.itertext())
+        assert "致：测试招标人" in text  # 填空（修订插入）
+        assert "我方已仔细研究采购文件全部内容。" in text  # 对应撰写内容已分配进响应函
+        assert "无偏离声明。" not in text  # 商务偏差内容不混入响应函
+        inner2 = zipfile.ZipFile(io.BytesIO(zf.read("商务文件/（二）商务偏差表.docx")))
+        text2 = "".join(etree.fromstring(inner2.read("word/document.xml")).itertext())
+        assert "无偏离声明。" in text2
+        assert "供货期" in text2  # 表格原文保留
+
+
 def test_export_requires_deliverable_export_permission(client):
     h, pid = _setup(client)
     _add_deliverable(client, h, pid, 1, {"nodes": [{"id": "n1", "text": "商务"}]})
