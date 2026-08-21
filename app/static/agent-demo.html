@@ -180,6 +180,9 @@ async function poll(){
     const prog = d.progress || {};
     log(`任务 #${taskId} status=${d.status} ${prog.current_work || ""}`);
     if(d.result && d.result.session_id) log("会话 session_id=" + d.result.session_id + "（可恢复）");
+    if(d.result && d.result.outcome === "incomplete"){
+      log("⚠ 主会话判定未闭环（如实标注）：" + (d.result.reason || ""));
+    }
     if(d.error) log("错误: " + JSON.stringify(d.error).slice(0,300));
     if([3,4,5,6].includes(d.status)) break;
   }
