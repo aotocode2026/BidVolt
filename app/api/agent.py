@@ -68,12 +68,34 @@ async def agent_run(
     idempotency_key = body.get("idempotency_key")
     if not idempotency_key:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 idempotency_key")
+    payload = dict(body.get("payload") or {})
+    resume_from_task_id = body.get("resume_from_task_id")
+    if resume_from_task_id is not None:
+        # 续跑上一单：校验上一任务归属与类型，取其会话 id 注入 payload
+        prev = await session.scalar(
+            select(Task).where(
+                Task.id == int(resume_from_task_id),
+                Task.enterprise_id == user.enterprise_id,
+                Task.project_id == project_id,
+                Task.task_type == TaskType.AGENT_PIPELINE,
+            )
+        )
+        if prev is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="要续跑的任务不存在或不属于本项目")
+        prev_sid = (prev.result or {}).get("session_id")
+        if not prev_sid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="要续跑的任务没有可恢复的主会话（可能未完成或未产出会话），请改为普通发起。",
+            )
+        payload["resume_from_task_id"] = int(resume_from_task_id)
+        payload["resume_session_id"] = prev_sid
     task, created = await create_task(
         session,
         enterprise_id=user.enterprise_id,
         project_id=project_id,
         task_type=TaskType.AGENT_PIPELINE,
-        payload=body.get("payload") or {},
+        payload=payload,
         idempotency_key=idempotency_key,
     )
     await session.commit()
@@ -81,6 +103,8 @@ async def agent_run(
         "task_id": task.id,
         "status": task.status,
         "created": created,
+        "resume_from_task_id": resume_from_task_id,
+        "resume_session_id": payload.get("resume_session_id"),
         "progress": public_event(task),
         "capability_token": issue_capability(
             enterprise_id=user.enterprise_id,
