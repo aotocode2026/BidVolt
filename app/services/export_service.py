@@ -718,9 +718,9 @@ def _safe_filename(title: str, max_len: int = 40) -> str:
     return name[:max_len] or "条目"
 
 
-def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supplier, extra_nodes, tender_no: str = "") -> bytes:
-    """组装一份条目文件：底稿中该条目区间原文整段复制（保留格式）+ 填空（修订批注）
-    + 对应撰写内容（修订插入+批注）。未定位到区间的条目用清单内容重建。"""
+def _build_item_document(source_path, row, elements):
+    """条目文件骨架：底稿中该条目区间原文整段复制（保留格式）；未定位到区间的条目
+    按清单内容重建。返回 (Document, located)。"""
     import copy as _copy
 
     from docx import Document
@@ -734,6 +734,7 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
     # 模板切片必须插在 sectPr 之前（OOXML：sectPr 是 body 最后一个元素；
     # 插在其后 Word 会忽略内容，导致首空白页+正文丢失）
     sect_pr = body.find(qn("w:sectPr"))
+    located = bool(elements)
     if elements:
         for kind, el in elements:
             node = _copy.deepcopy(el)
@@ -755,6 +756,109 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
                     cell.paragraphs[0].add_run(str(rrow[ci]) if ci < len(rrow) else "")
         elif (row.content or "").strip():
             new.add_paragraph(str(row.content).strip())
+    return new, located
+
+
+def locate_item_elements(source_path, row) -> list | None:
+    """定位单条模板条目在底稿中的元素区间（大纲级别优先，行级清单兜底）。
+    找不到返回 None（调用方按清单内容重建并如实标注）。"""
+    from docx import Document
+
+    src_doc = Document(str(source_path))
+    role = (row.structured or {}).get("role")
+    if role in ("price", "business", "technical"):
+        slices = _locate_item_slices(src_doc, {role: [row]})
+        for _heading, elems in slices.get(role, []):
+            return elems
+        row_slices = _locate_item_slices_by_rows(src_doc, {role: [row]})
+        for _r, elems in row_slices.get(role, []):
+            if _r.id == row.id:
+                return elems
+    return None
+
+
+def check_doc_fidelity(doc, source_text: str) -> dict:
+    """逐字忠实性校验：条目文件原文（含修订删除线，剔除 w:ins）必须逐字包含于底稿原文。
+    返回 {ok, original_chars, inserted_chars, deleted_chars, issues:[…]}。"""
+    from lxml import etree as _etree
+
+    W = "{%s}" % "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    root = doc.element  # CT_Document
+
+    def _inside(el, tag) -> bool:
+        a = el.getparent()
+        while a is not None:
+            if a.tag == W + tag:
+                return True
+            a = a.getparent()
+        return False
+
+    def _norm(s: str) -> str:
+        return "".join(s.split())
+
+    parts: list[str] = []
+    ins_chars = 0
+    del_chars = 0
+    for el in root.iter():
+        if _inside(el, "ins"):
+            if el.tag == W + "t" and el.text:
+                ins_chars += len(el.text)
+            continue
+        if el.tag == W + "t" and el.text:
+            parts.append(el.text)
+        elif el.tag == W + "delText" and el.text:
+            del_chars += len(el.text)
+            parts.append(el.text)
+        if el.tail:
+            parts.append(el.tail)
+    original = "".join(parts)
+    n_orig = _norm(original)
+    src_norm = _norm(source_text)
+    issues: list[str] = []
+    ok = True
+    if n_orig and n_orig not in src_norm:
+        ok = False
+        for i in range(0, len(n_orig) - 9, 10):
+            if n_orig[i:i + 10] not in src_norm:
+                issues.append(f"首个差异片段：{n_orig[max(0, i - 15):i + 15]!r}")
+                break
+        else:
+            issues.append("原文与底稿不一致（空白/字符归一化差异）")
+    return {
+        "ok": ok,
+        "original_chars": len(n_orig),
+        "inserted_chars": ins_chars,
+        "deleted_chars": del_chars,
+        "issues": issues,
+    }
+
+
+def replace_text_tracked(editor, find: str, value: str, comment: str | None) -> int:
+    """显式定向填空：把文档中出现的 find 原文替换为 value（修订模式+批注）。
+    支持跨 run 的整段匹配；复用调用方持久 editor（批注 id 全局连续）；返回替换处数。"""
+    if not find:
+        return 0
+    from docx.oxml.ns import qn as _qn
+
+    replaced = 0
+    for p_el in editor._doc.element.body.iter(_qn("w:p")):
+        t_nodes = list(p_el.iter(_qn("w:t")))
+        if not t_nodes:
+            continue
+        full = "".join(t.text or "" for t in t_nodes)
+        if find not in full:
+            continue
+        # 整段替换（跨 run 拆分复杂度交给 track_paragraph_replace）
+        new_full = full.replace(find, value)
+        editor.track_paragraph_replace(t_nodes, full, new_full, comment or "系统按主会话指令回填，请人工复核。")
+        replaced += full.count(find)
+    return replaced
+
+
+def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supplier, extra_nodes, tender_no: str = "") -> bytes:
+    """组装一份条目文件：底稿中该条目区间原文整段复制（保留格式）+ 填空（修订批注）
+    + 对应撰写内容（修订插入+批注）。未定位到区间的条目用清单内容重建。"""
+    new, located = _build_item_document(source_path, row, elements)
     sess = _FillSession(new, buyer, project_name, supplier, tender_no)
     sess.apply_to_doc()
     if extra_nodes:
@@ -764,7 +868,7 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
             comment="本节为系统针对本条目撰写的响应内容（依据招标文件要求与企业资料，未知处标【待补充】），"
                     "以修订插入标记，请人工复核后确认。",
         )
-    elif row is not None and elements is None:
+    elif row is not None and not located:
         sess.editor.add_comment("该条目在底稿中未定位到原文区间，本文件按解析清单内容重建（可能不完整），"
                                 "请对照采购文件原件核对。")
     return sess.finish()

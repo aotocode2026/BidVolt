@@ -43,6 +43,16 @@ TOOL_PERMISSION: dict[str, str] = {
     "upsert_enterprise_facts": Permission.PROJECT_EDIT,
     "search_knowledge": Permission.FILE_READ,
     "create_deliverable": Permission.DELIVERABLE_EDIT,
+    # 成文工具链（新方案）：机制工具，读底稿/写产物
+    "resolve_template_draft": Permission.FILE_READ,
+    "get_template_outline": Permission.FILE_READ,
+    "slice_template_item": Permission.DELIVERABLE_EXPORT,
+    "fill_template_slice": Permission.DELIVERABLE_EXPORT,
+    "append_template_slice": Permission.DELIVERABLE_EXPORT,
+    "verify_template_slice": Permission.FILE_READ,
+    "seal_template_item": Permission.DELIVERABLE_EXPORT,
+    "build_quote_xlsx": Permission.DELIVERABLE_EXPORT,
+    "package_response_zip": Permission.DELIVERABLE_EXPORT,
 }
 
 

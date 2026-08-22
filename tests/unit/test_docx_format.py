@@ -201,6 +201,53 @@ def test_labeled_space_blank_fill():
     assert _count_el(data, "delText") > 0
 
 
+def test_assembly_primitives_roundtrip(tmp_path):
+    """成文工具链机制原语：切片→填空→校验→封存 一轮闭环（旧路径不动）。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    from app.services.export_service import (
+        _FillSession,
+        _build_item_document,
+        check_doc_fidelity,
+        replace_text_tracked,
+    )
+
+    src = Document()
+    src.add_paragraph("（一）响应函及报价汇总表")
+    src.add_paragraph("1. 我方已仔细研究了采购编号：    ，项目名称：   ，包名称：   采购文件。")
+    p = tmp_path / "src.docx"
+    src.save(str(p))
+
+    src2 = Document(str(p))
+    elems = [("p", el) for el in src2.element.body.iterchildren() if el.tag == qn("w:p")]
+    doc, located = _build_item_document(str(p), None, elems)
+    assert located is True
+
+    # 填空（标准字段 + 显式定向替换）
+    sess = _FillSession(doc, "采购人甲", "项目乙", "供应商丙", "412623-1")
+    sess.apply_to_doc()
+    n = replace_text_tracked(sess.editor, "包名称：【待补充：包名称】", "包名称：包A", "主会话指定应答分包")
+    assert n == 1
+
+    # 校验：原文⊂底稿必须通过（删除线保留原文，插入不算改写）
+    import zipfile as _z
+
+    from lxml import etree as _e
+
+    with _z.ZipFile(str(p)) as zf:
+        src_text = "".join(_e.fromstring(zf.read("word/document.xml")).itertext())
+    r = check_doc_fidelity(doc, src_text)
+    assert r["ok"] is True, r["issues"]
+
+    data = sess.finish()
+    joined = _all_text(data)
+    assert "采购编号：412623-1" in joined
+    assert "项目名称：项目乙" in joined
+    assert "包名称：包A" in joined
+    assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 

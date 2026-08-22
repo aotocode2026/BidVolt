@@ -678,3 +678,10 @@ def call_tool(name: str, args: dict) -> Any:
 
 def tool_schemas() -> list[dict]:
     return [{k: v for k, v in d.items() if k != "handler"} for d in TOOL_DEFS]
+
+
+# 成文工具链（新方案）：主会话自主成文的机制工具——追加注册进同一注册表。
+# 放在文件末尾避免与上方定义互相干扰（assembly_tools 只读 _get/_headers/_post 依赖）。
+from bidvolt_mcp import assembly_tools as _assembly_tools  # noqa: E402
+
+_assembly_tools.register_assembly_tools()

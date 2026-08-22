@@ -83,6 +83,16 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "save_material_match_results",
         "list_material_matches",
         "search_knowledge",
+        # 成文工具链（主会话自主成文：切片→填空→追加→校验→封存→打包）
+        "resolve_template_draft",
+        "get_template_outline",
+        "slice_template_item",
+        "fill_template_slice",
+        "append_template_slice",
+        "verify_template_slice",
+        "seal_template_item",
+        "build_quote_xlsx",
+        "package_response_zip",
     },
     "mock_evaluate": {
         "get_deliverable_content",
