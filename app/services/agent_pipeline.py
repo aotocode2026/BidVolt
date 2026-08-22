@@ -177,6 +177,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "（list_requirements / list_project_materials / get_deliverable_content / search_assets），"
             "对照上一轮的总结与【待补充】清单，从断点继续推进解析→撰写→校验→评审→成文→打包。"
             "流程与守则见预载 skill（bidvolt-agent-pipeline）。"
+            "成文要点：fill_template_slice 的 fields 必填四个值——buyer=采购人、project_name=项目名称、"
+            "tender_no=采购编号、supplier=响应供应商企业名称（取企业资料库 supplier_name 事实，search_assets 可查；"
+            "没有则留空标【待补充】）；企业其他事实（法人/信用代码/地址/电话/业绩/人员）放进 append 的撰写内容；"
+            "封存前逐份 verify_template_slice。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
