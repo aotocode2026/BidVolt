@@ -158,7 +158,7 @@ class _FillSession:
     """一次成文的填空会话：修订模式填空 + 批注来源 + 补充内容追加。
     整本成文（docx_from_template）与逐份成文（响应文件包）共用同一套规则。"""
 
-    def __init__(self, doc, buyer: str, project_name: str, supplier: str):
+    def __init__(self, doc, buyer: str, project_name: str, supplier: str, tender_no: str = ""):
         import re as _re
 
         from docx.oxml import OxmlElement as _OxmlElement
@@ -170,6 +170,7 @@ class _FillSession:
         self.buyer = buyer
         self.project_name = project_name
         self.supplier = supplier
+        self.tender_no = tender_no
         self._re = _re
         self._qn = qn
         self._Pt = Pt
@@ -177,6 +178,15 @@ class _FillSession:
             "（采购人）", "（响应供应商名称）", "（项目名称）",
             "【招标人名称】", "【供应商名称】", "【项目名称】",
         )
+        # 带标签空位（模板空位为空格/无下划线形态，如"采购编号：    ，"与"包名称：   采购文件"）：
+        # P1 = 标签后直接是标点/行尾（空位零宽）；P2 = 标签后有空白再跟正文
+        _labels = (
+            "采购编号|项目名称|分标名称|分标编号|包名称|包号|响应供应商|单位地址|"
+            "法定代表人（单位负责人）或授权代表|法定代表人（单位负责人）|法定代表人|"
+            "邮政编码|电话|传真|日期"
+        )
+        self._LABEL_P1 = _re.compile(rf"({_labels})[：:]\s*(?=[，,。;；）)（(]|$)")
+        self._LABEL_P2 = _re.compile(rf"({_labels})[：:][ \u3000]+(?=[^，,。;；）)\s])")
         # Word 显示修订标记的前提：settings.xml 须含 <w:trackChanges/>，
         # 否则 w:ins/w:del 会被当作普通文本（插入可见、删除被吞）。
         settings_el = doc.settings.element
@@ -187,6 +197,16 @@ class _FillSession:
                 default_tab.addprevious(tc)
             else:
                 settings_el.append(tc)
+
+    def _labeled_value(self, label: str) -> str:
+        """带标签空位的回填值：有资料填值；无资料原位【待补充：标签】（不编造）。"""
+        if label == "采购编号":
+            return self.tender_no or "【待补充：采购编号】"
+        if label == "项目名称":
+            return self.project_name or "【待补充：项目名称】"
+        if label == "响应供应商":
+            return self.supplier or "【待补充：供应商名称】"
+        return f"【待补充：{label}】"
 
     def fill(self, text: str) -> str:
         _re = self._re
@@ -219,6 +239,12 @@ class _FillSession:
             out = _re.sub(r"项目名称[：:]\s*【待补充】", f"项目名称：{project_name}", out)
         if buyer:
             out = _re.sub(r"(?:招标人|采购人)[：:]\s*【待补充】", f"招标人：{buyer}", out)
+        # 带标签空位（空格/零宽形态）：有资料回填，无资料原位【待补充：标签】
+        def _rep(m):
+            return f"{m.group(1)}：{self._labeled_value(m.group(1))}"
+
+        out = self._LABEL_P1.sub(_rep, out)
+        out = self._LABEL_P2.sub(_rep, out)
         return out
 
     def comment(self, old: str, new: str) -> str:
@@ -233,6 +259,10 @@ class _FillSession:
             filled.append(f"供应商=「{supplier}」（来源：企业资料-企业名称）")
         if ("（项目名称）" in old or "【项目名称】" in old or "项目名称：" in old) and project_name:
             filled.append(f"项目名称=「{project_name}」（来源：招标文件封面/采购公告，系统确定性提取）")
+        if "采购编号" in old and self.tender_no:
+            filled.append(f"采购编号=「{self.tender_no}」（来源：招标文件封面/采购公告，系统确定性提取）")
+        if self._re.search(r"(分标名称|分标编号|包名称|包号)[：:]", old) and "【待补充" in new:
+            filled.append("分标/包 信息未指定应答分包，原位标注【待补充】（按所应答分包填写）")
         if filled:
             if "【待补充" in new:
                 return (
@@ -259,7 +289,13 @@ class _FillSession:
                 return
             full = "".join(t.text or "" for t in t_nodes)
             bare_zhia = bool(_re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", full))
-            if not any(k in full for k in keys) and not _re.search(r"_{2,}", full) and not bare_zhia:
+            has_label_blank = bool(self._LABEL_P1.search(full) or self._LABEL_P2.search(full))
+            if (
+                not any(k in full for k in keys)
+                and not _re.search(r"_{2,}", full)
+                and not bare_zhia
+                and not has_label_blank
+            ):
                 return
             cross = False
             for k in keys:
@@ -275,6 +311,8 @@ class _FillSession:
                 cross = True  # 带标签空位常跨 run，整段处理
             if _re.search(r"_{2,}\s*[（(【]\s*(?:项目名称|采购人|响应供应商名称|招标人名称|供应商名称)\s*[）)】]", full):
                 cross = True  # 标签紧邻空位必须整段整体回填
+            if has_label_blank:
+                cross = True  # 带标签空位（空格/零宽）跨 run 常见，整段整体回填
             if cross:
                 new_full = fill(full)
                 if new_full != full:
@@ -297,6 +335,8 @@ class _FillSession:
                 any(k in text for k in keys)
                 or _re.search(r"_{2,}", text)
                 or _re.search(r"(?m)^致[：:]\s*(?:采购人|招标人)\s*$", text)
+                or self._LABEL_P1.search(text)
+                or self._LABEL_P2.search(text)
             ):
                 new = fill(text)
                 if new != text:
@@ -375,6 +415,7 @@ def docx_from_template(source_path, model: dict) -> bytes:
         str(model.get("buyer") or "").strip(),
         str(model.get("project_name") or "").strip(),
         str(model.get("supplier_name") or "").strip(),
+        str(model.get("tender_no") or "").strip(),
     )
     sess.apply_to_doc()
     sess.append_supplement(
@@ -677,7 +718,7 @@ def _safe_filename(title: str, max_len: int = 40) -> str:
     return name[:max_len] or "条目"
 
 
-def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supplier, extra_nodes) -> bytes:
+def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supplier, extra_nodes, tender_no: str = "") -> bytes:
     """组装一份条目文件：底稿中该条目区间原文整段复制（保留格式）+ 填空（修订批注）
     + 对应撰写内容（修订插入+批注）。未定位到区间的条目用清单内容重建。"""
     import copy as _copy
@@ -714,7 +755,7 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
                     cell.paragraphs[0].add_run(str(rrow[ci]) if ci < len(rrow) else "")
         elif (row.content or "").strip():
             new.add_paragraph(str(row.content).strip())
-    sess = _FillSession(new, buyer, project_name, supplier)
+    sess = _FillSession(new, buyer, project_name, supplier, tender_no)
     sess.apply_to_doc()
     if extra_nodes:
         sess.append_supplement(
@@ -857,6 +898,28 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
             tech_nodes = model.get("supplement_nodes") or []
         elif d.deliverable_type == 3:
             quote_model = model
+
+    # 采购编号：从已解析要求里确定性提取（封面/公告均带"采购编号"字样）
+    tender_no = ""
+    try:
+        import re as _re3
+
+        all_reqs = (
+            await session.scalars(
+                sa_select(Requirement).where(
+                    Requirement.enterprise_id == enterprise_id,
+                    Requirement.project_id == project_id,
+                    Requirement.current.is_(True),
+                )
+            )
+        ).all()
+        for r in all_reqs:
+            m = _re3.search(r"采购编号[：: ]*([A-Za-z0-9][A-Za-z0-9\-]*)", r.content or "")
+            if m and m.group(1) and not _re3.search(r"[，,、；;。]", m.group(1)):
+                tender_no = m.group(1)
+                break
+    except Exception:  # noqa: BLE001
+        tender_no = ""
     if not buyer or not project_name:
         project = await session.get(Project, int(project_id))
         if project is not None:
@@ -897,6 +960,7 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                         source_path, None, elems,
                         buyer=buyer, project_name=project_name, supplier=supplier,
                         extra_nodes=matched_map[idx] if idx < len(matched_map) else [],
+                        tender_no=tender_no,
                     )
                     name = f"{dir_name}/{_safe_filename(_clean_item_name(heading))}.docx"
                     zf.writestr(name, data)
@@ -914,6 +978,7 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                         source_path, r, elems,
                         buyer=buyer, project_name=project_name, supplier=supplier,
                         extra_nodes=matched_map[idx] if idx < len(matched_map) else [],
+                        tender_no=tender_no,
                     )
                     name = f"{dir_name}/{_safe_filename(r.content)}.docx"
                     zf.writestr(name, data)
@@ -923,6 +988,7 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                     source_path, None, None,
                     buyer=buyer, project_name=project_name, supplier=supplier,
                     extra_nodes=rest_nodes,
+                    tender_no=tender_no,
                 )
                 name = f"{dir_name}/补充响应内容.docx"
                 zf.writestr(name, data)
