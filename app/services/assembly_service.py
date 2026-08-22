@@ -99,7 +99,11 @@ async def list_draft_candidates(session: AsyncSession, enterprise_id: int, proje
 
 async def get_template_outline(session: AsyncSession, enterprise_id: int, project_id: int) -> dict:
     """模板清单：《响应文件格式》条目（doc_template），按 价格/商务/技术 分组排序。
-    每项带 req_id（后续 slice_template_item 的 item_ref）。"""
+    每项带 req_id（后续 slice_template_item 的 item_ref）与 is_file_item 标记：
+    is_file_item=true = 真实成文条目（（一）（二）…编号条目，必须逐份成文），
+    is_file_item=false = 结构/指引行（分册标题、上传路径说明等，不单独成文）。"""
+    import re as _re
+
     from sqlalchemy import select as sa_select
 
     from app.models.requirement import Requirement
@@ -123,11 +127,21 @@ async def get_template_outline(session: AsyncSession, enterprise_id: int, projec
                 order = int(order)
             except (TypeError, ValueError):
                 order = 99999
+            title = (r.content or "").split("\n")[0].strip()
+            # 真实成文条目 = 全角中文数字编号（（一）（二）…）的短标题行
+            # （与底稿 outlineLvl=2 条目一致，阈值同切分器的短标题标准）；
+            # 正文条款（（1）…、以冒号结尾的长句）与"标题+上传路径说明"登记行都不算。
+            is_item = bool(
+                _re.match(r"^[（(]\s*[一二三四五六七八九十百]+\s*[）)]", title)
+                and len(title) <= 24
+                and not title.endswith(("：", ":"))
+            )
             items_by_role[role].append(
                 {
                     "req_id": r.id,
-                    "title": (r.content or "").split("\n")[0][:80],
+                    "title": title[:80],
                     "order": order,
+                    "is_file_item": is_item,
                 }
             )
     for role in items_by_role:
