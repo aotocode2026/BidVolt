@@ -143,7 +143,21 @@ async def agent_run_stream(
                 yield f"event: message\ndata: {json.dumps({'seq': r.seq, 'kind': r.kind, 'content': r.content}, ensure_ascii=False)}\n\n"
             await session.refresh(task)
             if task.status in terminal:
-                yield f"event: end\ndata: {json.dumps({'status': task.status, 'session_id': (task.result or {}).get('session_id')}, ensure_ascii=False)}\n\n"
+                r = task.result or {}
+                yield (
+                    "event: end\ndata: "
+                    + json.dumps(
+                        {
+                            "status": task.status,
+                            "session_id": r.get("session_id"),
+                            "outcome": r.get("outcome"),
+                            "reason": r.get("reason"),
+                            "error": task.error,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
                 break
             await asyncio.sleep(1)
 
