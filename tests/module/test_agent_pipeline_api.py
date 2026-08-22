@@ -72,6 +72,66 @@ def test_agent_run_enabled_creates_isolated_task(client, monkeypatch):
     assert t.status_code == 201
 
 
+def test_agent_run_resume_validation(client, monkeypatch):
+    """续跑上一单：校验归属/类型/会话可得性；注入 resume_session_id；跨项目 404。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    h, pid = _setup(client)
+
+    # 没有可续跑任务 → 404
+    r = client.post(
+        f"/api/v1/projects/{pid}/agent-run",
+        json={"idempotency_key": "r1", "payload": {}, "resume_from_task_id": 999999},
+        headers=h,
+    )
+    assert r.status_code == 404
+
+    # 建一单并给其 result 塞 session_id（模拟已完成主会话）
+    r = client.post(
+        f"/api/v1/projects/{pid}/agent-run",
+        json={"idempotency_key": "r2", "payload": {}},
+        headers=h,
+    )
+    first_task = r.json()["task_id"]
+
+    import asyncio
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models.task import Task
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _set_sid():
+        async with maker() as session:
+            t = await session.scalar(select(Task).where(Task.id == first_task))
+            t.result = {"session_id": "sess-abc"}
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_set_sid())
+
+    # 续跑 → 201 且响应/载荷携带 resume 信息
+    r2 = client.post(
+        f"/api/v1/projects/{pid}/agent-run",
+        json={"idempotency_key": "r3", "payload": {}, "resume_from_task_id": first_task},
+        headers=h,
+    )
+    assert r2.status_code == 201
+    assert r2.json()["resume_session_id"] == "sess-abc"
+    assert r2.json()["resume_from_task_id"] == first_task
+
+    # 跨项目续跑 → 404（上一任务不属于该项目）
+    pid2 = client.post("/api/v1/projects", json={"name": "B项目"}, headers=h).json()["project_id"]
+    r3 = client.post(
+        f"/api/v1/projects/{pid2}/agent-run",
+        json={"idempotency_key": "r4", "payload": {}, "resume_from_task_id": first_task},
+        headers=h,
+    )
+    assert r3.status_code == 404
+
+
 def test_response_package_branching_for_agent_task(client, monkeypatch):
     """新方案：response-package 只取主会话打包好的 zip；未打包 409 指引；有 zip 直接返回。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)

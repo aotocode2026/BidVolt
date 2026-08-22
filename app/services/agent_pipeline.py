@@ -167,14 +167,28 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         task_id=task.id,
         task_type=TaskType.AGENT_PIPELINE,
     )
-    prompt = (
-        f"请为项目 {task.project_id} 执行投标工作台端到端流程：解析→撰写→校验→评审→交付。"
-        "流程与守则见预载 skill（bidvolt-agent-pipeline）；用 todo 列计划，"
-        "用 delegate_task 派子任务（子 agent 结果会自动回到本会话，派完继续推进，不要停下来等），"
-        "验收不通过带报告修复，全部满足后再输出。"
-        f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
-        f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
-    )
+    payload = task.payload or {}
+    resume_session_id = str(payload.get("resume_session_id") or "").strip() or None
+    resume_from_task = payload.get("resume_from_task_id")
+    if resume_session_id:
+        prompt = (
+            f"这是对上一轮主会话任务（id={resume_from_task or '上一单'}）的【续跑】，沿用同一会话上下文。"
+            "项目数据可能已更新（如新增/更换材料、补录企业资料）：请先用 MCP 工具重新核实项目现状"
+            "（list_requirements / list_project_materials / get_deliverable_content / search_assets），"
+            "对照上一轮的总结与【待补充】清单，从断点继续推进解析→撰写→校验→评审→成文→打包。"
+            "流程与守则见预载 skill（bidvolt-agent-pipeline）。"
+            f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
+            f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
+        )
+    else:
+        prompt = (
+            f"请为项目 {task.project_id} 执行投标工作台端到端流程：解析→撰写→校验→评审→交付。"
+            "流程与守则见预载 skill（bidvolt-agent-pipeline）；用 todo 列计划，"
+            "用 delegate_task 派子任务（子 agent 结果会自动回到本会话，派完继续推进，不要停下来等），"
+            "验收不通过带报告修复，全部满足后再输出。"
+            f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
+            f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
+        )
     env = _hermes_env(cap)
     _write_cap_file(cap)
 
@@ -220,6 +234,15 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         session_id: str | None = resume_sid
         round_marker: str | None = None
         marker_poll_at = 0.0
+        # 续跑基线：旧会话里已有消息（含上一单回执）不算本轮完成
+        marker_min_index = 0
+        if resume_sid:
+            try:
+                marker_min_index = await asyncio.wait_for(
+                    _poll_session_message_count(hermes_bin, env, resume_sid), timeout=60
+                )
+            except Exception:  # noqa: BLE001 基线取不到就按 0（宁可多等一轮催办）
+                marker_min_index = 0
 
         def _submit(text: str) -> None:
             echo_texts.add(text)
@@ -283,7 +306,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     marker_poll_at = loop.time()
                     try:
                         round_marker = await asyncio.wait_for(
-                            _poll_session_marker(hermes_bin, env, session_id), timeout=60
+                            _poll_session_marker(hermes_bin, env, session_id, marker_min_index), timeout=60
                         )
                     except Exception:  # noqa: BLE001 会话库读取瞬时失败下次再试
                         round_marker = None
@@ -350,7 +373,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         return round_marker, session_id
 
     # 第一轮 + 最多 RESUME_ROUNDS 轮自动续跑（主会话提前退出时）
-    marker, sid = await _run_repl_round(resume_sid=None, first_message=prompt)
+    marker, sid = await _run_repl_round(resume_sid=resume_session_id, first_message=prompt)
     _, tail = await _repl_session_state(session, task)
     resume_rounds = 0
     continuation = ""
@@ -415,9 +438,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         )
 
 
-async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str) -> str | None:
-    """读 Hermes 会话库：主会话最后一条 assistant 回复若带完成标记则返回该标记。
-    判据来自会话库原文（模型真实回复），与终端显示回显无关。"""
+async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str, min_index: int = 0) -> str | None:
+    """读 Hermes 会话库：最后一条 assistant 回复若带完成标记则返回该标记。
+    判据来自会话库原文（模型真实回复），与终端显示回显无关。
+    min_index：只看该下标之后的 assistant 消息（续跑时跳过上一单的旧回执）。"""
     import json  # noqa: PLC0415
 
     proc = await asyncio.create_subprocess_exec(
@@ -434,7 +458,8 @@ async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str) -> s
     except ValueError:
         return None
     messages = data.get("messages") or []
-    for m in reversed(messages):
+    for idx in range(len(messages) - 1, min_index - 1, -1):
+        m = messages[idx]
         if m.get("role") != "assistant":
             continue
         content = str(m.get("content") or "")
@@ -444,6 +469,26 @@ async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str) -> s
             return MARK_INCOMPLETE
         break  # 只看最后一条 assistant 回复
     return None
+
+
+async def _poll_session_message_count(hermes_bin: str, env: dict, session_id: str) -> int:
+    """读会话库当前消息总数（续跑基线：旧消息里的回执不算本轮完成）。"""
+    import json  # noqa: PLC0415
+
+    proc = await asyncio.create_subprocess_exec(
+        hermes_bin, "sessions", "export", "--session-id", session_id, "--format", "jsonl", "-",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        env=env, cwd=env["HERMES_HOME"],
+    )
+    out, _ = await proc.communicate()
+    lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()]
+    if not lines:
+        return 0
+    try:
+        data = json.loads(lines[-1])
+        return int(data.get("message_count") or len(data.get("messages") or []))
+    except (ValueError, TypeError):
+        return 0
 
 
 async def _repl_session_state(session: AsyncSession, task: Task) -> tuple[str | None, str]:

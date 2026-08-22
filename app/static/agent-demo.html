@@ -33,6 +33,7 @@ input{padding:6px;margin:4px;width:280px}
 </div>
 <div>
   <button onclick="agentRun()">▶ Agent 主会话（端到端）</button>
+  <button onclick="agentRunResume()">↻ 续跑上次主会话</button>
   <button onclick="refreshTask()">刷新任务状态</button>
   <button onclick="openConsole()">打开会话控制台</button>
   <button onclick="downloadPackage()">下载响应文件包</button>
@@ -54,6 +55,7 @@ let taskId = localStorage.getItem("bidvolt_agent_task") || "";
 let consoleSeq = 0;
 let consoleAbort = null;
 let bannerState = "idle"; // running | final
+let lastTaskId = localStorage.getItem("bidvolt_agent_last_task") || "";
 const BASE = location.origin;
 
 function log(s){document.getElementById("log").innerText += "\n" + s;}
@@ -225,7 +227,17 @@ async function upload(){
 }
 async function agentRun(){
   const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}});
+  startRun(d);
+}
+async function agentRunResume(){
+  if(!lastTaskId){ log("没有可续跑的任务（先跑一单）"); return; }
+  const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}, resume_from_task_id: Number(lastTaskId)});
+  log("已发起续跑：沿用上一单会话（resume_session_id=" + (d.resume_session_id || "") + "）");
+  startRun(d);
+}
+function startRun(d){
   taskId = d.task_id; localStorage.setItem("bidvolt_agent_task", String(taskId));
+  lastTaskId = String(taskId); localStorage.setItem("bidvolt_agent_last_task", lastTaskId);
   log("Agent 主会话任务 #" + taskId + " 已提交（task_type=agent_pipeline）");
   bannerState = "running";
   showBanner("info", "⏳ 主会话启动中…");
