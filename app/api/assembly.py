@@ -20,6 +20,20 @@ from app.services import assembly_service
 router = APIRouter(prefix="/projects", tags=["agent-assembly"])
 
 
+async def _ensure_project(session: AsyncSession, enterprise_id: int, project_id: int) -> None:
+    """项目归属校验：跨企业/不存在项目一律 404（与其他端点一致，杜绝项目 id 探测）。"""
+    from app.models.project import Project
+
+    project = await session.scalar(
+        select(Project).where(
+            Project.id == project_id,
+            Project.enterprise_id == enterprise_id,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+
+
 def _cap_task(request: Request) -> int:
     payload = getattr(request.state, "cap_payload", None)
     if payload is None:
@@ -33,6 +47,7 @@ async def resolve_template_draft(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("resolve_template_draft")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     return await assembly_service.list_draft_candidates(session, user.enterprise_id, project_id)
 
 
@@ -42,6 +57,7 @@ async def get_template_outline(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_template_outline")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     return await assembly_service.get_template_outline(session, user.enterprise_id, project_id)
 
 
@@ -53,6 +69,7 @@ async def slice_template_item(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("slice_template_item")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return await assembly_service.create_slice(
             session,
@@ -72,8 +89,10 @@ async def fill_template_slice(
     slice_id: str,
     body: dict,
     request: Request,
+    session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("fill_template_slice")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return assembly_service.fill_slice(slice_id, _cap_task(request), body.get("fields"), body.get("fills"))
     except ValueError as exc:
@@ -86,8 +105,10 @@ async def append_template_slice(
     slice_id: str,
     body: dict,
     request: Request,
+    session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("append_template_slice")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return assembly_service.append_slice(slice_id, _cap_task(request), body.get("nodes"), body.get("comment"))
     except ValueError as exc:
@@ -99,8 +120,10 @@ async def verify_template_slice(
     project_id: int,
     slice_id: str,
     request: Request,
+    session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("verify_template_slice")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return assembly_service.verify_slice(slice_id, _cap_task(request))
     except ValueError as exc:
@@ -116,6 +139,7 @@ async def seal_template_item(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("seal_template_item")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return await assembly_service.seal_slice(
             session,
@@ -136,6 +160,7 @@ async def build_quote_xlsx(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("build_quote_xlsx")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     return await assembly_service.quote_xlsx(
         session,
         user.enterprise_id,
@@ -153,6 +178,7 @@ async def package_response_zip(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("package_response_zip")),
 ) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return await assembly_service.package_zip(
             session,
@@ -173,6 +199,7 @@ async def download_artifact(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
 ) -> Response:
+    await _ensure_project(session, user.enterprise_id, project_id)
     art = await session.scalar(
         select(AgentArtifact).where(
             AgentArtifact.id == artifact_id,
