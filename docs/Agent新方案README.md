@@ -31,7 +31,7 @@ API 层（FastAPI） ── 签发任务级 capability token（企业/项目/任
         │ ② 任务入队（task_type=agent_pipeline）
         ▼
 Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主会话（hermes chat --cli）
-   ▲                          -t bidvolt,todo,delegation,file
+   ▲                          -t bidvolt,todo,delegation,file,vision
    │                          -s bidvolt-agent-pipeline
    │  事件流（AgentSessionEvent）          │ ④ 自主编排
    │  ◀──────── 服务指令 / 主会话输出 ─────┤    todo 计划（A分析→B提取→C校验→D撰写→E校验→F评审→G交付）
@@ -67,7 +67,7 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 
 ## 4. 主会话运行机制（框架层契约）
 
-- **启动**：`hermes chat --cli -t bidvolt,todo,delegation,file -s bidvolt-agent-pipeline --no-restore-cwd --max-turns 120`，
+- **启动**：`hermes chat --cli -t bidvolt,todo,delegation,file,vision -s bidvolt-agent-pipeline --no-restore-cwd --max-turns 120`，
   以 PTY 方式长驻（顶层委派一律后台运行，结果作为新消息回流——进程必须活着，所以不能用 `-q` 单轮模式）。
 - **喂入**：就绪后（横幅出现 `Activated skills` + 提示符）以 bracketed-paste 方式提交任务书。
 - **事件流**：PTY 输出逐行剥 ANSI、去重复行，5s 节流批量落 `AgentSessionEvent`；控制台 SSE 回放+实时。
@@ -93,7 +93,7 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 - 每个任务签发一次性 capability token（HMAC 签名，默认 1h），绑定 企业/项目/任务 + MCP 工具白名单；
 - MCP 工具调用经 `verify_capability` 校验（签名/有效期/租户/白名单）；
 - 业务表 PostgreSQL FORCE RLS（`current_setting('app.enterprise_id')`），事件表同；
-- Hermes 侧仅授予 `bidvolt,todo,delegation,file` 工具集（file 用于读取委派全量报告，MCP 写操作仍受 token 限制）。
+- Hermes 侧仅授予 `bidvolt,todo,delegation,file,vision` 工具集（file 用于读取委派全量报告，vision 用于看图/图像理解；MCP 写操作仍受 token 限制）。
 
 ## 7. 部署要点（服务器）
 

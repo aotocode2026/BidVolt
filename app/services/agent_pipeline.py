@@ -197,7 +197,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
     base_args = [
         "chat", "--cli",
-        "-t", "bidvolt,todo,delegation,file",
+        "-t", "bidvolt,todo,delegation,file,vision",
         "-s", "bidvolt-agent-pipeline",
         "--no-restore-cwd", "--max-turns", "120",
     ]
@@ -499,7 +499,7 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
         try:
             proc = await asyncio.create_subprocess_exec(
                 hermes_bin, "chat", "-q", message,
-                "-t", "bidvolt,todo,delegation,file", "--resume", sid,
+                "-t", "bidvolt,todo,delegation,file,vision", "--resume", sid,
                 "--cli", "-Q", "--max-turns", "60", "--no-restore-cwd",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=env, cwd=env["HERMES_HOME"],
