@@ -166,6 +166,41 @@ def test_split_supplement_tolerates_string_nodes():
     assert rest == []
 
 
+def test_labeled_space_blank_fill():
+    """带标签空位（空格/零宽形态）：有资料回填、无资料原位【待补充】，全程修订模式。"""
+    from docx import Document
+
+    src = Document()
+    src.add_paragraph("1. 我方已仔细研究了采购编号：    ，项目名称：   ，分标名称：   ，包名称：   采购文件的全部内容。")
+    src.add_paragraph("响应供应商：")
+    src.add_paragraph("响应供应商：（盖章）")
+    src.add_paragraph("电话：")
+    src.add_paragraph("附表1 项目名称：，采购编号：，包号：，单位：万元人民币")
+    buf = io.BytesIO()
+    src.save(buf)
+    p = __import__("pathlib").Path(__import__("tempfile").gettempdir()) / "label_blank_src.docx"
+    p.write_bytes(buf.getvalue())
+
+    from app.services.export_service import _FillSession
+
+    doc = Document(str(p))
+    sess = _FillSession(doc, "采购人甲", "项目乙", "供应商丙", "412623-1")
+    sess.apply_to_doc()
+    data = sess.finish()
+
+    joined = _all_text(data)
+    assert "采购编号：412623-1，项目名称：项目乙，分标名称：【待补充：分标名称】，包名称：【待补充：包名称】采购文件的全部内容" in joined
+    assert "响应供应商：供应商丙" in joined
+    assert "响应供应商：供应商丙（盖章）" in joined
+    assert "电话：【待补充：电话】" in joined
+    assert "项目名称：项目乙，采购编号：412623-1，包号：【待补充：包号】，单位：万元人民币" in joined
+    # 修订模式 + 批注（改什么都留痕）
+    assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
+    assert "采购编号=「412623-1」" in _comment_texts(data)
+    # 原文保留：修订删除线里仍有模板原句（空格位原文）——删除线数量>0 即可（空格删除也留痕）
+    assert _count_el(data, "delText") > 0
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
