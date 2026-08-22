@@ -175,6 +175,7 @@ def test_labeled_space_blank_fill():
     src.add_paragraph("响应供应商：")
     src.add_paragraph("响应供应商：（盖章）")
     src.add_paragraph("电话：")
+    src.add_paragraph("法定地址：。")
     src.add_paragraph("附表1 项目名称：，采购编号：，包号：，单位：万元人民币")
     buf = io.BytesIO()
     src.save(buf)
@@ -193,6 +194,7 @@ def test_labeled_space_blank_fill():
     assert "响应供应商：供应商丙" in joined
     assert "响应供应商：供应商丙（盖章）" in joined
     assert "电话：【待补充：电话】" in joined
+    assert "法定地址：【待补充：法定地址】" in joined
     assert "项目名称：项目乙，采购编号：412623-1，包号：【待补充：包号】，单位：万元人民币" in joined
     # 修订模式 + 批注（改什么都留痕）
     assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
