@@ -53,6 +53,7 @@ let projectId = localStorage.getItem("bidvolt_agent_pid") || "";
 let taskId = localStorage.getItem("bidvolt_agent_task") || "";
 let consoleSeq = 0;
 let consoleAbort = null;
+let bannerState = "idle"; // running | final
 const BASE = location.origin;
 
 function log(s){document.getElementById("log").innerText += "\n" + s;}
@@ -74,7 +75,23 @@ function showBanner(kind, text){
   el.scrollIntoView();
 }
 
+/* 运行中横幅实时动态条：从事件流抽取主会话里程碑（不冒充精确百分比） */
+const MILESTONE = /plan\s+\d+\s+task|delegate_task|🔀|Background task|ASYNC DELEGATION|验收|评审|通过|PIPELINE|save_deliverable|create_deliverable|upsert_requirements|未闭环|待补充/;
+const SKIP_LINE = /^⚕|msg=interrupt|^\s*[0-9]+\s*$/;
+
+function tickerUpdate(kind, content){
+  if(bannerState !== "running") return;
+  if(kind !== "hermes") return;
+  const c = (content || "").trim();
+  if(!c || SKIP_LINE.test(c) || !MILESTONE.test(c)) return;
+  const line = c.length > 130 ? c.slice(0, 130) + "…" : c;
+  const el = document.getElementById("banner");
+  el.style.background = "#eef2f7"; el.style.color = "#3f5f85"; el.style.border = "2px solid #7a93b5";
+  el.innerText = "⏳ 主会话运行中 · 最新动态：" + line;
+}
+
 function bannerFromEnd(d){
+  bannerState = "final";
   if(d.error){
     const msg = (d.error && d.error.message) ? d.error.message : JSON.stringify(d.error);
     showBanner("failed", "❌ 任务执行失败：" + msg);
@@ -143,6 +160,7 @@ async function openConsole(){
         if(m[1] === "message"){
           const d = JSON.parse(m[2]);
           consoleAppend(d.seq, d.kind, d.content);
+          tickerUpdate(d.kind, d.content);
         }
       }
     }
@@ -209,7 +227,9 @@ async function agentRun(){
   const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}});
   taskId = d.task_id; localStorage.setItem("bidvolt_agent_task", String(taskId));
   log("Agent 主会话任务 #" + taskId + " 已提交（task_type=agent_pipeline）");
-  showBanner("info", "⏳ 主会话运行中：解析→撰写→校验→评审→交付，全程自主…");
+  bannerState = "running";
+  showBanner("info", "⏳ 主会话启动中…");
+  openConsole(); // 自动打开控制台：事件流实时展示 + 驱动运行横幅动态条
   poll();
 }
 async function poll(){
