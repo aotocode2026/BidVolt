@@ -271,8 +271,50 @@ async def response_package(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EXPORT)),
 ) -> StreamingResponse:
-    """响应文件包（产品定版：按招标文件《响应文件格式》清单逐份成文）：
-    价格文件/商务文件/技术文件 三个目录，每份=条目模板原文+填空（修订批注）+对应撰写内容。"""
+    """响应文件包：
+    - 新方案（agent_pipeline 任务）：主会话经成文工具链自主成文并打包，
+      本端点只取主会话打包好的 zip（尚未打包 → 409 指引重新发起 agent-run）；
+    - 旧任务：维持原服务端成文逻辑（build_response_package），完全不变。"""
+    from sqlalchemy import select as sa_select
+
+    from app.constants import TaskType
+    from app.models.agent import AgentArtifact
+    from app.models.task import Task
+
+    pipe_task = await session.scalar(
+        sa_select(Task)
+        .where(
+            Task.enterprise_id == user.enterprise_id,
+            Task.project_id == project_id,
+            Task.task_type == TaskType.AGENT_PIPELINE,
+        )
+        .order_by(Task.id.desc())
+        .limit(1)
+    )
+    if pipe_task is not None:
+        zip_art = await session.scalar(
+            sa_select(AgentArtifact)
+            .where(
+                AgentArtifact.enterprise_id == user.enterprise_id,
+                AgentArtifact.project_id == project_id,
+                AgentArtifact.task_id == pipe_task.id,
+                AgentArtifact.kind == "zip",
+            )
+            .order_by(AgentArtifact.id.desc())
+            .limit(1)
+        )
+        if zip_art is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Agent 主会话尚未成文打包：请重新发起 agent-run，主会话将在交付阶段"
+                        "经成文工具链（切片→填空→追加→校验→封存→打包）生成响应文件包。",
+            )
+        return StreamingResponse(
+            io.BytesIO(zip_art.content),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_art.name)}"},
+        )
+
     try:
         data = await export_service.build_response_package(session, user.enterprise_id, project_id)
     except ValueError as exc:
