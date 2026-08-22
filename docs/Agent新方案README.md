@@ -63,7 +63,11 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 | 任务类型 | `app/constants.py` | `TaskType.AGENT_PIPELINE = "agent_pipeline"` |
 | 能力白名单 | `app/services/capability.py` | `agent_pipeline` 工具集 = 解析/生成/评审工具的并集 |
 | 控制台页面 | `app/static/agent-demo.html` | `/demo/agent-demo.html`：注册/建项目/上传/发起/控制台（全量消息）/对话/下载包 |
-| 主会话 skill | `/data/hermes/skills/bidvolt/agent-pipeline/SKILL.md` | 主 agent 流程守则（角色约定、委派与回执协议、save_deliverable 模型约定） |
+| 主会话 skill | `/data/hermes/skills/bidvolt/agent-pipeline/SKILL.md` | 主 agent 流程守则（角色约定、委派与回执协议、save_deliverable 模型约定、成文阶段） |
+| 成文工具链服务 | `app/services/assembly_service.py` | 机制原语：候选底稿/模板清单/切片（内存切片仓）/填空/追加/校验/封存/报价xlsx/打包 |
+| 成文工具链接口 | `app/api/assembly.py` | `/projects/{id}/assembly/...` 9 个工具端点（capability 逐工具校验）+ 产物下载端点 |
+| 成文产物模型 | `app/models/agent.py` → `AgentArtifact` | 条目 docx / 报价单 xlsx / 响应包 zip（RLS） |
+| MCP 工具注册 | `bidvolt_mcp/assembly_tools.py` | 9 个成文工具的 MCP 定义（注册进 bidvolt 工具集） |
 
 ## 4. 主会话运行机制（框架层契约）
 
@@ -84,7 +88,25 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 | GET | `/{project_id}/agent-run/{task_id}` | 任务状态/进度/结果（`result.outcome ∈ complete|incomplete`、`result.reason`、`result.session_id`） |
 | GET | `/{project_id}/agent-run/{task_id}/stream?since=N` | SSE 事件流（`event: message` / `event: end`），回放+实时 |
 | POST | `/{project_id}/agent-run/{task_id}/chat` | 客户直接与主会话对话（`--resume` 追加消息，同一任务串行） |
-| GET | `/{project_id}/response-package` | 响应文件包（新方案任务自动附 `会话记录/主会话记录.md`） |
+| GET | `/{project_id}/response-package` | 响应文件包：**新方案任务只取主会话打包好的 zip**（尚未打包 → 409 指引重新发起 agent-run）；旧任务维持原服务端成文逻辑 |
+
+### 5.1 成文工具链（主会话自主成文，服务端只给机制）
+
+主会话在交付阶段（skill 成文阶段 H）自己调用以下工具成文，服务端不再替它做决策：
+
+| 工具 | 作用 |
+|---|---|
+| `resolve_template_draft` | 列出候选底稿 docx（按是否含《响应文件格式》章分级）+ 推荐 file_id |
+| `get_template_outline` | 模板清单（价格/商务/技术分组，每项带 req_id） |
+| `slice_template_item(file_id, req_id)` | 底稿条目区间**字节级复制**为切片（保留格式）→ slice_id |
+| `fill_template_slice(slice_id, fields, fills)` | 修订模式填空+批注（标准字段+定向替换；未知空位原位【待补充】） |
+| `append_template_slice(slice_id, nodes, comment)` | 撰写内容修订插入+批注 |
+| `verify_template_slice(slice_id)` | **逐字校验原文⊂底稿**，返回 issues（先 verify 后 seal） |
+| `seal_template_item(slice_id, dir, filename)` | 生成条目 docx 落产物库 → artifact_id |
+| `build_quote_xlsx(sheets)` | 报价单 xlsx 落产物库 |
+| `package_response_zip(artifact_ids, draft_file_id)` | 打包（自动附会话记录+manifest）→ zip 产物 |
+
+机制保真红线：切片=复制原件；改动=修订+批注；校验=原文逐字⊂底稿。写什么、按什么顺序、封存哪些条目，全部由主会话决定。
 
 开关：`AGENT_PIPELINE_ENABLED=1`（关闭时新接口返回 409，旧功能不受影响）。
 
