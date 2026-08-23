@@ -181,6 +181,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "tender_no=采购编号、supplier=响应供应商企业名称（取企业资料库 supplier_name 事实，search_assets 可查；"
             "没有则留空标【待补充】）；企业其他事实（法人/信用代码/地址/电话/业绩/人员）放进 append 的撰写内容；"
             "封存前逐份 verify_template_slice。"
+            "打包前必须核对 get_template_outline 里 is_file_item=true 的全部条目都已 seal_template_item 并"
+            "已包含在 artifact_ids 中，缺失的先补齐 slice→fill→append→verify→seal 再 package_response_zip。"
+            "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录与风险提示，不作验收门。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
@@ -190,6 +193,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "流程与守则见预载 skill（bidvolt-agent-pipeline）；用 todo 列计划，"
             "用 delegate_task 派子任务（子 agent 结果会自动回到本会话，派完继续推进，不要停下来等），"
             "验收不通过带报告修复，全部满足后再输出。"
+            "成文要求：get_template_outline 里 is_file_item=true 的全部条目都必须"
+            "slice→fill→append→verify→seal 后一起 package_response_zip；"
+            "评分步骤：submit_score_items 成功落分即算闭环，自动评分分数仅作记录不作验收门。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )

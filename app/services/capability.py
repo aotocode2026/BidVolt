@@ -98,6 +98,11 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "search_web",
         "save_source",
         "link_citation",
+        # 模拟评标（评审阶段落分/确认，主会话评审闭环用）
+        "get_latest_score",
+        "get_review_items",
+        "submit_score_items",
+        "confirm_review_items",
     },
     "mock_evaluate": {
         "get_deliverable_content",
