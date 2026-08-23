@@ -1,11 +1,13 @@
-"""成文工具链产物自检测试：打包去重/完整性信号/产物预览。"""
+"""成文工具链硬闸测试：seal 双闸（先 verify/文件名身份）+ 打包全量机械审计（覆盖/唯一/身份）。"""
 
 from __future__ import annotations
 
 import asyncio
 import io
+import time
 import zipfile
 
+from docx import Document
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -23,31 +25,91 @@ def _setup(client):
     return headers, pid
 
 
-def test_package_zip_dedupes_and_reports_missing(client, monkeypatch):
-    """打包：同名产物自动改名不覆盖；模板清单未封存条目如实返回 missing_file_items。"""
-    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
-    h, pid = _setup(client)
+def _docx_bytes(paragraphs: list[str]) -> bytes:
+    doc = Document()
+    for p in paragraphs:
+        doc.add_paragraph(p)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 
-    from app.models.agent import AgentArtifact
-    from app.models.requirement import Requirement
-    from app.models.task import Task
+
+def test_seal_hard_gates_verify_and_name(client, monkeypatch):
+    """seal 硬闸：未 verify → 409；文件名与切片身份不符 → 409；都满足才封存。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+
+    from app.services import assembly_service
 
     engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
     maker = async_sessionmaker(engine, expire_on_commit=False)
 
-    async def _seed():
+    src_text = "（一）响应函及报价汇总表（在投标工具在线填写）\n我方承诺……"
+    doc = Document()
+    for line in src_text.split("\n"):
+        doc.add_paragraph(line)
+    assembly_service._SLICES["stest1"] = {
+        "doc": doc,
+        "sess": None,
+        "source_text": src_text,
+        "file_id": 1,
+        "req_id": 1,
+        "title": "（一）响应函及报价汇总表",
+        "matched_title": "（一）响应函及报价汇总表（在投标工具在线填写）",
+        "verified": False,
+        "task_id": 1,
+        "project_id": pid,
+        "enterprise_id": 1,
+        "created": time.time(),
+    }
+
+    async def _seal(fname):
+        async with maker() as session:
+            try:
+                return await assembly_service.seal_slice(session, "stest1", 1, "价格文件", fname)
+            finally:
+                pass
+
+    # 1) 未 verify → ValueError（→409）
+    try:
+        asyncio.run(_seal("（一）响应函及报价汇总表.docx"))
+        assert False, "未 verify 竟然封存成功"
+    except ValueError as e:
+        assert "verify" in str(e), str(e)
+
+    # 2) verify 通过后，文件名身份不符 → ValueError
+    r = assembly_service.verify_slice("stest1", 1)
+    assert r["passed"] is True and r["matched_title"].startswith("（一）响应函")
+    try:
+        asyncio.run(_seal("（二）报价明细表.docx"))
+        assert False, "文件名与切片身份不符竟然封存成功"
+    except ValueError as e:
+        assert "身份" in str(e), str(e)
+
+    # 3) 文件名与切片身份一致 → 封存成功
+    res = asyncio.run(_seal("（一）响应函及报价汇总表.docx"))
+    assert res["artifact_id"] > 0 and res["name"].endswith("（一）响应函及报价汇总表.docx")
+    assembly_service._SLICES.pop("stest1", None)
+    asyncio.run(engine.dispose())
+
+
+def _seed_pkg(maker, pid, artifacts):
+    from app.models.agent import AgentArtifact
+    from app.models.requirement import Requirement
+    from app.models.task import Task
+
+    async def _run():
         async with maker() as session:
             task = Task(
                 enterprise_id=1,
                 project_id=pid,
                 task_type="agent_pipeline",
-                idempotency_key="asm-task-1",
+                idempotency_key=f"asm-pkg-{len(artifacts)}-{time.time_ns()}",
                 status=2,
                 payload={},
             )
             session.add(task)
             await session.flush()
-            # 两个文件条目 + 一个结构行（is_file_item=false）
             for i, (title, role, order) in enumerate(
                 [
                     ("（一）响应函及报价汇总表", "price", 1),
@@ -65,8 +127,7 @@ def test_package_zip_dedupes_and_reports_missing(client, monkeypatch):
                         structured={"role": role, "order": order},
                     )
                 )
-            # 两个同名 docx 产物 + 一个 xlsx
-            for name in ("价格文件/（一）响应函及报价汇总表.docx",) * 2:
+            for name, content in artifacts:
                 session.add(
                     AgentArtifact(
                         enterprise_id=1,
@@ -75,64 +136,135 @@ def test_package_zip_dedupes_and_reports_missing(client, monkeypatch):
                         kind="item_docx",
                         name=name,
                         mime="application/octet-stream",
-                        content=b"fake-docx",
+                        content=content,
                     )
                 )
-            session.add(
-                AgentArtifact(
-                    enterprise_id=1,
-                    project_id=pid,
-                    task_id=task.id,
-                    kind="xlsx",
-                    name="价格文件/报价单.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    content=b"fake-xlsx",
-                )
-            )
             await session.commit()
             return task.id
 
-    task_id = asyncio.run(_seed())
+    return asyncio.run(_run())
+
+
+def _pack(maker, pid, task_id):
     from app.services import assembly_service
 
-    async def _pack():
-        async with maker() as session:
-            ids = []
-            async with maker() as s2:
-                rows = (
-                    await s2.execute(
-                        __import__("sqlalchemy").text("select id from agent_artifact where task_id=:t"),
-                        {"t": task_id},
-                    )
-                ).fetchall()
-                ids = [r[0] for r in rows]
-            return await assembly_service.package_zip(session, 1, pid, task_id, ids, None)
-
-    result = asyncio.run(_pack())
-    print("package result:", {k: result.get(k) for k in ("file_count", "missing_file_items")})
-    assert result["missing_file_items"] == ["（二）报价明细表"], result["missing_file_items"]
-
-    async def _load():
+    async def _run():
         async with maker() as session:
             from sqlalchemy import text
 
+            ids = [
+                r[0]
+                for r in (
+                    await session.execute(
+                        text("select id from agent_artifact where task_id=:t and kind='item_docx'"),
+                        {"t": task_id},
+                    )
+                ).fetchall()
+            ]
+            return await assembly_service.package_zip(session, 1, pid, task_id, ids, None)
+
+    return asyncio.run(_run())
+
+
+def test_package_zip_rejects_missing_item(client, monkeypatch):
+    """打包硬闸：is_file_item 未全覆盖 → ValueError（→409），不给包。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    tid = _seed_pkg(
+        maker, pid,
+        [("价格文件/（一）响应函及报价汇总表.docx",
+          _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"]))],
+    )
+    try:
+        _pack(maker, pid, tid)
+        assert False, "缺报价明细表竟然打包成功"
+    except ValueError as e:
+        assert "（二）报价明细表" in str(e), str(e)
+    asyncio.run(engine.dispose())
+
+
+def test_package_zip_rejects_duplicate_and_identity(client, monkeypatch):
+    """打包硬闸：同部分内容雷同 → 409；正文开头不含自身条目标题 → 409。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    # 雷同：两份不同文件名、同一内容
+    tid = _seed_pkg(
+        maker, pid,
+        [
+            ("价格文件/（一）响应函及报价汇总表.docx", _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"])),
+            ("价格文件/（二）报价明细表.docx", _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"])),
+        ],
+    )
+    try:
+        _pack(maker, pid, tid)
+        assert False, "内容雷同竟然打包成功"
+    except ValueError as e:
+        assert "雷同" in str(e), str(e)
+
+    # 身份不符：文件名是报价明细表，内容却是响应函
+    tid2 = _seed_pkg(
+        maker, pid,
+        [
+            ("价格文件/（一）响应函及报价汇总表.docx", _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"])),
+            ("价格文件/（二）报价明细表.docx", _docx_bytes(["响应函价格表", "合计报价……"])),
+        ],
+    )
+    try:
+        _pack(maker, pid, tid2)
+        assert False, "身份不符竟然打包成功"
+    except ValueError as e:
+        assert "身份" in str(e), str(e)
+    asyncio.run(engine.dispose())
+
+
+def test_package_zip_passes_full_audit_and_dedupes(client, monkeypatch):
+    """打包硬闸全过：产出 zip，同名产物改名不覆盖，manifest 带审计结论。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    # 两份正确内容 + 一份与首份同名但正文不同的多余产物（测改名去重：审计通过后同名改名）
+    tid = _seed_pkg(
+        maker, pid,
+        [
+            ("价格文件/（一）响应函及报价汇总表.docx", _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"])),
+            ("价格文件/（二）报价明细表.docx", _docx_bytes(["（二）报价明细表", "明细报价如下……"])),
+            ("价格文件/（一）响应函及报价汇总表.docx", _docx_bytes(["（一）响应函及报价汇总表", "我方承诺（补充）……"])),
+        ],
+    )
+    result = _pack(maker, pid, tid)
+    assert result.get("missing_file_items") == []
+
+    from sqlalchemy import text
+
+    async def _load():
+        async with maker() as session:
             row = (
                 await session.execute(
                     text("select content from agent_artifact where kind='zip' and task_id=:t"),
-                    {"t": task_id},
+                    {"t": tid},
                 )
             ).fetchone()
             return row[0]
 
     zdata = asyncio.run(_load())
-    names = zipfile.ZipFile(io.BytesIO(zdata)).namelist()
-    print("zip entries:", names)
-    # 同名 docx 去重后不重复
-    assert names.count("价格文件/（一）响应函及报价汇总表.docx") == 1
-    assert any("(2)" in n for n in names), names
-    # 会话记录 + manifest 自动附带
-    assert "会话记录/主会话记录.md" in names
-    assert "manifest.json" in names
+    with zipfile.ZipFile(io.BytesIO(zdata)) as zf:
+        names = zf.namelist()
+        assert names.count("价格文件/（一）响应函及报价汇总表.docx") == 1
+        assert any("(2)" in n for n in names), names
+        assert "价格文件/（二）报价明细表.docx" in names
+        assert "会话记录/主会话记录.md" in names
+        import json
+
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["audit"]["coverage_ok"] is True
+        assert manifest["audit"]["unique_ok"] is True
+        assert manifest["audit"]["identity_ok"] is True
     asyncio.run(engine.dispose())
 
 
