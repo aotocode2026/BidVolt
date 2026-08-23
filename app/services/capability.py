@@ -130,20 +130,11 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "list_requirements",
         "search_knowledge",
     },
-    "chat": {
-        "search_assets",
-        "list_assets",
-        "get_project_material_blocks",
-        "list_project_materials",
-        "get_deliverable_content",
-        "get_requirement",
-        "list_requirements",
-        "search_web",
-        "search_web_minimax",
-        "search_knowledge",
-        "vision_analyze_minimax",
-    },
+    "chat": {},
 }
+
+# 网页端客户对话：与主会话完全一致的业务工具集（产品决定：放开一切限制）
+TASK_TOOL_WHITELIST["chat"] = set(TASK_TOOL_WHITELIST["agent_pipeline"])
 
 
 def _b64url(data: bytes) -> str:

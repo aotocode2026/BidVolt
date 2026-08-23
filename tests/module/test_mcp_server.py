@@ -99,13 +99,12 @@ def _run_mcp(server_port: int, token: str, requests: list[dict]) -> str:
         [sys.executable, "-m", "bidvolt_mcp"],
         cwd=REPO_ROOT,
         env=env,
-        input=payload,
+        input=payload.encode("utf-8"),
         capture_output=True,
-        text=True,
         timeout=30,
     )
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return proc.stdout.decode("utf-8")
 
 
 def _run_mcp_with_cap(server_port: int, token: str, cap: str, requests: list[dict]) -> str:
@@ -120,13 +119,12 @@ def _run_mcp_with_cap(server_port: int, token: str, cap: str, requests: list[dic
         [sys.executable, "-m", "bidvolt_mcp"],
         cwd=REPO_ROOT,
         env=env,
-        input=payload,
+        input=payload.encode("utf-8"),
         capture_output=True,
-        text=True,
         timeout=30,
     )
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return proc.stdout.decode("utf-8")
 
 
 def test_mcp_initialize_and_tools():
