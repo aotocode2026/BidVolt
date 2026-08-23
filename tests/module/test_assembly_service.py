@@ -335,3 +335,54 @@ def test_inspect_artifact_previews(client, monkeypatch):
     assert info["sheets"][0]["cols"] == 2
     assert "虚拟电厂平台" in str(info["sheets"][0]["preview"])
     asyncio.run(engine.dispose())
+
+
+def test_inspect_artifact_pending_items_signal():
+    """产物自检：docx 返回 pending_items 逐项清单（标签+上下文），不再只有计数——
+    回归：计数会掩盖'本可填实却空着/标签含混'，检查者靠清单逐项核对。"""
+    from app.models.agent import AgentArtifact
+    from app.models.task import Task
+    from app.services import assembly_service
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _seed():
+        async with maker() as session:
+            task = Task(
+                enterprise_id=1, project_id=1, task_type="agent_pipeline",
+                idempotency_key="asm-task-pending", status=2, payload={},
+            )
+            session.add(task)
+            await session.flush()
+            content = _docx_bytes(["电话：【待补充：电话】", "特授权【待补充】代表我方全权办理。"])
+            session.add(
+                AgentArtifact(
+                    enterprise_id=1, project_id=1, task_id=task.id,
+                    kind="item_docx", name="价格文件/响应函.docx",
+                    mime="application/octet-stream", content=content,
+                )
+            )
+            await session.commit()
+            return task.id
+
+    task_id = asyncio.run(_seed())
+
+    async def _inspect():
+        async with maker() as session:
+            from sqlalchemy import text
+
+            aid = (
+                await session.execute(
+                    text("select id from agent_artifact where task_id=:t and kind='item_docx'"),
+                    {"t": task_id},
+                )
+            ).fetchone()[0]
+            return await assembly_service.inspect_artifact(session, 1, 1, task_id, aid)
+
+    info = asyncio.run(_inspect())
+    labels = [i["label"] for i in info["pending_items"]]
+    assert "电话" in labels
+    assert "" in labels  # 裸【待补充】如实暴露（label 为空）
+    assert info["pending_count"] == len(info["pending_items"])
+    asyncio.run(engine.dispose())
