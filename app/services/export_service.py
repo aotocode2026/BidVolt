@@ -470,6 +470,16 @@ def _strip_num(s: str) -> str:
     return _re.sub(r"^[（(]?[一二三四五六七八九十百0-9]+[）)、.、:：\s]*", "", s)
 
 
+def _item_key(s: str) -> str:
+    """条目匹配键：去编号、去上传路径尾巴、去括号注（如"（单位负责人）""（如有）"）。
+    清单标题与底稿标题的常见差异都来自这几类装饰，归一后比对。"""
+    import re as _re
+
+    s = _clean_item_name(s or "")
+    s = _re.sub(r"[（(][^）)]*[）)]", "", s)
+    return _strip_num(_norm_text(s))
+
+
 def _elem_text(el) -> str:
     return "".join(el.itertext())
 
@@ -761,18 +771,39 @@ def _build_item_document(source_path, row, elements):
 
 def locate_item_elements(source_path, row) -> list | None:
     """定位单条模板条目在底稿中的元素区间（大纲级别优先，行级清单兜底）。
+    大纲切片返回的是该部分全部条目，必须按条目标题匹配请求条目——
+    直接取第一条会让同部分所有条目都拿到首条目区间（曾致价格/商务/技术各文件内容雷同）。
     找不到返回 None（调用方按清单内容重建并如实标注）。"""
+    from difflib import SequenceMatcher
+
     from docx import Document
 
     src_doc = Document(str(source_path))
     role = (row.structured or {}).get("role")
     if role in ("price", "business", "technical"):
-        slices = _locate_item_slices(src_doc, {role: [row]})
-        for _heading, elems in slices.get(role, []):
-            return elems
+        row_key = _item_key((row.content or "").split("\n")[0])
+        if row_key:
+            candidates: list[tuple[str, list]] = []
+            for heading, elems in _locate_item_slices(src_doc, {role: [row]}).get(role, []):
+                hd_key = _item_key(heading)
+                if hd_key:
+                    candidates.append((hd_key, elems))
+            # 1) 精确；2) 前缀（标题带/不带尾巴）；3) 相似度兜底（如"（单位负责人）"增字差异）
+            for hd_key, elems in candidates:
+                if hd_key == row_key:
+                    return elems
+            for hd_key, elems in candidates:
+                if row_key.startswith(hd_key) or hd_key.startswith(row_key):
+                    return elems
+            if candidates:
+                best, best_elems = max(
+                    candidates, key=lambda c: SequenceMatcher(None, row_key, c[0]).ratio()
+                )
+                if SequenceMatcher(None, row_key, best).ratio() >= 0.65:
+                    return best_elems
         row_slices = _locate_item_slices_by_rows(src_doc, {role: [row]})
         for _r, elems in row_slices.get(role, []):
-            if _r.id == row.id:
+            if _r.id == row.id and elems:
                 return elems
     return None
 
