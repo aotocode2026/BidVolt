@@ -257,7 +257,7 @@ def test_locate_item_elements_matches_requested_item(tmp_path):
     from docx import Document
     from docx.oxml.ns import qn
 
-    from app.services.export_service import locate_item_elements
+    from app.services.export_service import locate_item_elements, locate_item_with_heading
 
     def add_with_lvl(doc, text, lvl):
         p = doc.add_paragraph(text)
@@ -301,6 +301,16 @@ def test_locate_item_elements_matches_requested_item(tmp_path):
 
     # 不存在的条目：不串到别的条目，返回 None 走清单重建+批注路径
     assert locate_item_elements(str(p), row(4, "（四）补充文件")) is None
+
+    # 身份信号：matched_heading 必须等于实际绑定的底稿条目标题（供调用方比对防串区）
+    h1, e1b = locate_item_with_heading(str(p), row(1, "（一）法定代表人授权委托书"))
+    assert e1b is not None and "法定代表人（单位负责人）授权委托书" in h1
+    h2, e2b = locate_item_with_heading(str(p), row(2, "（二）商务偏差表"))
+    assert e2b is not None and h2.startswith("（二）商务偏差表")
+    h3, e3b = locate_item_with_heading(str(p), row(3, "（三）响应保证保险（如有）"))
+    assert e3b is not None and "响应保证保险" in h3
+    h4, e4b = locate_item_with_heading(str(p), row(4, "（四）补充文件"))
+    assert e4b is None and h4 is None
 
 
 def test_fidelity_ignores_drawing_internals(tmp_path):

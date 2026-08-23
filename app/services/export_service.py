@@ -770,11 +770,13 @@ def _build_item_document(source_path, row, elements):
     return new, located
 
 
-def locate_item_elements(source_path, row) -> list | None:
+def locate_item_with_heading(source_path, row) -> tuple[str | None, list | None]:
     """定位单条模板条目在底稿中的元素区间（大纲级别优先，行级清单兜底）。
+    返回 (matched_heading, elements)：matched_heading=实际匹配到的底稿条目标题
+    （身份信号，调用方必须比对是否等于所请求的条目标题）；elements=None 表示未定位
+    （调用方按清单内容重建并如实标注）。
     大纲切片返回的是该部分全部条目，必须按条目标题匹配请求条目——
-    直接取第一条会让同部分所有条目都拿到首条目区间（曾致价格/商务/技术各文件内容雷同）。
-    找不到返回 None（调用方按清单内容重建并如实标注）。"""
+    直接取第一条会让同部分所有条目都拿到首条目区间（曾致价格/商务/技术各文件内容雷同）。"""
     from difflib import SequenceMatcher
 
     from docx import Document
@@ -784,29 +786,35 @@ def locate_item_elements(source_path, row) -> list | None:
     if role in ("price", "business", "technical"):
         row_key = _item_key((row.content or "").split("\n")[0])
         if row_key:
-            candidates: list[tuple[str, list]] = []
+            candidates: list[tuple[str, str, list]] = []
             for heading, elems in _locate_item_slices(src_doc, {role: [row]}).get(role, []):
                 hd_key = _item_key(heading)
                 if hd_key:
-                    candidates.append((hd_key, elems))
+                    candidates.append((heading, hd_key, elems))
             # 1) 精确；2) 前缀（标题带/不带尾巴）；3) 相似度兜底（如"（单位负责人）"增字差异）
-            for hd_key, elems in candidates:
+            for heading, hd_key, elems in candidates:
                 if hd_key == row_key:
-                    return elems
-            for hd_key, elems in candidates:
+                    return heading, elems
+            for heading, hd_key, elems in candidates:
                 if row_key.startswith(hd_key) or hd_key.startswith(row_key):
-                    return elems
+                    return heading, elems
             if candidates:
-                best, best_elems = max(
-                    candidates, key=lambda c: SequenceMatcher(None, row_key, c[0]).ratio()
+                best_heading, best, best_elems = max(
+                    candidates, key=lambda c: SequenceMatcher(None, row_key, c[1]).ratio()
                 )
                 if SequenceMatcher(None, row_key, best).ratio() >= 0.65:
-                    return best_elems
+                    return best_heading, best_elems
         row_slices = _locate_item_slices_by_rows(src_doc, {role: [row]})
         for _r, elems in row_slices.get(role, []):
             if _r.id == row.id and elems:
-                return elems
-    return None
+                return str(_r.content or "").split("\n")[0], elems
+    return None, None
+
+
+def locate_item_elements(source_path, row) -> list | None:
+    """兼容包装：只返回元素区间（同 locate_item_with_heading 的第二个值）。"""
+    _heading, elems = locate_item_with_heading(source_path, row)
+    return elems
 
 
 def canonical_text(root) -> str:
