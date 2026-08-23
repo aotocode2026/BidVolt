@@ -209,12 +209,11 @@ def test_assembly_primitives_roundtrip(tmp_path):
     from docx.oxml.ns import qn
 
     from app.services.export_service import (
-        _FillSession,
         _build_item_document,
+        _FillSession,
         check_doc_fidelity,
         replace_text_tracked,
     )
-
     src = Document()
     src.add_paragraph("（一）响应函及报价汇总表")
     src.add_paragraph("1. 我方已仔细研究了采购编号：    ，项目名称：   ，包名称：   采购文件。")
@@ -302,6 +301,63 @@ def test_locate_item_elements_matches_requested_item(tmp_path):
 
     # 不存在的条目：不串到别的条目，返回 None 走清单重建+批注路径
     assert locate_item_elements(str(p), row(4, "（四）补充文件")) is None
+
+
+def test_fidelity_ignores_drawing_internals(tmp_path):
+    """锚定图（印模等浮动图片）的坐标数字（wp:posOffset/extent）不是正文：
+    底稿侧与条目侧必须用同一收集器（canonical_text），否则合法切片被误报不忠实。
+    （回归：补充文件切片因底稿 itertext 混入 wp:posOffset 数字而 verify 失败。）"""
+    import copy
+
+    from lxml import etree
+
+    from app.services.export_service import canonical_text, check_doc_fidelity
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    W_NS = f"{{{W}}}"
+    WP_NS = f"{{{WP}}}"
+
+    def w(tag):
+        return W_NS + tag
+
+    # 构造段落：正文 + 锚定图（wp:posOffset 数字噪声）
+    p = etree.Element(w("p"), nsmap={"w": W, "wp": WP})
+    r = etree.SubElement(p, w("r"))
+    t = etree.SubElement(r, w("t"))
+    t.text = "响应供应商投标专用章"
+    anchor = etree.SubElement(r, WP_NS + "anchor")
+    po = etree.SubElement(anchor, WP_NS + "posOffset")
+    po.text = "285750"
+    ext = etree.SubElement(anchor, WP_NS + "extent")
+    ext.set("cx", "2066925")
+
+    doc_el = etree.Element(w("document"), nsmap={"w": W})
+    body = etree.SubElement(doc_el, w("body"))
+    body.append(p)
+
+    src_text = canonical_text(doc_el)
+    assert src_text == "响应供应商投标专用章", src_text
+    assert "285750" not in src_text and "2066925" not in src_text
+
+    # 切片=同段落深拷贝：忠实性必须通过（两侧同算法）
+    doc = Document()
+    doc.element.body.append(copy.deepcopy(p))
+    r = check_doc_fidelity(doc, src_text)
+    assert r["ok"] is True, r["issues"]
+    assert r["original_chars"] == len("响应供应商投标专用章")
+
+    # 修订插入（w:ins）同样不计原文（两侧一致）
+    ins = etree.SubElement(p, w("ins"))
+    ir = etree.SubElement(ins, w("r"))
+    it = etree.SubElement(ir, w("t"))
+    it.text = "北京北辰电力科技有限公司"
+    assert "北京北辰" not in canonical_text(doc_el)
+    doc2 = Document()
+    doc2.element.body.append(copy.deepcopy(p))
+    r2 = check_doc_fidelity(doc2, src_text)
+    assert r2["ok"] is True
+    assert r2["inserted_chars"] == len("北京北辰电力科技有限公司")
 
 
 def test_draft_label_format():

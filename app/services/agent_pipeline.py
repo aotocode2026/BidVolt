@@ -260,6 +260,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 )
             except Exception:  # noqa: BLE001 基线取不到就按 0（宁可多等一轮催办）
                 marker_min_index = 0
+        # 卡顿判据基线：会话消息数增长=有进展（工具调用/子代理也都会落消息，
+        # 不能只看 PTY 输出——工具执行期间终端可能长时间静默导致误催办）
+        last_msg_count = marker_min_index
 
         def _submit(text: str) -> None:
             echo_texts.add(text)
@@ -318,13 +321,20 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 await asyncio.sleep(EVENT_FLUSH_SECONDS)
                 await _flush()
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
-                # 不解析终端回显，避免我方提示里的标记文本误判）
+                # 不解析终端回显，避免我方提示里的标记文本误判）；
+                # 同一份导出顺便看消息总数增长 → 有增长即算有进展（防误催办）
                 if session_id and loop.time() - marker_poll_at > MARKER_POLL_SECONDS:
                     marker_poll_at = loop.time()
                     try:
-                        round_marker = await asyncio.wait_for(
-                            _poll_session_marker(hermes_bin, env, session_id, marker_min_index), timeout=60
+                        data = await asyncio.wait_for(
+                            _export_session_json(hermes_bin, env, session_id), timeout=60
                         )
+                        round_marker = _marker_from_export(data, marker_min_index)
+                        if data:
+                            n = int(data.get("message_count") or len(data.get("messages") or []))
+                            if n > last_msg_count:
+                                last_msg_count = n
+                                last_out_at = loop.time()
                     except Exception:  # noqa: BLE001 会话库读取瞬时失败下次再试
                         round_marker = None
                     if round_marker:
@@ -356,8 +366,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                         )
                     else:
                         nudge = (
-                            "（系统提示）请现在立即输出结束标记作为交付回执：最后一行只写 "
-                            f"{MARK_COMPLETE} 或 {MARK_INCOMPLETE}+原因，不要其他内容。"
+                            "（系统提示）请现在输出结束标记作为交付回执：流程已完成就在最后一行只写 "
+                            f"{MARK_COMPLETE}；确有无法闭环项就写 {MARK_INCOMPLETE} 并紧接着写出具体原因"
+                            "（写真实原因，如「企业资料缺失」「时间不足」，不要写「+原因」等占位字样）。"
                         )
                     _submit(nudge)
                     pending.append(("service", nudge))
@@ -433,6 +444,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         m = re.search(re.escape(MARK_INCOMPLETE) + r"([^\n]*)", search_tail)
         if m:
             reason = m.group(1).strip()
+        # 过滤占位回声：agent 照抄提示模板时会把「+原因」「不要其他内容」等字样当正文输出
+        if reason in ("+原因", "＋原因", "原因…", "原因", "") or "不要其他内容" in reason:
+            reason = ""
         task.result = {
             "runtime": "hermes-main-session",
             "session_id": sid,
@@ -455,10 +469,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         )
 
 
-async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str, min_index: int = 0) -> str | None:
-    """读 Hermes 会话库：最后一条 assistant 回复若带完成标记则返回该标记。
-    判据来自会话库原文（模型真实回复），与终端显示回显无关。
-    min_index：只看该下标之后的 assistant 消息（续跑时跳过上一单的旧回执）。"""
+async def _export_session_json(hermes_bin: str, env: dict, session_id: str) -> dict | None:
+    """导出一个 Hermes 会话的最新 jsonl 记录（最后一条）。失败返回 None。"""
     import json  # noqa: PLC0415
 
     proc = await asyncio.create_subprocess_exec(
@@ -471,8 +483,14 @@ async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str, min_
     if not lines:
         return None
     try:
-        data = json.loads(lines[-1])
+        return json.loads(lines[-1])
     except ValueError:
+        return None
+
+
+def _marker_from_export(data: dict | None, min_index: int = 0) -> str | None:
+    """从会话导出数据判完成标记（只看 min_index 之后的最后一条 assistant 回复）。"""
+    if not data:
         return None
     messages = data.get("messages") or []
     for idx in range(len(messages) - 1, min_index - 1, -1):
@@ -488,21 +506,19 @@ async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str, min_
     return None
 
 
+async def _poll_session_marker(hermes_bin: str, env: dict, session_id: str, min_index: int = 0) -> str | None:
+    """读 Hermes 会话库：最后一条 assistant 回复若带完成标记则返回该标记。
+    判据来自会话库原文（模型真实回复），与终端显示回显无关。
+    min_index：只看该下标之后的 assistant 消息（续跑时跳过上一单的旧回执）。"""
+    return _marker_from_export(await _export_session_json(hermes_bin, env, session_id), min_index)
+
+
 async def _poll_session_message_count(hermes_bin: str, env: dict, session_id: str) -> int:
     """读会话库当前消息总数（续跑基线：旧消息里的回执不算本轮完成）。"""
-    import json  # noqa: PLC0415
-
-    proc = await asyncio.create_subprocess_exec(
-        hermes_bin, "sessions", "export", "--session-id", session_id, "--format", "jsonl", "-",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        env=env, cwd=env["HERMES_HOME"],
-    )
-    out, _ = await proc.communicate()
-    lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()]
-    if not lines:
+    data = await _export_session_json(hermes_bin, env, session_id)
+    if not data:
         return 0
     try:
-        data = json.loads(lines[-1])
         return int(data.get("message_count") or len(data.get("messages") or []))
     except (ValueError, TypeError):
         return 0
