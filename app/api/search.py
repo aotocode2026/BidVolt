@@ -35,6 +35,22 @@ async def search_web(
     return {"provider": "mock", "results": results}
 
 
+@router.post("/searches/minimax")
+async def search_web_minimax(
+    body: dict,
+    user: UserContext = Depends(require_capability("search_web_minimax")),
+) -> dict:
+    """MiniMax 原生联网搜索（全领域开放；来源批注走 save_source/link_citation）。"""
+    query = str(body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 query")
+    try:
+        results = search_service.minimax_search(query, limit=int(body.get("limit") or 10))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return {"provider": "minimax", "results": results}
+
+
 @router.post("/search-sources", status_code=status.HTTP_201_CREATED)
 async def save_source(
     body: dict,

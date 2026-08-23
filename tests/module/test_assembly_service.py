@@ -1,4 +1,5 @@
-"""成文工具链硬闸测试：seal 双闸（先 verify/文件名身份）+ 打包全量机械审计（覆盖/唯一/身份）。"""
+"""成文工具链信息信号测试：seal 身份/校验信号 + 打包全量核对信号（只提示、不拦截——
+合规性由主会话+验收/评审子 agent 保证，服务端不设硬性流程代码）。"""
 
 from __future__ import annotations
 
@@ -34,8 +35,8 @@ def _docx_bytes(paragraphs: list[str]) -> bytes:
     return buf.getvalue()
 
 
-def test_seal_hard_gates_verify_and_name(client, monkeypatch):
-    """seal 硬闸：未 verify → 409；文件名与切片身份不符 → 409；都满足才封存。"""
+def test_seal_returns_identity_signals(client, monkeypatch):
+    """seal 只给信息信号、不拦截：回执带 req_title/matched_title/was_verified，供 agent 自查。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
     _h, pid = _setup(client)
 
@@ -48,7 +49,7 @@ def test_seal_hard_gates_verify_and_name(client, monkeypatch):
     doc = Document()
     for line in src_text.split("\n"):
         doc.add_paragraph(line)
-    assembly_service._SLICES["stest1"] = {
+    base = {
         "doc": doc,
         "sess": None,
         "source_text": src_text,
@@ -62,33 +63,36 @@ def test_seal_hard_gates_verify_and_name(client, monkeypatch):
         "enterprise_id": 1,
         "created": time.time(),
     }
+    assembly_service._SLICES["stest1"] = dict(base)
 
     async def _seal(fname):
         async with maker() as session:
-            try:
-                return await assembly_service.seal_slice(session, "stest1", 1, "价格文件", fname)
-            finally:
-                pass
+            return await assembly_service.seal_slice(session, "stest1", 1, "价格文件", fname)
 
-    # 1) 未 verify → ValueError（→409）
-    try:
-        asyncio.run(_seal("（一）响应函及报价汇总表.docx"))
-        assert False, "未 verify 竟然封存成功"
-    except ValueError as e:
-        assert "verify" in str(e), str(e)
+    # 未 verify 也允许封存（不拦截），但 was_verified 信号如实=false
+    res = asyncio.run(_seal("（二）报价明细表.docx"))
+    assert res["artifact_id"] > 0
+    assert res["was_verified"] is False
+    assert res["req_title"] == "（一）响应函及报价汇总表"
+    assert res["matched_title"].startswith("（一）响应函及报价汇总表")
 
-    # 2) verify 通过后，文件名身份不符 → ValueError
-    r = assembly_service.verify_slice("stest1", 1)
-    assert r["passed"] is True and r["matched_title"].startswith("（一）响应函")
-    try:
-        asyncio.run(_seal("（二）报价明细表.docx"))
-        assert False, "文件名与切片身份不符竟然封存成功"
-    except ValueError as e:
-        assert "身份" in str(e), str(e)
+    # verify 后封存：was_verified=true
+    assembly_service._SLICES["stest2"] = {
+        **base,
+        "doc": Document(io.BytesIO(_docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"]))),
+        "source_text": "（一）响应函及报价汇总表\n我方承诺……",
+        "verified": False,
+        "created": time.time(),
+    }
+    r = assembly_service.verify_slice("stest2", 1)
+    assert r["passed"] is True
+    async def _seal2():
+        async with maker() as session:
+            return await assembly_service.seal_slice(session, "stest2", 1, "价格文件", "（一）响应函及报价汇总表.docx")
 
-    # 3) 文件名与切片身份一致 → 封存成功
-    res = asyncio.run(_seal("（一）响应函及报价汇总表.docx"))
-    assert res["artifact_id"] > 0 and res["name"].endswith("（一）响应函及报价汇总表.docx")
+    res2 = asyncio.run(_seal2())
+    assert res2["was_verified"] is True
+    assert res2["matched_title"].startswith("（一）响应函及报价汇总表")
     assembly_service._SLICES.pop("stest1", None)
     asyncio.run(engine.dispose())
 
@@ -166,8 +170,8 @@ def _pack(maker, pid, task_id):
     return asyncio.run(_run())
 
 
-def test_package_zip_rejects_missing_item(client, monkeypatch):
-    """打包硬闸：is_file_item 未全覆盖 → ValueError（→409），不给包。"""
+def test_package_zip_reports_missing_item(client, monkeypatch):
+    """打包只给信号、不拦截：缺条目照常出包，回执如实返回 missing_file_items。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
     _h, pid = _setup(client)
     engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
@@ -177,16 +181,14 @@ def test_package_zip_rejects_missing_item(client, monkeypatch):
         [("价格文件/（一）响应函及报价汇总表.docx",
           _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"]))],
     )
-    try:
-        _pack(maker, pid, tid)
-        assert False, "缺报价明细表竟然打包成功"
-    except ValueError as e:
-        assert "（二）报价明细表" in str(e), str(e)
+    result = _pack(maker, pid, tid)
+    assert "（二）报价明细表" in result["missing_file_items"]
+    assert result["audit"]["coverage_ok"] is False
     asyncio.run(engine.dispose())
 
 
-def test_package_zip_rejects_duplicate_and_identity(client, monkeypatch):
-    """打包硬闸：同部分内容雷同 → 409；正文开头不含自身条目标题 → 409。"""
+def test_package_zip_reports_duplicate_and_identity(client, monkeypatch):
+    """打包只给信号、不拦截：同部分雷同与身份不符如实进入 audit 信号。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
     _h, pid = _setup(client)
     engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
@@ -200,11 +202,9 @@ def test_package_zip_rejects_duplicate_and_identity(client, monkeypatch):
             ("价格文件/（二）报价明细表.docx", _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"])),
         ],
     )
-    try:
-        _pack(maker, pid, tid)
-        assert False, "内容雷同竟然打包成功"
-    except ValueError as e:
-        assert "雷同" in str(e), str(e)
+    result = _pack(maker, pid, tid)
+    assert result["audit"]["unique_ok"] is False
+    assert result["audit"]["duplicate_pairs"], result["audit"]
 
     # 身份不符：文件名是报价明细表，内容却是响应函
     tid2 = _seed_pkg(
@@ -214,16 +214,14 @@ def test_package_zip_rejects_duplicate_and_identity(client, monkeypatch):
             ("价格文件/（二）报价明细表.docx", _docx_bytes(["响应函价格表", "合计报价……"])),
         ],
     )
-    try:
-        _pack(maker, pid, tid2)
-        assert False, "身份不符竟然打包成功"
-    except ValueError as e:
-        assert "身份" in str(e), str(e)
+    result2 = _pack(maker, pid, tid2)
+    assert result2["audit"]["identity_ok"] is False
+    assert result2["audit"]["identity_issues"], result2["audit"]
     asyncio.run(engine.dispose())
 
 
 def test_package_zip_passes_full_audit_and_dedupes(client, monkeypatch):
-    """打包硬闸全过：产出 zip，同名产物改名不覆盖，manifest 带审计结论。"""
+    """打包核对信号全绿：产出 zip，同名产物改名不覆盖，manifest 带 audit 结论。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
     _h, pid = _setup(client)
     engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)

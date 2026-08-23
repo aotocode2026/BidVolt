@@ -36,6 +36,7 @@ TOOL_PERMISSION: dict[str, str] = {
     "get_history_price": Permission.QUOTE_CALCULATE,
     "calculate_quote": Permission.QUOTE_CALCULATE,
     "search_web": Permission.FILE_READ,
+    "search_web_minimax": Permission.FILE_READ,
     "save_source": Permission.PROJECT_EDIT,
     "link_citation": Permission.DELIVERABLE_EDIT,
     "search_assets": Permission.FILE_READ,
