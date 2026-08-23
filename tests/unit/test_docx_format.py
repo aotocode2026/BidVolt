@@ -250,6 +250,60 @@ def test_assembly_primitives_roundtrip(tmp_path):
     assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
 
 
+def test_locate_item_elements_matches_requested_item(tmp_path):
+    """同部分多条目的切片必须按标题匹配请求条目（回归：曾对每份条目都返回首条目区间，
+    致 价格/商务/技术 各文件内容雷同）。清单标题与底稿标题的编号/括号注差异也要容错。"""
+    from types import SimpleNamespace
+
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    from app.services.export_service import locate_item_elements
+
+    def add_with_lvl(doc, text, lvl):
+        p = doc.add_paragraph(text)
+        pPr = p._p.get_or_add_pPr()
+        pPr.append(pPr.makeelement(qn("w:outlineLvl"), {qn("w:val"): str(lvl)}))
+        return p
+
+    src = Document()
+    add_with_lvl(src, "第五章 响应文件格式", 0)
+    add_with_lvl(src, "商务文件", 1)
+    add_with_lvl(src, "（一）法定代表人（单位负责人）授权委托书", 2)
+    src.add_paragraph("授权委托书正文：兹授权……")
+    add_with_lvl(src, "（二）商务偏差表", 2)
+    src.add_paragraph("偏差表正文：无偏差。")
+    add_with_lvl(src, "（三）响应保证保险（如有）", 2)
+    src.add_paragraph("保险正文：保单附后。")
+    src.add_paragraph("第六章 商务评分标准")
+    p = tmp_path / "src.docx"
+    src.save(str(p))
+
+    def row(req_id, title):
+        return SimpleNamespace(id=req_id, content=title, structured={"role": "business"})
+
+    def text_of(elems):
+        return "".join("".join(el.itertext()) for _k, el in elems)
+
+    e1 = locate_item_elements(str(p), row(1, "（一）法定代表人授权委托书"))
+    assert e1 is not None
+    t1 = text_of(e1)
+    assert "授权委托书正文" in t1 and "商务偏差表" not in t1
+
+    e2 = locate_item_elements(str(p), row(2, "（二）商务偏差表"))
+    assert e2 is not None
+    t2 = text_of(e2)
+    assert "偏差表正文" in t2 and "授权委托书正文" not in t2 and "保险正文" not in t2
+
+    e3 = locate_item_elements(str(p), row(3, "（三）响应保证保险（如有）"))
+    assert e3 is not None
+    t3 = text_of(e3)
+    assert "保险正文" in t3 and "偏差表正文" not in t3
+
+    # 不存在的条目：不串到别的条目，返回 None 走清单重建+批注路径
+    assert locate_item_elements(str(p), row(4, "（四）补充文件")) is None
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
