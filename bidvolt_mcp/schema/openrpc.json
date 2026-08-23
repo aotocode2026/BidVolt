@@ -1324,7 +1324,7 @@
               },
               "fields": {
                 "type": "object",
-                "description": "可选：{buyer, project_name, supplier, tender_no}"
+                "description": "可选：{buyer, project_name, supplier, tender_no} 必填四个；企业事实建议一并传 {legal_rep 法定代表人, address 单位地址, phone 电话, zip_code 邮政编码, fax 传真}（从 search_assets 企业资料库取，带标签空位会自动填实，避免本可填实却留【待补充】）"
               },
               "fills": {
                 "type": "array",

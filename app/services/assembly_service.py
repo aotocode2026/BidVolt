@@ -242,17 +242,27 @@ def _ensure_sess(s, fields: dict) -> Any:
             str(fields.get("project_name") or "").strip(),
             str(fields.get("supplier") or "").strip(),
             str(fields.get("tender_no") or "").strip(),
+            str(fields.get("legal_rep") or "").strip(),
+            str(fields.get("address") or "").strip(),
+            str(fields.get("phone") or "").strip(),
+            str(fields.get("zip_code") or "").strip(),
+            str(fields.get("fax") or "").strip(),
         )
     else:
         sess = s["sess"]
-        if fields.get("buyer") is not None:
-            sess.buyer = str(fields["buyer"]).strip()
-        if fields.get("project_name") is not None:
-            sess.project_name = str(fields["project_name"]).strip()
-        if fields.get("supplier") is not None:
-            sess.supplier = str(fields["supplier"]).strip()
-        if fields.get("tender_no") is not None:
-            sess.tender_no = str(fields["tender_no"]).strip()
+        for key, attr in (
+            ("buyer", "buyer"),
+            ("project_name", "project_name"),
+            ("supplier", "supplier"),
+            ("tender_no", "tender_no"),
+            ("legal_rep", "legal_rep"),
+            ("address", "address"),
+            ("phone", "phone"),
+            ("zip_code", "zip_code"),
+            ("fax", "fax"),
+        ):
+            if fields.get(key) is not None:
+                setattr(sess, attr, str(fields[key]).strip())
     return s["sess"]
 
 

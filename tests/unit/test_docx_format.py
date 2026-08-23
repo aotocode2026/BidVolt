@@ -417,6 +417,34 @@ def test_append_supplement_heading_param():
     assert "主会话撰写" not in joined
 
 
+def test_labeled_blanks_fill_enterprise_facts():
+    """带标签空位：企业事实（法人/地址/电话/邮编/传真）经 fields 传入自动填实，不落【待补充】。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    src.add_paragraph("单位地址：，法定地址：。")
+    src.add_paragraph("法定代表人（单位负责人）或授权代表：，电话：，邮政编码：，传真：。")
+    sess = _FillSession(
+        src, "采购人甲", "项目乙", "供应商丙", "412623-1",
+        legal_rep="张建国", address="北京市海淀区示例路1号", phone="010-88886666",
+        zip_code="100000", fax="010-88886667",
+    )
+    sess.apply_to_doc()
+    data = sess.finish()
+    joined = _all_text(data)
+    assert "单位地址：北京市海淀区示例路1号" in joined
+    assert "法定地址：北京市海淀区示例路1号" in joined
+    assert "法定代表人（单位负责人）或授权代表：张建国" in joined
+    assert "电话：010-88886666" in joined
+    assert "邮政编码：100000" in joined
+    assert "传真：010-88886667" in joined
+    # 无资料才【待补充】
+    sess2 = _FillSession(Document(), "", "", "", "")
+    assert "【待补充：电话】" in sess2._labeled_value("电话")
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
