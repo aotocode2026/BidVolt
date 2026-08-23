@@ -564,7 +564,9 @@ async def _export_session_json(hermes_bin: str, env: dict, session_id: str) -> d
 
 
 def _marker_from_export(data: dict | None, min_index: int = 0) -> str | None:
-    """从会话导出数据判完成标记（只看 min_index 之后的最后一条 assistant 回复）。"""
+    """从会话导出数据判完成标记（只看 min_index 之后的最后一条 assistant 回复）。
+    协议要求标记逐字出现在**最后一行**——正文里转述子 agent 的「判【PIPELINE_INCOMPLETE】」
+    等字样不算回执（曾因此把主会话工作摘要误判为结束回执，提前终止任务）。"""
     if not data:
         return None
     messages = data.get("messages") or []
@@ -573,9 +575,13 @@ def _marker_from_export(data: dict | None, min_index: int = 0) -> str | None:
         if m.get("role") != "assistant":
             continue
         content = str(m.get("content") or "")
-        if MARK_COMPLETE in content:
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        last = lines[-1]
+        if last == MARK_COMPLETE or last.startswith(MARK_COMPLETE):
             return MARK_COMPLETE
-        if MARK_INCOMPLETE in content:
+        if last == MARK_INCOMPLETE or last.startswith(MARK_INCOMPLETE):
             return MARK_INCOMPLETE
         break  # 只看最后一条 assistant 回复
     return None
