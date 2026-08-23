@@ -43,6 +43,8 @@ STALL_SECONDS = 600
 NUDGE_LIMIT = 3
 # 主会话进程提前退出（未输出完成标记）时，自动 --resume 续跑的轮数上限
 RESUME_ROUNDS = 2
+# 主会话输出 COMPLETE 后，系统追加的复核确认轮数（逐份自查交付件，当场修复后重新回执）
+CONFIRM_ROUNDS = 2
 # 完成标记轮询间隔（读 Hermes 会话库，判据=主会话最后一条回复，不受终端回显干扰）
 MARKER_POLL_SECONDS = 30
 # 完成协议标记（skill 与提示词同步约定）
@@ -196,6 +198,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "把技术方案/专项响应深化到「可以直接拿去投标」的程度（技术规范书的每项技术要求"
             "都有实质性响应、正文实际写在文件里，篇幅以内容需要为准，不凑字数），"
             "再重新 append→verify→seal→package_response_zip。"
+            "回执前逐份 inspect_agent_artifact 核对 pending_items 清单：分标/包信息从报价单/采购文件提取回填"
+            "进 fields.values；电话/地址/邮编/法人等从 search_assets 企业资料回填进 fields.values；"
+            "待补充标签必须具体（客户照着就能补）；修完重新 seal→package 再回执。"
             "搜索全领域开放：search_web_minimax（MiniMax 原生）/ search_web / Hermes web 均可搜"
             "（标的信息、企业公开信息、行业技术方案、商务写作范例、政策标准），来源经 save_source/link_citation 批注。"
             "成文要点：fill_template_slice 的 fields——buyer/project_name/tender_no/supplier 四个便捷键照填"
@@ -269,6 +274,12 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         "--yolo", "--accept-hooks",
         "--no-restore-cwd", "--max-turns", "120",
     ]
+    # 模型可选（A/B 用）：agent-run payload 传 model/provider 时切换主模型，
+    # 不传默认 MiniMax-M3/minimax（config.yaml）
+    if str(payload.get("model") or "").strip():
+        base_args += ["-m", str(payload["model"]).strip()]
+    if str(payload.get("provider") or "").strip():
+        base_args += ["--provider", str(payload["provider"]).strip()]
 
     async def _run_repl_round(resume_sid: str | None, first_message: str) -> tuple[str | None, str | None]:
         """启动（或 --resume）一个 REPL 进程，驱动到完成标记或进程退出。
@@ -456,6 +467,33 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         )
         marker, sid = await _run_repl_round(resume_sid=sid, first_message=continuation)
         _, tail = await _repl_session_state(session, task)
+
+    # 完成后的系统复核确认（最多 CONFIRM_ROUNDS 轮）：主会话回执后再逐份自查交付件，
+    # 发现问题当场修复后重新回执——用信息信号（remaining_blanks/pending_items）驱动收敛
+    confirm_rounds = 0
+    while marker == MARK_COMPLETE and confirm_rounds < CONFIRM_ROUNDS and sid:
+        confirm_rounds += 1
+        confirm_prompt = (
+            "（系统复核确认）请对交付件做最后确认：用 list_agent_artifacts + inspect_agent_artifact "
+            "逐份打开每一份交付文件，核对 remaining_blanks/pending_items——"
+            "凡能从采购文件/企业资料库/搜索取得的（如分标/包、电话/地址/邮编/法人）必须填实；"
+            "只允许客户独占数据待补充且标签具体（客户照着就能补）。"
+            "发现问题立即修复（重新 fill/seal/package）后再输出结束标记；"
+            "确认无误最后一行输出 " + MARK_COMPLETE + "；确有无法修复项输出 " + MARK_INCOMPLETE + " 原因…。"
+        )
+        await _append_events(
+            session, task, seq,
+            [("service", f"系统复核确认（第 {confirm_rounds}/{CONFIRM_ROUNDS} 轮）：主会话逐份自查交付件。")],
+        )
+        confirm_marker, sid2 = await _run_repl_round(resume_sid=sid, first_message=confirm_prompt)
+        _, tail = await _repl_session_state(session, task)
+        if confirm_marker is not None:
+            marker = confirm_marker
+        if sid2:
+            sid = sid2
+        if marker == MARK_COMPLETE:
+            continue  # 本轮确认通过；再来一轮独立确认（共 CONFIRM_ROUNDS 轮）
+        break  # INCOMPLETE 或提前退出：以本轮结论为准（None 时保留原 COMPLETE）
 
     if marker == MARK_COMPLETE:
         task.result = {

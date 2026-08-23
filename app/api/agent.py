@@ -69,6 +69,10 @@ async def agent_run(
     if not idempotency_key:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 idempotency_key")
     payload = dict(body.get("payload") or {})
+    # 模型可选（A/B）：model/provider 透传给主会话启动参数
+    for key in ("model", "provider"):
+        if body.get(key):
+            payload[key] = str(body[key]).strip()
     resume_from_task_id = body.get("resume_from_task_id")
     if resume_from_task_id is not None:
         # 续跑上一单：校验上一任务归属与类型，取其会话 id 注入 payload

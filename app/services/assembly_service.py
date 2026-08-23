@@ -292,11 +292,15 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
         if ok:
             n_table += 1
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
+    remaining = sess.remaining_blanks()
     return {
         "slice_id": slice_id,
         "explicit_fills": n_fills,
         "table_fills_done": n_table,
         "fields_used": {k: str(v) for k, v in (fields or {}).items() if v},
+        # 填完即反馈：本文档还有哪些空位没填（逐项标签+上下文），主会话逐项清零到只剩客户独占数据
+        "remaining_blanks": remaining,
+        "remaining_count": len(remaining),
     }
 
 
@@ -329,6 +333,9 @@ def verify_slice(slice_id: str, task_id: int) -> dict:
     s["verified"] = bool(r["ok"])
     if not r["ok"]:
         s["verified"] = False
+    # 校验时同步反馈：还有哪些空位没填（信息信号）
+    r["remaining_blanks"] = s["sess"].remaining_blanks() if s.get("sess") is not None else export_service._scan_remaining(s["doc"].element)
+    r["remaining_count"] = len(r["remaining_blanks"])
     return r
 
 
@@ -675,7 +682,7 @@ async def inspect_artifact(
         # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题
         pending_items: list[dict] = []
         for m in _re.finditer(r"【待补充[^】]*】", text):
-            label = m.group(0)[4:-1] if m.group(0).startswith("【待补充：") else ""
+            label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
             start = max(0, m.start() - 18)
             pending_items.append(
                 {

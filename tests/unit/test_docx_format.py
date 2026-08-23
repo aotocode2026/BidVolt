@@ -454,6 +454,24 @@ def test_labeled_blanks_fill_enterprise_facts():
     assert "【待补充：电话】" in sess2._labeled_value("电话")
 
 
+def test_remaining_blanks_signal():
+    """填完即反馈：remaining_blanks 逐处列出本文档还有哪些空位没填（标签+上下文）。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    src.add_paragraph("电话：，分标名称：，单位地址：。")
+    sess = _FillSession(src, "", "", "", "", label_values={"电话": "010-88886666"})
+    sess.apply_to_doc()
+    items = sess.remaining_blanks()
+    labels = [i["label"] for i in items]
+    assert "分标名称" in labels and "单位地址" in labels
+    assert "电话" not in labels  # 已填的不出现在剩余清单
+    ctx = {i["label"]: i.get("context", "") for i in items}
+    assert "分标" in ctx["分标名称"] or ctx["分标名称"] == ""
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 

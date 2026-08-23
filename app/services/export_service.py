@@ -428,6 +428,11 @@ class _FillSession:
         p_pr.append(outline)
         return p
 
+    def remaining_blanks(self, limit: int = 30) -> list[dict]:
+        """本文档还有哪些空位没填（信息信号）：逐处列出待补充标签与上下文。
+        填完即反馈，主会话逐项处理：能填的填（values/fills/table_fills），不能填的确认标签具体。"""
+        return _scan_remaining(self.doc.element, limit)
+
     def fill_table_cell(self, table_idx: int, row_idx: int, col_idx: int, value: str, comment: str | None = None) -> bool:
         """定向填写模板表格单元格（修订插入+批注）：表格类条目应把内容填进模板自身的表格，
         而不是空着表格把内容挂到文件末尾。越界返回 False（调用方如实记录）。"""
@@ -485,6 +490,24 @@ class _FillSession:
         buf = BytesIO()
         self.doc.save(buf)
         return buf.getvalue()
+
+
+def _scan_remaining(root, limit: int = 30) -> list[dict]:
+    """模块级空位扫描（fill/verify 共用）：逐处列出【待补充】标签与上下文、剩余裸下划线。"""
+    import re as _re2
+
+    text = "".join(root.itertext())
+    items: list[dict] = []
+    for m in _re2.finditer(r"【待补充[^】]*】", text):
+        label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
+        items.append({"label": label, "context": text[max(0, m.start() - 16):m.start()]})
+        if len(items) >= limit:
+            break
+    for m in _re2.finditer(r"_{2,}", text):
+        items.append({"label": "", "kind": "underscore", "context": text[max(0, m.start() - 10):m.start()]})
+        if len(items) >= limit:
+            break
+    return items
 
 
 def docx_from_template(source_path, model: dict) -> bytes:
