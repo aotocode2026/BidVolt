@@ -166,11 +166,7 @@ class _FillSession:
         project_name: str,
         supplier: str,
         tender_no: str = "",
-        legal_rep: str = "",
-        address: str = "",
-        phone: str = "",
-        zip_code: str = "",
-        fax: str = "",
+        label_values: dict | None = None,
     ):
         import re as _re
 
@@ -184,11 +180,7 @@ class _FillSession:
         self.project_name = project_name
         self.supplier = supplier
         self.tender_no = tender_no
-        self.legal_rep = legal_rep
-        self.address = address
-        self.phone = phone
-        self.zip_code = zip_code
-        self.fax = fax
+        self.label_values: dict[str, str] = dict(label_values or {})
         self._re = _re
         self._qn = qn
         self._Pt = Pt
@@ -197,14 +189,14 @@ class _FillSession:
             "【招标人名称】", "【供应商名称】", "【项目名称】",
         )
         # 带标签空位（模板空位为空格/无下划线形态，如"采购编号：    ，"与"包名称：   采购文件"）：
-        # P1 = 标签后直接是标点/行尾（空位零宽）；P2 = 标签后有空白再跟正文
-        _labels = (
+        # P1 = 标签后直接是标点/行尾（空位零宽）；P2 = 标签后有空白再跟正文。
+        # 标签词表 = 常见模板标签（兜底标记用）+ agent 传入的任意标签（通用填值）。
+        self._LABEL_BASE = (
             "采购编号|项目名称|分标名称|分标编号|包名称|包号|响应供应商|单位地址|法定地址|"
             "法定代表人（单位负责人）或授权代表|法定代表人（单位负责人）|法定代表人|"
             "邮政编码|电话|传真|日期"
         )
-        self._LABEL_P1 = _re.compile(rf"({_labels})[：:]\s*(?=[，,。;；）)（(]|$)")
-        self._LABEL_P2 = _re.compile(rf"({_labels})[：:][ \u3000]+(?=[^，,。;；）)\s])")
+        self._compile_label_regexes()
         # Word 显示修订标记的前提：settings.xml 须含 <w:trackChanges/>，
         # 否则 w:ins/w:del 会被当作普通文本（插入可见、删除被吞）。
         settings_el = doc.settings.element
@@ -216,25 +208,31 @@ class _FillSession:
             else:
                 settings_el.append(tc)
 
+    def _compile_label_regexes(self) -> None:
+        """标签词表 = 常见标签 ∪ agent 传入的任意标签键（通用填值，不写死业务字段）。"""
+        extra = "|".join(
+            self._re.escape(str(k)) for k in self.label_values.keys() if str(k).strip()
+        )
+        labels = self._LABEL_BASE if not extra else f"{self._LABEL_BASE}|{extra}"
+        self._LABEL_P1 = self._re.compile(rf"({labels})[：:]\s*(?=[，,。;；）)（(]|$)")
+        self._LABEL_P2 = self._re.compile(rf"({labels})[：:][ \u3000]+(?=[^，,。;；）)\s])")
+
+    def set_label_values(self, label_values: dict) -> None:
+        """agent 随时补充任意标签的填值（数据来源由 agent 决定：资料库/采购文件/搜索/推断）。"""
+        self.label_values.update({str(k): str(v) for k, v in (label_values or {}).items()})
+        self._compile_label_regexes()
+
     def _labeled_value(self, label: str) -> str:
-        """带标签空位的回填值：有资料填值；无资料原位【待补充：标签】（不编造）。
-        企业事实（法人/地址/电话/邮编/传真）经 fields 传入后自动填实。"""
+        """带标签空位的回填值：agent 传了该标签的值就填；没传就原位【待补充：标签】（不编造）。
+        数据来源由 agent 决定（资料库/采购文件/搜索/推断），机制不预设业务字段。"""
         if label == "采购编号":
-            return self.tender_no or "【待补充：采购编号】"
+            return self.tender_no or self.label_values.get(label) or "【待补充：采购编号】"
         if label == "项目名称":
-            return self.project_name or "【待补充：项目名称】"
+            return self.project_name or self.label_values.get(label) or "【待补充：项目名称】"
         if label == "响应供应商":
-            return self.supplier or "【待补充：供应商名称】"
-        if label in ("单位地址", "法定地址"):
-            return self.address or f"【待补充：{label}】"
-        if label in ("法定代表人", "法定代表人（单位负责人）", "法定代表人（单位负责人）或授权代表"):
-            return self.legal_rep or f"【待补充：{label}】"
-        if label == "电话":
-            return self.phone or "【待补充：电话】"
-        if label == "邮政编码":
-            return self.zip_code or "【待补充：邮政编码】"
-        if label == "传真":
-            return self.fax or "【待补充：传真】"
+            return self.supplier or self.label_values.get(label) or "【待补充：供应商名称】"
+        if label in self.label_values:
+            return self.label_values[label]
         return f"【待补充：{label}】"
 
     def fill(self, text: str) -> str:
