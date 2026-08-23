@@ -159,7 +159,19 @@ class _FillSession:
     """一次成文的填空会话：修订模式填空 + 批注来源 + 补充内容追加。
     整本成文（docx_from_template）与逐份成文（响应文件包）共用同一套规则。"""
 
-    def __init__(self, doc, buyer: str, project_name: str, supplier: str, tender_no: str = ""):
+    def __init__(
+        self,
+        doc,
+        buyer: str,
+        project_name: str,
+        supplier: str,
+        tender_no: str = "",
+        legal_rep: str = "",
+        address: str = "",
+        phone: str = "",
+        zip_code: str = "",
+        fax: str = "",
+    ):
         import re as _re
 
         from docx.oxml import OxmlElement as _OxmlElement
@@ -172,6 +184,11 @@ class _FillSession:
         self.project_name = project_name
         self.supplier = supplier
         self.tender_no = tender_no
+        self.legal_rep = legal_rep
+        self.address = address
+        self.phone = phone
+        self.zip_code = zip_code
+        self.fax = fax
         self._re = _re
         self._qn = qn
         self._Pt = Pt
@@ -200,13 +217,24 @@ class _FillSession:
                 settings_el.append(tc)
 
     def _labeled_value(self, label: str) -> str:
-        """带标签空位的回填值：有资料填值；无资料原位【待补充：标签】（不编造）。"""
+        """带标签空位的回填值：有资料填值；无资料原位【待补充：标签】（不编造）。
+        企业事实（法人/地址/电话/邮编/传真）经 fields 传入后自动填实。"""
         if label == "采购编号":
             return self.tender_no or "【待补充：采购编号】"
         if label == "项目名称":
             return self.project_name or "【待补充：项目名称】"
         if label == "响应供应商":
             return self.supplier or "【待补充：供应商名称】"
+        if label in ("单位地址", "法定地址"):
+            return self.address or f"【待补充：{label}】"
+        if label in ("法定代表人", "法定代表人（单位负责人）", "法定代表人（单位负责人）或授权代表"):
+            return self.legal_rep or f"【待补充：{label}】"
+        if label == "电话":
+            return self.phone or "【待补充：电话】"
+        if label == "邮政编码":
+            return self.zip_code or "【待补充：邮政编码】"
+        if label == "传真":
+            return self.fax or "【待补充：传真】"
         return f"【待补充：{label}】"
 
     def fill(self, text: str) -> str:
