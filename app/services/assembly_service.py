@@ -242,11 +242,7 @@ def _ensure_sess(s, fields: dict) -> Any:
             str(fields.get("project_name") or "").strip(),
             str(fields.get("supplier") or "").strip(),
             str(fields.get("tender_no") or "").strip(),
-            str(fields.get("legal_rep") or "").strip(),
-            str(fields.get("address") or "").strip(),
-            str(fields.get("phone") or "").strip(),
-            str(fields.get("zip_code") or "").strip(),
-            str(fields.get("fax") or "").strip(),
+            label_values=(fields.get("label_values") if isinstance(fields.get("label_values"), dict) else {}),
         )
     else:
         sess = s["sess"]
@@ -255,14 +251,11 @@ def _ensure_sess(s, fields: dict) -> Any:
             ("project_name", "project_name"),
             ("supplier", "supplier"),
             ("tender_no", "tender_no"),
-            ("legal_rep", "legal_rep"),
-            ("address", "address"),
-            ("phone", "phone"),
-            ("zip_code", "zip_code"),
-            ("fax", "fax"),
         ):
             if fields.get(key) is not None:
                 setattr(sess, attr, str(fields[key]).strip())
+        if isinstance(fields.get("label_values"), dict) and fields["label_values"]:
+            sess.set_label_values(fields["label_values"])
     return s["sess"]
 
 

@@ -140,9 +140,10 @@ ASSEMBLY_TOOL_DEFS = [
                 "slice_id": {"type": "string"},
                 "fields": {
                     "type": "object",
-                    "description": "可选：{buyer, project_name, supplier, tender_no} 必填四个；"
-                                    "企业事实建议一并传 {legal_rep 法定代表人, address 单位地址, phone 电话, zip_code 邮政编码, fax 传真}"
-                                    "（从 search_assets 企业资料库取，带标签空位会自动填实，避免本可填实却留【待补充】）",
+                    "description": "buyer/project_name/supplier/tender_no 为核心四值；"
+                                    "label_values={模板标签:值} 是通用标签填值——任意标签都可以给值"
+                                    "（如 {电话:010-…, 单位地址:…, 法定代表人:张建国, 分标名称:…}），"
+                                    "值从哪取由主会话决定：企业资料库 search_assets / 采购文件 / 网络搜索 / 推断均可",
                 },
                 "fills": {
                     "type": "array",
