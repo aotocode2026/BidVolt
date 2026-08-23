@@ -361,6 +361,22 @@ class _FillSession:
         p_pr.append(outline)
         return p
 
+    def fill_table_cell(self, table_idx: int, row_idx: int, col_idx: int, value: str, comment: str | None = None) -> bool:
+        """定向填写模板表格单元格（修订插入+批注）：表格类条目应把内容填进模板自身的表格，
+        而不是空着表格把内容挂到文件末尾。越界返回 False（调用方如实记录）。"""
+        tables = self.doc.tables
+        if table_idx < 0 or table_idx >= len(tables):
+            return False
+        tb = tables[table_idx]
+        if row_idx < 0 or row_idx >= len(tb.rows) or col_idx < 0 or col_idx >= len(tb.rows[row_idx].cells):
+            return False
+        cell = tb.rows[row_idx].cells[col_idx]
+        cell.text = ""
+        run = cell.paragraphs[0].add_run(self.fill(str(value)))
+        self.editor.track_insert_run(run)
+        self.editor.add_comment(comment or "主会话按采购文件要求填写本单元格（修订插入），请复核。")
+        return True
+
     def append_supplement(self, nodes, heading_text: str | None = None, comment: str | None = None, page_break: bool = True) -> None:
         """把撰写内容追加为修订插入（w:ins）+ 批注；heading_text 为 None 时不加总标题。"""
         Pt = self._Pt

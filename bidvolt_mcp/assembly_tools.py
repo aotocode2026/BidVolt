@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """成文工具链 MCP 工具注册（新方案）：主会话自主成文的机制工具。
 
 这些工具是"机制"：切片=底稿条目区间字节级复制、填空/追加=修订模式+批注、
@@ -35,14 +34,14 @@ def _slice_template_item(args: dict) -> dict:
 def _fill_template_slice(args: dict) -> dict:
     return _post(
         f"/api/v1/projects/{args['project_id']}/assembly/slices/{args['slice_id']}/fill",
-        {"fields": args.get("fields"), "fills": args.get("fills")},
+        {"fields": args.get("fields"), "fills": args.get("fills"), "table_fills": args.get("table_fills")},
     )
 
 
 def _append_template_slice(args: dict) -> dict:
     return _post(
         f"/api/v1/projects/{args['project_id']}/assembly/slices/{args['slice_id']}/append",
-        {"nodes": args.get("nodes"), "comment": args.get("comment")},
+        {"nodes": args.get("nodes"), "comment": args.get("comment"), "heading": args.get("heading")},
     )
 
 
@@ -155,6 +154,21 @@ ASSEMBLY_TOOL_DEFS = [
                         "required": ["find", "value"],
                     },
                 },
+                "table_fills": {
+                    "type": "array",
+                    "description": "把内容填进模板自身表格的单元格（表格/表单类条目必须逐格填表，不要空着表格把内容挂文末）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "table": {"type": "integer", "description": "切片内表格序号（0 起）"},
+                            "row": {"type": "integer", "description": "行号（0 起）"},
+                            "col": {"type": "integer", "description": "列号（0 起）"},
+                            "value": {"type": "string"},
+                            "comment": {"type": "string", "description": "批注：来源与依据"},
+                        },
+                        "required": ["table", "row", "col", "value"],
+                    },
+                },
             },
             "required": ["project_id", "slice_id"],
             "additionalProperties": False,
@@ -165,7 +179,8 @@ ASSEMBLY_TOOL_DEFS = [
         "name": "append_template_slice",
         "description": (
             "成文工具（机制）：把撰写内容追加到切片（修订插入+批注）。"
-            "nodes 支持 {type:heading|paragraph|table,text/rows} 或裸字符串。"
+            "nodes 支持 {type:heading|paragraph|table,text/rows} 或裸字符串；"
+            "heading 为总标题，按投标文体自定（方案类条目正文追加用），不传用中性默认「响应内容」。"
         ),
         "inputSchema": {
             "type": "object",
@@ -174,6 +189,7 @@ ASSEMBLY_TOOL_DEFS = [
                 "slice_id": {"type": "string"},
                 "nodes": {"type": "array"},
                 "comment": {"type": "string"},
+                "heading": {"type": "string", "description": "追加节标题（投标文体，如该条目章节名）"},
             },
             "required": ["project_id", "slice_id"],
             "additionalProperties": False,
