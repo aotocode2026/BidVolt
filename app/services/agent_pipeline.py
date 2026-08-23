@@ -195,6 +195,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "验收不通过带报告修复，全部满足后再输出。"
             "成文要求：get_template_outline 里 is_file_item=true 的全部条目都必须"
             "slice→fill→append→verify→seal 后一起 package_response_zip；"
+            "build_quote_xlsx 的 sheets[].rows 必须是数组的数组（每行一个数组，不得用对象/带 item 键）。"
             "评分步骤：submit_score_items 成功落分即算闭环，自动评分分数仅作记录不作验收门。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
