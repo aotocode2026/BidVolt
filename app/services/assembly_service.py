@@ -208,7 +208,7 @@ async def create_slice(
         "req_id": int(req_id),
         "title": req_title,
         "matched_title": (matched_title or "").strip(),
-        "verified": False,  # 必须 verify 通过才能 seal（服务端硬闸）
+        "verified": False,  # 信息信号：是否通过过 verify（seal 回执带 was_verified 供 agent 自查）
         "task_id": int(task_id),
         "project_id": int(project_id),
         "enterprise_id": int(enterprise_id),
@@ -272,7 +272,7 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
         from app.services import export_service
 
         n_fills += export_service.replace_text_tracked(sess.editor, find, value, comment)
-    s["verified"] = False  # 内容有改动：seal 前必须重新 verify（服务端硬闸）
+    s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
     return {
         "slice_id": slice_id,
         "explicit_fills": n_fills,
@@ -289,14 +289,14 @@ def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment:
         heading_text="响应内容（主会话撰写，修订插入，请复核）",
         comment=comment or "本节为主会话针对本条目撰写的响应内容（修订插入），请人工复核。",
     )
-    s["verified"] = False  # 内容有改动：seal 前必须重新 verify（服务端硬闸）
+    s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
     return {"slice_id": slice_id, "appended_nodes": len(nodes or [])}
 
 
 def verify_slice(slice_id: str, task_id: int) -> dict:
     """忠实性校验：条目文件原文（含删除线、剔除插入）逐字⊂底稿。不过时返回差异片段。
     附带身份信息（req_title=请求条目、matched_title=实际绑定条目）供主会话比对；
-    通过后置 verified 标记（seal 硬闸只放行已通过校验且校验后未被改动的切片）。"""
+    通过后置 verified 标记（seal 回执的 was_verified 信号，供验收子 agent 核对）。"""
     s = _slice(slice_id, task_id)
     from app.services import export_service
 

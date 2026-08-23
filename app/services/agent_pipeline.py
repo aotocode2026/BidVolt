@@ -49,11 +49,11 @@ MARKER_POLL_SECONDS = 30
 MARK_COMPLETE = "【PIPELINE_COMPLETE】"
 MARK_INCOMPLETE = "【PIPELINE_INCOMPLETE】"
 
-# 主会话工具集：全能力开放（产品决定）。bidvolt=全部 37 个业务 MCP 工具（白名单已全放行）；
+# 主会话工具集：全能力开放（产品决定）。bidvolt=全部 39 个业务 MCP 工具（白名单已全放行）；
 # 其余为 Hermes 内置工具集（web/browser/terminal/code_execution/file/vision/
 # image_gen/tts/skills/todo/memory/session_search/clarify/delegation/cronjob/computer_use）。
-# 危险命令确认由 --yolo 跳过（自主批量运行无人点确认）；交付件正确性不依赖
-# 工具收敛，而由服务端机械硬闸（seal 双闸 + package 全量审计）保证。
+# 危险命令确认由 --yolo 跳过（自主批量运行无人点确认）；交付件合规性由
+# 主会话 + 验收/评审子 agent 多轮保证（服务端只给信息信号，不设硬性流程代码）。
 _HERMES_TOOLSETS = (
     "bidvolt,web,browser,terminal,code_execution,file,vision,image_gen,tts,"
     "skills,todo,memory,session_search,clarify,delegation,cronjob,computer_use"
@@ -191,8 +191,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "流程与守则见预载 skill（bidvolt-agent-pipeline）。"
             "写作要求：技术方案/专项响应等方案性条目必须写出完整专业正文（方案性内容大胆写、"
             "事实性数据守据——企业事实用 search_assets，缺数标【待补充】不编造）。"
-            "若上一轮方案性条目篇幅不足：用 search_web_minimax/search_web 检索行业标准、同类项目做法"
-            "与专业规范，把技术方案/专项响应深化到能直接投标的篇幅（数千字、覆盖技术规范书各章节），"
+            "若上一轮方案性条目深度不足（含出现「详见/已另行撰写/约XX字」目录式占位而正文缺失）："
+            "用 search_web_minimax/search_web 检索行业标准、同类项目做法与专业规范，"
+            "把技术方案/专项响应深化到「可以直接拿去投标」的程度（技术规范书的每项技术要求"
+            "都有实质性响应、正文实际写在文件里，篇幅以内容需要为准，不凑字数），"
             "再重新 append→verify→seal→package_response_zip。"
             "搜索全领域开放：search_web_minimax（MiniMax 原生）/ search_web / Hermes web 均可搜"
             "（标的信息、企业公开信息、行业技术方案、商务写作范例、政策标准），来源经 save_source/link_citation 批注。"
@@ -219,6 +221,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "写作要求（客户要的是能直接投标的交付件）：技术方案/专项响应等方案性条目必须写出完整专业的正文"
             "（项目理解→总体方案/架构→分项技术方案→实施组织与进度→质量/安全/进度保障→售后培训），"
             "方案性内容大胆写、事实性数据守据——企业事实用 search_assets，缺数标【待补充】不编造。"
+            "方案正文必须实际写在文件里：禁止「详见…」「已另行撰写」「约 XX 字」等目录/索引式占位，出现即不合格。"
             "搜索全领域开放：search_web_minimax（MiniMax 原生）/ search_web（AnySearch）/ Hermes web 均可搜"
             "——标的信息、企业公开信息、行业技术方案做法、商务标写作范例、政策法规标准；"
             "重要来源 save_source 入库 + link_citation 绑定，与企业资料库冲突时以资料库为准。"
@@ -262,7 +265,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         "-t", _HERMES_TOOLSETS,
         "-s", "bidvolt-agent-pipeline",
         # 全能力开放：跳过危险命令确认与 shell 钩子确认（自主批量运行无人可点确认，
-        # 留着确认流程=终端能力形同虚设；交付件正确性由服务端硬闸保证）
+        # 留着确认流程=终端能力形同虚设；交付件合规性由主会话+验收/评审子 agent 保证）
         "--yolo", "--accept-hooks",
         "--no-restore-cwd", "--max-turns", "120",
     ]
