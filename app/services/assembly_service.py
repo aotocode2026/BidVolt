@@ -661,6 +661,8 @@ async def inspect_artifact(
         "bytes": len(art.content or b""),
     }
     if art.kind == "item_docx":
+        import re as _re
+
         from lxml import etree as _etree
 
         from app.services.export_service import _W_NS
@@ -669,12 +671,25 @@ async def inspect_artifact(
         with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
             doc = _etree.fromstring(zf.read("word/document.xml"))
         text = "".join(doc.itertext())
+        # 待补充逐项清单（信息信号）：让检查者一眼看到"哪些还没填、分别要补什么"，
+        # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题
+        pending_items: list[dict] = []
+        for m in _re.finditer(r"【待补充[^】]*】", text):
+            label = m.group(0)[4:-1] if m.group(0).startswith("【待补充：") else ""
+            start = max(0, m.start() - 18)
+            pending_items.append(
+                {
+                    "label": label,
+                    "context": text[start:m.start()],
+                }
+            )
         base.update(
             {
                 "text_preview_head": text[:600],
                 "text_preview_tail": text[-300:],
                 "chars": len(text),
                 "pending_count": text.count("【待补充"),
+                "pending_items": pending_items,
                 "ins_count": len(doc.findall(".//" + W + "ins")),
                 "del_count": len(doc.findall(".//" + W + "del")),
             }
