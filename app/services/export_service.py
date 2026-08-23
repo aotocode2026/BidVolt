@@ -249,31 +249,32 @@ class _FillSession:
         return out
 
     def comment(self, old: str, new: str) -> str:
-        """修订批注：说明改了什么、依据来源（产品要求：批注必须说明来自哪里）。"""
+        """修订批注：说明改了什么、依据来源（产品要求：批注必须说明来自哪里）。
+        批注是审阅侧留痕，措辞保持专业投标口吻，不带系统痕迹。"""
         buyer, project_name, supplier = self.buyer, self.project_name, self.supplier
         filled: list[str] = []
         if ("（采购人）" in old or "【招标人名称】" in old or "招标人：" in old) and buyer:
-            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告，系统确定性提取）")
+            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告）")
         elif ("致：" in old and "采购人" in old) and buyer:
-            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告，系统确定性提取）")
+            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告）")
         if ("（响应供应商名称）" in old or "【供应商名称】" in old or "响应供应商名称" in old) and supplier:
             filled.append(f"供应商=「{supplier}」（来源：企业资料-企业名称）")
         if ("（项目名称）" in old or "【项目名称】" in old or "项目名称：" in old) and project_name:
-            filled.append(f"项目名称=「{project_name}」（来源：招标文件封面/采购公告，系统确定性提取）")
+            filled.append(f"项目名称=「{project_name}」（来源：招标文件封面/采购公告）")
         if "采购编号" in old and self.tender_no:
-            filled.append(f"采购编号=「{self.tender_no}」（来源：招标文件封面/采购公告，系统确定性提取）")
+            filled.append(f"采购编号=「{self.tender_no}」（来源：招标文件封面/采购公告）")
         if self._re.search(r"(分标名称|分标编号|包名称|包号)[：:]", old) and "【待补充" in new:
             filled.append("分标/包 信息未指定应答分包，原位标注【待补充】（按所应答分包填写）")
         if filled:
             if "【待补充" in new:
                 return (
-                    "系统回填：" + "；".join(filled)
-                    + "；本处其余空位（如授权人/被授权人等）未取得对应资料，原位标注【待补充】。请人工复核确认。"
+                    "已按来源资料回填：" + "；".join(filled)
+                    + "；本处其余空位（如授权人/被授权人等）未取得对应资料，原位标注【待补充】。请复核确认。"
                 )
-            return "系统回填：" + "；".join(filled) + "。请人工复核确认。"
+            return "已按来源资料回填：" + "；".join(filled) + "，请复核。"
         if "【待补充" in new:
-            return "模板空位未取得对应资料，系统原位标注【待补充】（不编造内容），请人工填写后确认。"
-        return "系统按招标文件内容补充填写（模型推断，供参考），请人工复核确认。"
+            return "模板空位未取得对应资料，原位标注【待补充】（不编造内容），取得资料后填写确认。"
+        return "按招标文件内容补充填写（供参考），请复核确认。"
 
     def apply_to_doc(self) -> None:
         """全文档（含表格、控件、文本框）逐段填空（修订模式+批注）。"""
@@ -374,7 +375,7 @@ class _FillSession:
         cell.text = ""
         run = cell.paragraphs[0].add_run(self.fill(str(value)))
         self.editor.track_insert_run(run)
-        self.editor.add_comment(comment or "主会话按采购文件要求填写本单元格（修订插入），请复核。")
+        self.editor.add_comment(comment or "按采购文件要求填写本单元格，请复核。")
         return True
 
     def append_supplement(self, nodes, heading_text: str | None = None, comment: str | None = None, page_break: bool = True) -> None:
@@ -437,10 +438,9 @@ def docx_from_template(source_path, model: dict) -> bytes:
     sess.apply_to_doc()
     sess.append_supplement(
         model.get("supplement_nodes") or [],
-        heading_text="补充响应内容（在采购文件模板基础上增加，格式自拟部分）",
-        comment="本节为系统在采购文件模板基础上【新增】的补充响应内容："
-                "由模型依据招标文件要求与企业资料撰写（企业事实以资料为准，未知处标【待补充】），"
-                "请人工复核后确认。",
+        heading_text="补充响应内容",
+        comment="本节为补充响应内容（依据采购文件要求与企业资料撰写，企业事实以资料为准，"
+                "未知处标【待补充】），请复核确认。",
     )
     return sess.finish()
 
@@ -926,7 +926,7 @@ def replace_text_tracked(editor, find: str, value: str, comment: str | None) -> 
             continue
         # 整段替换（跨 run 拆分复杂度交给 track_paragraph_replace）
         new_full = full.replace(find, value)
-        editor.track_paragraph_replace(t_nodes, full, new_full, comment or "系统按主会话指令回填，请人工复核。")
+        editor.track_paragraph_replace(t_nodes, full, new_full, comment or "按采购文件与应答资料回填，请复核。")
         replaced += full.count(find)
     return replaced
 
@@ -940,9 +940,9 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
     if extra_nodes:
         sess.append_supplement(
             extra_nodes,
-            heading_text="响应内容（系统撰写，修订插入，请复核）",
-            comment="本节为系统针对本条目撰写的响应内容（依据招标文件要求与企业资料，未知处标【待补充】），"
-                    "以修订插入标记，请人工复核后确认。",
+            heading_text="响应内容",
+            comment="本节为针对本条目撰写的响应内容（依据招标文件要求与企业资料，未知处标【待补充】），"
+                    "修订插入留痕，请复核确认。",
         )
     elif row is not None and not located:
         sess.editor.add_comment("该条目在底稿中未定位到原文区间，本文件按解析清单内容重建（可能不完整），"
