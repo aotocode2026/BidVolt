@@ -493,9 +493,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             marker = confirm_marker
         if sid2:
             sid = sid2
-        if marker == MARK_COMPLETE:
-            continue  # 本轮确认通过；再来一轮独立确认（共 CONFIRM_ROUNDS 轮）
-        break  # INCOMPLETE 或提前退出：以本轮结论为准（None 时保留原 COMPLETE）
+        # 复核确认通过（COMPLETE）即收尾：一轮确认通过就停，不再空转第二轮
+        # （第二轮复核曾卡住触发催办，agent 把催办文案回显成 INCOMPLETE 造成假阴性）
+        break
 
     if marker == MARK_COMPLETE:
         task.result = {
@@ -522,7 +522,13 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         if m:
             reason = m.group(1).strip()
         # 过滤占位回声：agent 照抄提示模板时会把「+原因」「不要其他内容」等字样当正文输出
-        if reason in ("+原因", "＋原因", "原因…", "原因", "") or "不要其他内容" in reason:
+        if (
+            reason in ("+原因", "＋原因", "原因…", "原因", "")
+            or "不要其他内容" in reason
+            or "并紧接着写出具体原因" in reason
+            or "不要写" in reason
+            or "写真实原因" in reason
+        ):
             reason = ""
         task.result = {
             "runtime": "hermes-main-session",
