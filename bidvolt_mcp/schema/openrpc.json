@@ -1018,6 +1018,44 @@
       }
     },
     {
+      "name": "search_web_minimax",
+      "summary": "MiniMax 原生联网搜索（全领域开放：行业技术方案、商务标写作范例、企业公开信息、政策法规等都可以搜；返回 title/link/snippet，重要来源用 save_source 入库、link_citation 绑定引用）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "save_source",
       "summary": "将搜索结果入库并判定 trust_level",
       "params": [
@@ -1093,6 +1131,501 @@
               "deliverable_id",
               "version_no",
               "source_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "resolve_template_draft",
+      "summary": "成文工具：列出候选底稿 docx（按是否含《响应文件格式》章分级排序）与推荐 file_id。主会话据此选择底稿（slice_template_item 的 file_id 参数）。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "get_template_outline",
+      "summary": "成文工具：返回《响应文件格式》模板清单（doc_template），按 价格/商务/技术 分组，每项带 req_id（作为 slice_template_item 的 item_ref）。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "slice_template_item",
+      "summary": "成文工具（机制）：把底稿中该模板条目区间原文整段复制为独立文档切片（保留格式），返回 slice_id。未定位到时按解析清单内容重建并在返回 warn 中如实标注。同一切片后续 fill/append/verify/seal。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "file_id": {
+                "type": "integer",
+                "description": "底稿 docx 的 file_id（见 resolve_template_draft）"
+              },
+              "req_id": {
+                "type": "integer",
+                "description": "模板条目 req_id（见 get_template_outline）"
+              }
+            },
+            "required": [
+              "project_id",
+              "file_id",
+              "req_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "fill_template_slice",
+      "summary": "成文工具（机制）：对切片做修订模式填空+批注。先按 fields（buyer/project_name/supplier/tender_no）走标准填空规则（无资料的空位原位标注【待补充：标签】），再按 fills=[{find,value,comment}] 定向替换。所有改动均带修订标记与来源批注，模板原文保留为删除线。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "slice_id": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "description": "可选：{buyer, project_name, supplier, tender_no}"
+              },
+              "fills": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "find": {
+                      "type": "string",
+                      "description": "模板原文片段"
+                    },
+                    "value": {
+                      "type": "string"
+                    },
+                    "comment": {
+                      "type": "string",
+                      "description": "批注：来源与依据"
+                    }
+                  },
+                  "required": [
+                    "find",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "project_id",
+              "slice_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "append_template_slice",
+      "summary": "成文工具（机制）：把撰写内容追加到切片（修订插入+批注）。nodes 支持 {type:heading|paragraph|table,text/rows} 或裸字符串。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "slice_id": {
+                "type": "string"
+              },
+              "nodes": {
+                "type": "array"
+              },
+              "comment": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "slice_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "verify_template_slice",
+      "summary": "成文工具（机制）：切片忠实性校验——条目文件原文（含删除线、剔除插入）必须逐字包含于底稿原文，返回 {ok, issues, original_chars, inserted_chars, deleted_chars}。不通过时主会话应带报告回修（重新 fill/append 或重新 slice）后再 seal。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "slice_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "slice_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "seal_template_item",
+      "summary": "成文工具（机制）：把切片生成为条目 docx 并落产物库（先 verify 通过再 seal），返回 artifact_id（package_response_zip 用）。切片封存后即失效。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "slice_id": {
+                "type": "string"
+              },
+              "dir": {
+                "type": "string",
+                "description": "价格文件/商务文件/技术文件"
+              },
+              "filename": {
+                "type": "string",
+                "description": "包内文件名（如（一）响应函及报价汇总表.docx）"
+              }
+            },
+            "required": [
+              "project_id",
+              "slice_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "build_quote_xlsx",
+      "summary": "成文工具（机制）：按主会话给出的 sheets 生成报价单 xlsx 并落产物库，返回 artifact_id。rows 必须是【数组的数组】（每行是一个字符串/数字数组），金额未知处标【待补充】，禁止整表省略。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "sheets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": [
+                            "string",
+                            "number",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "rows"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "project_id",
+              "sheets"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "list_agent_artifacts",
+      "summary": "成文工具（产物自检）：列出本任务已封存的全部产物（条目 docx/报价单 xlsx/响应包 zip）的 artifact_id/kind/name/大小。验收子 agent 用它核对「导出产物」是否齐全。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "inspect_agent_artifact",
+      "summary": "成文工具（产物自检）：预览单个封存产物的内容——docx 返回文本头尾/字数/【待补充】计数/修订计数；xlsx 返回各表行列数与前几行；zip 返回文件清单。验收子 agent 用它核对导出产物与成果模型是否一致（例如报价单 xlsx 是否有完整表格而不是单格占位）。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "artifact_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id",
+              "artifact_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "package_response_zip",
+      "summary": "成文工具（机制）：把已封存产物（item_docx/xlsx 的 artifact_ids）打包为响应文件包 zip，自动附 会话记录/主会话记录.md 与 manifest.json，返回 zip 的 artifact_id（客户下载端点 /response-package 将直接取它）。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "artifact_ids": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "draft_file_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "project_id"
             ],
             "additionalProperties": false
           },

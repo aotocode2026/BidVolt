@@ -236,6 +236,17 @@ def _search_web(args: dict) -> Any:
         return resp.json()
 
 
+def _search_web_minimax(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=90) as client:
+        resp = client.post(
+            "/api/v1/searches/minimax",
+            json={"query": args["query"], "limit": args.get("limit", 10)},
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _save_source(args: dict) -> Any:
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
         resp = client.post("/api/v1/search-sources", json=args, headers=_headers())
@@ -628,6 +639,21 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _search_web,
+    },
+    {
+        "name": "search_web_minimax",
+        "description": "MiniMax 原生联网搜索（全领域开放：行业技术方案、商务标写作范例、企业公开信息、政策法规等都可以搜；"
+                        "返回 title/link/snippet，重要来源用 save_source 入库、link_citation 绑定引用）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "handler": _search_web_minimax,
     },
     {
         "name": "save_source",

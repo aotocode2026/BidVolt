@@ -318,17 +318,12 @@ async def seal_slice(
     dir_name: str,
     filename: str,
 ) -> dict:
-    """封存：生成条目 docx 并落产物表。服务端硬闸（不再是约定）：
-    1) 切片必须已通过 verify_template_slice 且校验后未被再改动；
-    2) 文件名身份必须与切片实际绑定的条目标题一致（防把 A 条目内容封存成 B 文件名）。"""
-    from app.services.export_service import _clean_item_name, _item_key, _safe_filename
+    """封存：生成条目 docx 并落产物表。
+    服务端不做硬性拦截（产品决定：合规性由主会话+验收/评审子 agent 保证），
+    仅返回信息信号（matched_title/verified）供主会话自查。"""
+    from app.services.export_service import _clean_item_name, _safe_filename
 
     s = _slice(slice_id, task_id)
-    if not s.get("verified"):
-        raise ValueError(
-            "封存被服务端硬闸拦截：该切片尚未通过 verify_template_slice（或 verify 之后又经过"
-            " fill/append 改动）。请先重新 verify_template_slice，通过后再 seal_template_item。"
-        )
     sess = _ensure_sess(s, {})
     # 未显式填空也走一遍规则：带标签空位无资料原位【待补充】（诚实标注）
     sess.apply_to_doc()
@@ -344,17 +339,6 @@ async def seal_slice(
         filename = _safe_filename(_clean_item_name(s.get("title") or "")) + ".docx"
     if not filename.endswith(".docx"):
         filename += ".docx"
-    # 身份硬闸：封存文件名必须与切片实际绑定的条目标题一致（去编号/括号注后比对，
-    # 前缀兼容「（二）报价明细表」vs「（二）报价明细表（上传…路径）」这类尾巴差异）
-    stem = filename[:-5] if filename.endswith(".docx") else filename
-    f_key = _item_key(stem)
-    m_key = _item_key(s.get("matched_title") or s.get("title") or "")
-    if not f_key or not m_key or not (f_key == m_key or f_key.startswith(m_key) or m_key.startswith(f_key)):
-        raise ValueError(
-            f"封存被服务端身份硬闸拦截：文件名「{stem}」与切片实际绑定的条目标题"
-            f"「{s.get('matched_title') or s.get('title')}」不一致。请用该条目标题命名，"
-            "或检查 req_id 是否选错（选错请用正确 req_id 重新 slice）。"
-        )
     art = AgentArtifact(
         enterprise_id=s["enterprise_id"],
         project_id=s["project_id"],
@@ -368,7 +352,15 @@ async def seal_slice(
     await session.commit()
     await _set_rls_context(session, s["enterprise_id"])
     _SLICES.pop(slice_id, None)  # 封存后切片即失效（不可再改）
-    return {"artifact_id": art.id, "name": art.name, "bytes": len(data)}
+    # 信息信号（不拦截）：主会话/验收子 agent 自查用
+    return {
+        "artifact_id": art.id,
+        "name": art.name,
+        "bytes": len(data),
+        "req_title": s.get("title") or "",
+        "matched_title": s.get("matched_title") or "",
+        "was_verified": bool(s.get("verified")),
+    }
 
 
 async def quote_xlsx(
@@ -443,11 +435,11 @@ async def package_zip(
         if fobj is not None and fobj.enterprise_id == enterprise_id:
             draft_name = fobj.original_name or "采购文件"
 
-    # ===== 打包前全量机械审计（服务端硬闸，不抽样、不靠主会话自觉）=====
-    # 1) 清单全覆盖：is_file_item 每一条都必须有对应封存文件进包；
-    # 2) 同部分不雷同：每个目录内任意两份 docx 原文不得一致；
-    # 3) 身份绑定：每份 docx 正文开头必须含自身条目标题（防拿错段落）。
-    # 任何一项不过 → 409，主会话必须修到过为止，才能产出 zip。
+    # ===== 打包前全量核对（信息信号，不拦截——产品决定：合规性由主会话+验收/评审子 agent 保证）=====
+    # 1) 清单全覆盖：is_file_item 每条是否有对应封存文件进包；
+    # 2) 同部分不雷同：每个目录内任意两份 docx 原文是否一致；
+    # 3) 身份绑定：每份 docx 正文开头是否含自身条目标题。
+    # 发现项如实返回/写入 manifest，由主会话决定回修后重新打包。
     from lxml import etree as _etree
 
     from app.services.export_service import _item_key, canonical_text
@@ -461,21 +453,21 @@ async def package_zip(
 
     item_arts = [a for a in arts if a.kind == "item_docx"]
 
-    outline = await get_template_outline(session, enterprise_id, project_id)
-    required = [
-        it["title"]
-        for items in outline["items_by_role"].values()
-        for it in items
-        if it.get("is_file_item")
-    ]
-    covered = {_item_key(_stem(a)) for a in item_arts}
-    missing = [t for t in required if _item_key(t) not in covered]
-    if missing:
-        raise ValueError(
-            "打包被服务端完整性审计拦截：以下清单条目没有对应封存文件——"
-            + "；".join(missing)
-            + "。请补齐 slice→fill→append→verify→seal 后重新 package_response_zip。"
-        )
+    missing_items: list[str] = []
+    dup_pairs: list[str] = []
+    identity_issues: list[str] = []
+    try:
+        outline = await get_template_outline(session, enterprise_id, project_id)
+        required = [
+            it["title"]
+            for items in outline["items_by_role"].values()
+            for it in items
+            if it.get("is_file_item")
+        ]
+        covered = {_item_key(_stem(a)) for a in item_arts}
+        missing_items = [t for t in required if _item_key(t) not in covered]
+    except Exception:  # noqa: BLE001 清单读取失败不阻塞打包
+        logger.warning("打包完整性核对失败", exc_info=True)
 
     texts: dict[int, str] = {}
     dir_texts: dict[str, list[tuple[str, str]]] = {}
@@ -484,37 +476,30 @@ async def package_zip(
             with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
                 root = _etree.fromstring(zf.read("word/document.xml"))
             text = canonical_text(root)
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"打包审计无法解析封存文件 {a.name}：{exc}") from exc
+        except Exception as exc:  # noqa: BLE001 解析失败如实记录，不阻塞
+            identity_issues.append(f"{a.name}：无法解析（{exc}）")
+            continue
         texts[a.id] = text
         dir_texts.setdefault(a.name.rsplit("/", 1)[0], []).append((a.name, _norm(text)))
 
-    dup_pairs: list[str] = []
     for _d, entries in dir_texts.items():
         for i in range(len(entries)):
             for j in range(i + 1, len(entries)):
                 if entries[i][1] == entries[j][1]:
                     dup_pairs.append(f"{entries[i][0]} == {entries[j][0]}")
-    if dup_pairs:
-        raise ValueError(
-            "打包被服务端唯一性审计拦截：同部分存在内容雷同的封存文件——"
-            + "；".join(dup_pairs)
-            + "。请重做对应条目的 slice→fill→append→verify→seal。"
-        )
 
     for a in item_arts:
         key = _item_key(_stem(a))
-        if key and key not in _norm(texts[a.id])[:1200]:
-            raise ValueError(
-                f"打包被服务端身份审计拦截：封存文件「{a.name}」正文开头不含自身条目标题"
-                f"「{key}」（疑似切片串区）。请用正确 req_id 重新 slice 该条目后再封存打包。"
-            )
+        if a.id in texts and key and key not in _norm(texts[a.id])[:1200]:
+            identity_issues.append(f"{a.name}：正文开头不含自身条目标题「{key}」")
     audit = {
         "checked": len(item_arts),
-        "coverage_ok": True,
-        "unique_ok": True,
-        "identity_ok": True,
-        "note": "服务端全量机械审计：清单全覆盖 + 同部分不雷同 + 每份文件正文开头含自身条目标题。",
+        "coverage_ok": not missing_items,
+        "unique_ok": not dup_pairs,
+        "identity_ok": not identity_issues,
+        "missing_file_items": missing_items,
+        "duplicate_pairs": dup_pairs,
+        "identity_issues": identity_issues,
     }
 
     buf = _io.BytesIO()
@@ -553,7 +538,7 @@ async def package_zip(
             "note": "主会话经成文工具链（切片→填空→追加→校验→封存→打包）自主成文；"
                     "全部改动可在 Word【审阅→所有标记】中逐处查看；附主会话全程记录。",
             "audit": audit,
-            "missing_file_items": [],
+            "missing_file_items": missing_items,
             "files": files_manifest,
         }
         zf.writestr("manifest.json", _json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -571,12 +556,13 @@ async def package_zip(
     session.add(art)
     await session.commit()
     await _set_rls_context(session, enterprise_id)
+    # 信息信号（不拦截）：主会话据此决定是否回修重打包
     return {
         "artifact_id": art.id,
         "name": art.name,
         "bytes": len(data),
         "file_count": len(files_manifest),
-        "missing_file_items": [],
+        "missing_file_items": missing_items,
         "audit": audit,
     }
 

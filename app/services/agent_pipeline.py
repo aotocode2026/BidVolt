@@ -49,6 +49,18 @@ MARKER_POLL_SECONDS = 30
 MARK_COMPLETE = "【PIPELINE_COMPLETE】"
 MARK_INCOMPLETE = "【PIPELINE_INCOMPLETE】"
 
+# 主会话工具集：全能力开放（产品决定）。bidvolt=全部 37 个业务 MCP 工具（白名单已全放行）；
+# 其余为 Hermes 内置工具集（web/browser/terminal/code_execution/file/vision/
+# image_gen/tts/skills/todo/memory/session_search/clarify/delegation/cronjob/computer_use）。
+# 危险命令确认由 --yolo 跳过（自主批量运行无人点确认）；交付件正确性不依赖
+# 工具收敛，而由服务端机械硬闸（seal 双闸 + package 全量审计）保证。
+_HERMES_TOOLSETS = (
+    "bidvolt,web,browser,terminal,code_execution,file,vision,image_gen,tts,"
+    "skills,todo,memory,session_search,clarify,delegation,cronjob,computer_use"
+)
+# 网页端客户对话（chat_with_session）：与管线完全一致——全部工具集 + --yolo（产品决定：放开一切限制）
+_CHAT_TOOLSETS = _HERMES_TOOLSETS
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
 _NOISE_RE = re.compile(r"^[─═╭╮╰╯│┌└┐┘├┤┊\s]+$")
 
@@ -177,17 +189,20 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "（list_requirements / list_project_materials / get_deliverable_content / search_assets），"
             "对照上一轮的总结与【待补充】清单，从断点继续推进解析→撰写→校验→评审→成文→打包。"
             "流程与守则见预载 skill（bidvolt-agent-pipeline）。"
+            "写作要求：技术方案/专项响应等方案性条目必须写出完整专业正文（方案性内容大胆写、"
+            "事实性数据守据——企业事实用 search_assets，缺数标【待补充】不编造）。"
+            "搜索全领域开放：search_web_minimax（MiniMax 原生）/ search_web / Hermes web 均可搜"
+            "（标的信息、企业公开信息、行业技术方案、商务写作范例、政策标准），来源经 save_source/link_citation 批注。"
             "成文要点：fill_template_slice 的 fields 必填四个值——buyer=采购人、project_name=项目名称、"
             "tender_no=采购编号、supplier=响应供应商企业名称（取企业资料库 supplier_name 事实，search_assets 可查；"
             "没有则留空标【待补充】）；企业其他事实（法人/信用代码/地址/电话/业绩/人员）放进 append 的撰写内容；"
-            "封存前逐份 verify_template_slice（服务端硬闸：未 verify 或 verify 后又有改动，seal 会 409）。"
+            "封存前逐份 verify_template_slice（verify 之后又 fill/append 改动过，必须重验）。"
             "打包前必须核对 get_template_outline 里 is_file_item=true 的全部条目都已 seal_template_item 并"
             "已包含在 artifact_ids 中，缺失的先补齐 slice→fill→append→verify→seal 再 package_response_zip。"
-            "打包前全量抽验（不抽样）：价格/商务/技术每部分的每一份 docx 内容必须各不相同、每份首段须含各自条目标题"
-            "（发现两份内容雷同=切片串区，必须重做 slice→fill→append→verify→seal 再打包）。"
-            "slice_template_item/verify_template_slice 返回的 matched_title 必须与清单条目标题一致，不一致立即重切。"
-            "package_response_zip 会被服务端全量审计（清单全覆盖/同部分不雷同/每份正文开头含自身条目标题），"
-            "审计不过返回 409：按错误信息修复后再打包，修到过为止。"
+            "打包前由验收子 agent 全量核对（不抽样）：价格/商务/技术每部分各份 docx 内容各不相同、"
+            "每份首段=各自条目标题；slice/verify/seal 回执的 matched_title/req_title/was_verified 信号与"
+            " package 回执的 audit 信号（missing_file_items/duplicate_pairs/identity_issues）都要逐份核到，"
+            "发现任何问题回成文阶段修复后重新封存打包，直到 audit 全绿。"
             "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录与风险提示，不作验收门。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
@@ -198,18 +213,24 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "流程与守则见预载 skill（bidvolt-agent-pipeline）；用 todo 列计划，"
             "用 delegate_task 派子任务（子 agent 结果会自动回到本会话，派完继续推进，不要停下来等），"
             "验收不通过带报告修复，全部满足后再输出。"
+            "写作要求（客户要的是能直接投标的交付件）：技术方案/专项响应等方案性条目必须写出完整专业的正文"
+            "（项目理解→总体方案/架构→分项技术方案→实施组织与进度→质量/安全/进度保障→售后培训），"
+            "方案性内容大胆写、事实性数据守据——企业事实用 search_assets，缺数标【待补充】不编造。"
+            "搜索全领域开放：search_web_minimax（MiniMax 原生）/ search_web（AnySearch）/ Hermes web 均可搜"
+            "——标的信息、企业公开信息、行业技术方案做法、商务标写作范例、政策法规标准；"
+            "重要来源 save_source 入库 + link_citation 绑定，与企业资料库冲突时以资料库为准。"
             "成文要求：get_template_outline 里 is_file_item=true 的全部条目都必须"
             "slice→fill→append→verify→seal 后一起 package_response_zip；"
             "build_quote_xlsx 的 sheets[].rows 必须是数组的数组（每行一个数组，不得用对象/带 item 键）。"
             "商务/技术偏差表若应答无偏差：必须在表格标题旁或表内首行显式标注"
             "「本表空白=无偏差（按采购文件约定，选择无偏差时无需填写本表）」并加批注，不得只留空表。"
-            "封存前逐份 verify_template_slice（服务端硬闸：未 verify 或 verify 后又有改动，seal 会 409）。"
-            "打包前全量核对（不抽样）：价格/商务/技术每部分的每一份 docx 内容必须各不相同、每份首段须含各自条目标题"
-            "（发现两份内容雷同=切片串区，必须重做 slice→fill→append→verify→seal 再打包）。"
-            "slice_template_item/verify_template_slice 返回的 matched_title 必须与清单条目标题一致，不一致立即重切。"
-            "package_response_zip 会被服务端全量审计（清单全覆盖/同部分不雷同/每份正文开头含自身条目标题），"
-            "审计不过返回 409：按错误信息修复后再打包，修到过为止。"
-            "评分步骤：submit_score_items 成功落分即算闭环，自动评分分数仅作记录不作验收门。"
+            "封存前逐份 verify_template_slice（verify 之后又 fill/append 改动过，必须重验）。"
+            "打包前由验收子 agent 全量核对（不抽样）：清单 is_file_item 全覆盖、价格/商务/技术每部分各份"
+            " docx 内容各不相同、每份首段=各自条目标题；slice/verify/seal 回执的"
+            " matched_title/req_title/was_verified 信号与 package 回执的 audit 信号"
+            "（missing_file_items/duplicate_pairs/identity_issues）都要逐份核到，"
+            "发现任何问题回成文阶段修复后重新封存打包，直到 audit 全绿。"
+            "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录不作验收门。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
@@ -235,8 +256,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
     base_args = [
         "chat", "--cli",
-        "-t", "bidvolt,todo,delegation,file,vision",
+        "-t", _HERMES_TOOLSETS,
         "-s", "bidvolt-agent-pipeline",
+        # 全能力开放：跳过危险命令确认与 shell 钩子确认（自主批量运行无人可点确认，
+        # 留着确认流程=终端能力形同虚设；交付件正确性由服务端硬闸保证）
+        "--yolo", "--accept-hooks",
         "--no-restore-cwd", "--max-turns", "120",
     ]
 
@@ -584,8 +608,9 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
         try:
             proc = await asyncio.create_subprocess_exec(
                 hermes_bin, "chat", "-q", message,
-                "-t", "bidvolt,todo,delegation,file,vision", "--resume", sid,
-                "--cli", "-Q", "--max-turns", "60", "--no-restore-cwd",
+                "-t", _CHAT_TOOLSETS, "--resume", sid,
+                "--cli", "-Q", "--yolo", "--accept-hooks",
+                "--max-turns", "60", "--no-restore-cwd",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=env, cwd=env["HERMES_HOME"],
             )

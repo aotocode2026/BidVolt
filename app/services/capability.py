@@ -66,10 +66,14 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
     },
     # 新方案：主会话端到端（主 agent 经 delegate_task 起子任务，工具白名单取并集；
     # 子任务的工具收敛由 Hermes delegate_task 的 toolsets 参数控制）
+    # 产品决定：全部业务工具开放（含企业资料写入——守则约束只写来自资料资产的事实）
     "agent_pipeline": {
+        "health",
         "search_assets",
         "list_assets",
         "get_asset",
+        "classify_enterprise_asset",
+        "upsert_enterprise_facts",
         "get_project_material_blocks",
         "list_project_materials",
         "get_deliverable_content",
@@ -96,9 +100,10 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         # 产物自检（验收子 agent 直接核对导出产物，补模型↔产物之间的验证盲区）
         "list_agent_artifacts",
         "inspect_agent_artifact",
-        # 网络搜索（AnySearch，后端 DLP 脱敏+域名白名单+门禁；只补公开可查事实，
-        # 应答人自身企业事实禁止用网络信息，只能来自企业资料库）
+        # 网络搜索（AnySearch + MiniMax 原生：全领域开放——标的信息、企业公开信息、
+        # 行业技术方案、商务标写作范例、政策法规；来源必须 save_source/link_citation 批注）
         "search_web",
+        "search_web_minimax",
         "save_source",
         "link_citation",
         # 模拟评标（评审阶段落分/确认，主会话评审闭环用）
@@ -132,6 +137,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "get_requirement",
         "list_requirements",
         "search_web",
+        "search_web_minimax",
         "search_knowledge",
     },
 }

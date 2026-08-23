@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.request
 from urllib.parse import urlparse
 
 import httpx
@@ -148,3 +149,42 @@ class AnySearchProvider:
             }
             for item in parsed
         ]
+
+
+def minimax_search(query: str, limit: int = 10) -> list[dict]:
+    """MiniMax 原生联网搜索（POST /v1/coding_plan/search，Bearer 服务端 MINIMAX_API_KEY）。
+    全领域开放（产品决定）：行业技术方案、商务写作范例、企业公开信息、政策法规等。
+    返回 [{title, link, snippet, date, trust_level}]；来源批注仍走 save_source/link_citation。"""
+    import json as _json
+
+    key = os.environ.get("MINIMAX_API_KEY", "").strip()
+    if not key:
+        raise ValueError("服务端未配置 MINIMAX_API_KEY，MiniMax 搜索不可用")
+    sanitized = sanitize_query(query)
+    payload = _json.dumps({"q": sanitized}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.minimaxi.com/v1/coding_plan/search",
+        data=payload,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = _json.loads(resp.read() or b"{}")
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"MiniMax 搜索失败：{exc}") from exc
+    if (data.get("base_resp") or {}).get("status_code") not in (0, None):
+        raise ValueError(f"MiniMax 搜索失败：{data.get('base_resp')}")
+    out = []
+    for r in (data.get("organic") or [])[: max(int(limit), 1)]:
+        url = str(r.get("link") or "")
+        out.append(
+            {
+                "url": url,
+                "title": str(r.get("title") or ""),
+                "snippet": (str(r.get("snippet") or ""))[:600],
+                "date": str(r.get("date") or ""),
+                "trust_level": trust_level(url),
+            }
+        )
+    return out
