@@ -193,3 +193,30 @@ def test_response_package_old_path_untouched_without_agent_task(client):
     assert pkg.status_code == 409
     # 旧路径文案（缺底稿）≠ 新方案文案
     assert "成文打包" not in pkg.json()["detail"]
+
+
+def test_marker_requires_last_line_not_quoted_mention():
+    """标记判定：正文转述子 agent 的「判【PIPELINE_INCOMPLETE】」不算回执；
+    只有最后一行逐字输出才算（回归：曾把主会话工作摘要误判为回执提前终止任务）。"""
+    from app.services.agent_pipeline import (
+        MARK_COMPLETE,
+        MARK_INCOMPLETE,
+        _marker_from_export,
+    )
+
+    # 正文引用标记字样 → 不是回执
+    data = {
+        "messages": [
+            {"role": "user", "content": "x"},
+            {"role": "assistant", "content": "验收子 agent 结论：判【PIPELINE_INCOMPLETE】\n现在开始修复三份成果模型"},
+        ]
+    }
+    assert _marker_from_export(data, 0) is None
+
+    # 最后一行逐字输出 → 回执
+    data2 = {"messages": [{"role": "assistant", "content": "全部完成，总结正文。\n" + MARK_COMPLETE}]}
+    assert _marker_from_export(data2, 0) == MARK_COMPLETE
+
+    # INCOMPLETE + 原因（最后一行）→ 回执
+    data3 = {"messages": [{"role": "assistant", "content": "总结。\n" + MARK_INCOMPLETE + "企业资料缺失"}]}
+    assert _marker_from_export(data3, 0) == MARK_INCOMPLETE
