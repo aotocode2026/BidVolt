@@ -187,14 +187,15 @@ async def create_slice(
     elements = export_service.locate_item_elements(source_path, row)
     doc, located = export_service._build_item_document(source_path, row, elements)
 
-    # 底稿原文（校验基准）
+    # 底稿原文（校验基准）：与 check_doc_fidelity 同侧同算法（canonical_text），
+    # 剔除绘图内部坐标数字等非正文噪声，避免锚定图（印模）导致合法切片误报不忠实
     import zipfile as _zip
 
     from lxml import etree as _etree
 
     with _zip.ZipFile(source_path) as zf:
         src_xml = _etree.fromstring(zf.read("word/document.xml"))
-    source_text = "".join(src_xml.itertext())
+    source_text = export_service.canonical_text(src_xml)
 
     _prune_slices()
     slice_id = "s" + secrets.token_hex(6)
@@ -301,8 +302,6 @@ async def seal_slice(
     # 未显式填空也走一遍规则：带标签空位无资料原位【待补充】（诚实标注）
     sess.apply_to_doc()
     data = sess.finish()
-
-    from sqlalchemy import select as sa_select
 
     from app.models.agent import AgentArtifact
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
@@ -557,7 +556,9 @@ async def inspect_artifact(
     if art.kind == "item_docx":
         from lxml import etree as _etree
 
-        W = "{%s}" % "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        from app.services.export_service import _W_NS
+
+        W = f"{{{_W_NS}}}"
         with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
             doc = _etree.fromstring(zf.read("word/document.xml"))
         text = "".join(doc.itertext())

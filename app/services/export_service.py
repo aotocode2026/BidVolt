@@ -9,6 +9,7 @@ from io import BytesIO
 logger = logging.getLogger(__name__)
 
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
 class _TrackedEditor:
@@ -808,12 +809,38 @@ def locate_item_elements(source_path, row) -> list | None:
     return None
 
 
+def canonical_text(root) -> str:
+    """原文归一收集器（忠实性校验两边必须同一算法）：
+    只收 w:t 与 w:delText 文本及元素的 tail，剔除 w:ins 子树（修订插入不算原文）。
+    绘图内部数字（wp:posOffset/extent 等）不是 w:t，天然不计入——否则锚定图（印模）
+    会让底稿侧文本里混入坐标数字，而条目侧没有，导致合法切片误报不忠实。"""
+    W = f"{{{_W_NS}}}"
+
+    def _inside(el, tag) -> bool:
+        a = el.getparent()
+        while a is not None:
+            if a.tag == W + tag:
+                return True
+            a = a.getparent()
+        return False
+
+    parts: list[str] = []
+    for el in root.iter():
+        if _inside(el, "ins"):
+            continue
+        if el.tag == W + "t" and el.text:
+            parts.append(el.text)
+        elif el.tag == W + "delText" and el.text:
+            parts.append(el.text)
+        if el.tail:
+            parts.append(el.tail)
+    return "".join(parts)
+
+
 def check_doc_fidelity(doc, source_text: str) -> dict:
     """逐字忠实性校验：条目文件原文（含修订删除线，剔除 w:ins）必须逐字包含于底稿原文。
     返回 {ok, original_chars, inserted_chars, deleted_chars, issues:[…]}。"""
-    from lxml import etree as _etree
-
-    W = "{%s}" % "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{_W_NS}}}"
     root = doc.element  # CT_Document
 
     def _inside(el, tag) -> bool:
@@ -827,7 +854,6 @@ def check_doc_fidelity(doc, source_text: str) -> dict:
     def _norm(s: str) -> str:
         return "".join(s.split())
 
-    parts: list[str] = []
     ins_chars = 0
     del_chars = 0
     for el in root.iter():
@@ -835,14 +861,9 @@ def check_doc_fidelity(doc, source_text: str) -> dict:
             if el.tag == W + "t" and el.text:
                 ins_chars += len(el.text)
             continue
-        if el.tag == W + "t" and el.text:
-            parts.append(el.text)
-        elif el.tag == W + "delText" and el.text:
+        if el.tag == W + "delText" and el.text:
             del_chars += len(el.text)
-            parts.append(el.text)
-        if el.tail:
-            parts.append(el.tail)
-    original = "".join(parts)
+    original = canonical_text(root)
     n_orig = _norm(original)
     src_norm = _norm(source_text)
     issues: list[str] = []
