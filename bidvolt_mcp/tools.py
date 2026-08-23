@@ -247,6 +247,21 @@ def _search_web_minimax(args: dict) -> Any:
         return resp.json()
 
 
+def _vision_analyze_minimax(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=180) as client:
+        resp = client.post(
+            "/api/v1/vision/minimax",
+            json={
+                "prompt": args["prompt"],
+                "file_id": args.get("file_id"),
+                "image_url": args.get("image_url"),
+            },
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _save_source(args: dict) -> Any:
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
         resp = client.post("/api/v1/search-sources", json=args, headers=_headers())
@@ -654,6 +669,23 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _search_web_minimax,
+    },
+    {
+        "name": "vision_analyze_minimax",
+        "description": "MiniMax 官方视觉理解（看图，与主模型无关）：材料里的印章印模、表格截图、流程图、证书扫描件等图片，"
+                        "传项目材料 file_id（list_project_materials 里的 id）或 http(s)/data 形式的 image_url，"
+                        "用 prompt 提问（如「提取图中所有文字」「描述这张流程图」），返回文本结论",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string"},
+                "file_id": {"type": "integer"},
+                "image_url": {"type": "string"},
+            },
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+        "handler": _vision_analyze_minimax,
     },
     {
         "name": "save_source",

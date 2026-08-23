@@ -1056,6 +1056,47 @@
       }
     },
     {
+      "name": "vision_analyze_minimax",
+      "summary": "MiniMax 官方视觉理解（看图，与主模型无关）：材料里的印章印模、表格截图、流程图、证书扫描件等图片，传项目材料 file_id（list_project_materials 里的 id）或 http(s)/data 形式的 image_url，用 prompt 提问（如「提取图中所有文字」「描述这张流程图」），返回文本结论",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "prompt": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": "integer"
+              },
+              "image_url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "save_source",
       "summary": "将搜索结果入库并判定 trust_level",
       "params": [
