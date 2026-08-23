@@ -184,7 +184,7 @@ async def create_slice(
         raise ValueError(f"底稿文件不可用：file_id={file_id}")
     source_path = StorageProvider().open(fobj.bucket, fobj.object_key)
 
-    elements = export_service.locate_item_elements(source_path, row)
+    matched_title, elements = export_service.locate_item_with_heading(source_path, row)
     doc, located = export_service._build_item_document(source_path, row, elements)
 
     # 底稿原文（校验基准）：与 check_doc_fidelity 同侧同算法（canonical_text），
@@ -199,24 +199,35 @@ async def create_slice(
 
     _prune_slices()
     slice_id = "s" + secrets.token_hex(6)
+    req_title = (row.content or "").split("\n")[0].strip()
     _SLICES[slice_id] = {
         "doc": doc,
         "sess": None,
         "source_text": source_text,
         "file_id": int(file_id),
         "req_id": int(req_id),
-        "title": (row.content or "").split("\n")[0].strip(),
+        "title": req_title,
+        "matched_title": (matched_title or "").strip(),
         "task_id": int(task_id),
         "project_id": int(project_id),
         "enterprise_id": int(enterprise_id),
         "created": time.time(),
     }
+    # 身份信号：matched_title 是底稿里实际匹配到的条目标题，
+    # 主会话必须比对它与请求条目标题一致（不一致=串区，立即重切）
+    warn = (
+        None
+        if located
+        else "该条目在底稿中未定位到原文区间，按解析清单内容重建（可能不完整），请对照采购文件原件核对。"
+    )
     return {
         "slice_id": slice_id,
         "located": located,
+        "matched_title": (matched_title or "")[:80],
+        "req_title": req_title[:80],
         "file_id": int(file_id),
         "req_id": int(req_id),
-        "warn": None if located else "该条目在底稿中未定位到原文区间，按解析清单内容重建（可能不完整），请对照采购文件原件核对。",
+        "warn": warn,
     }
 
 
@@ -280,12 +291,15 @@ def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment:
 
 
 def verify_slice(slice_id: str, task_id: int) -> dict:
-    """忠实性校验：条目文件原文（含删除线、剔除插入）逐字⊂底稿。不过时返回差异片段。"""
+    """忠实性校验：条目文件原文（含删除线、剔除插入）逐字⊂底稿。不过时返回差异片段。
+    附带身份信息（req_title=请求条目、matched_title=实际绑定条目）供主会话比对。"""
     s = _slice(slice_id, task_id)
     from app.services import export_service
 
     r = export_service.check_doc_fidelity(s["doc"], s["source_text"])
     r["slice_id"] = slice_id
+    r["req_title"] = s.get("title") or ""
+    r["matched_title"] = s.get("matched_title") or ""
     return r
 
 
