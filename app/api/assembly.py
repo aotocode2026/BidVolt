@@ -94,7 +94,9 @@ async def fill_template_slice(
 ) -> dict:
     await _ensure_project(session, user.enterprise_id, project_id)
     try:
-        return assembly_service.fill_slice(slice_id, _cap_task(request), body.get("fields"), body.get("fills"))
+        return assembly_service.fill_slice(
+            slice_id, _cap_task(request), body.get("fields"), body.get("fills"), body.get("table_fills")
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -110,7 +112,9 @@ async def append_template_slice(
 ) -> dict:
     await _ensure_project(session, user.enterprise_id, project_id)
     try:
-        return assembly_service.append_slice(slice_id, _cap_task(request), body.get("nodes"), body.get("comment"))
+        return assembly_service.append_slice(
+            slice_id, _cap_task(request), body.get("nodes"), body.get("comment"), body.get("heading")
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

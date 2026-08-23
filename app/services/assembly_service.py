@@ -256,9 +256,11 @@ def _ensure_sess(s, fields: dict) -> Any:
     return s["sess"]
 
 
-def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dict] | None) -> dict:
+def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dict] | None, table_fills: list[dict] | None = None) -> dict:
     """填空：标准字段（buyer/project_name/supplier/tender_no）→ 带标签空位规则（无资料原位【待补充】），
-    再按主会话给出的显式 fills=[{find,value,comment}] 定向替换。全部修订模式+批注。"""
+    再按主会话给出的显式 fills=[{find,value,comment}] 定向替换；
+    table_fills=[{table,row,col,value,comment}] 把内容填进模板自身表格单元格。
+    全部修订模式+批注。"""
     s = _slice(slice_id, task_id)
     sess = _ensure_sess(s, fields or {})
     sess.apply_to_doc()
@@ -272,25 +274,38 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
         from app.services import export_service
 
         n_fills += export_service.replace_text_tracked(sess.editor, find, value, comment)
+    n_table = 0
+    for tf in table_fills or []:
+        ok = sess.fill_table_cell(
+            int(tf.get("table") or -1),
+            int(tf.get("row") or -1),
+            int(tf.get("col") or -1),
+            str(tf.get("value") or ""),
+            str(tf.get("comment") or "") or None,
+        )
+        if ok:
+            n_table += 1
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
     return {
         "slice_id": slice_id,
         "explicit_fills": n_fills,
+        "table_fills_done": n_table,
         "fields_used": {k: str(v) for k, v in (fields or {}).items() if v},
     }
 
 
-def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment: str | None) -> dict:
-    """追加撰写内容：修订插入 + 批注（节点形状兼容段落/标题/表格/裸字符串）。"""
+def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment: str | None, heading: str | None = None) -> dict:
+    """追加撰写内容：修订插入 + 批注（节点形状兼容段落/标题/表格/裸字符串）。
+    heading 由主会话按投标文体自定（方案类条目的正文追加用）；不传时用中性默认"响应内容"。"""
     s = _slice(slice_id, task_id)
     sess = _ensure_sess(s, {})
     sess.append_supplement(
         nodes or [],
-        heading_text="响应内容（主会话撰写，修订插入，请复核）",
-        comment=comment or "本节为主会话针对本条目撰写的响应内容（修订插入），请人工复核。",
+        heading_text=(str(heading).strip() if heading else "响应内容"),
+        comment=comment or "本节为针对本条目撰写的响应内容（依据采购文件要求与企业资料，修订插入留痕），请复核。",
     )
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
-    return {"slice_id": slice_id, "appended_nodes": len(nodes or [])}
+    return {"slice_id": slice_id, "appended_nodes": len(nodes or []), "heading": heading or "响应内容"}
 
 
 def verify_slice(slice_id: str, task_id: int) -> dict:

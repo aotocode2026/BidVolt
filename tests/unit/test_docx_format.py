@@ -370,6 +370,53 @@ def test_fidelity_ignores_drawing_internals(tmp_path):
     assert r2["inserted_chars"] == len("北京北辰电力科技有限公司")
 
 
+def test_table_fill_in_place():
+    """表格/表单类条目：内容填进模板自身表格单元格（修订插入+批注），而不是空表挂文末。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    tb = src.add_table(rows=2, cols=2)
+    tb.rows[0].cells[0].text = "项目名称"
+    tb.rows[0].cells[1].text = "项目规模"
+    src.add_paragraph("（一）响应函及报价汇总表")
+
+    sess = _FillSession(src, "采购人甲", "项目乙", "供应商丙", "412623-1")
+    assert sess.fill_table_cell(0, 1, 0, "虚拟电厂数据融合系统", "业绩表第1行填写") is True
+    assert sess.fill_table_cell(0, 1, 1, "覆盖浙江全境", None) is True
+    assert sess.fill_table_cell(5, 0, 0, "x") is False  # 越界如实返回
+
+    data = sess.finish()
+    joined = _all_text(data)
+    assert "虚拟电厂数据融合系统" in joined
+    assert "覆盖浙江全境" in joined
+    assert _count_el(data, "ins") > 0
+    assert "业绩表第1行填写" in _comment_texts(data)
+
+
+def test_append_supplement_heading_param():
+    """追加节标题由调用方（主会话）按投标文体自定，默认不再带系统痕迹字样。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    src.add_paragraph("模板正文")
+    sess = _FillSession(src, "", "", "", "")
+    sess.append_supplement(
+        [{"type": "paragraph", "text": "方案正文内容"}],
+        heading_text="一、对项目的理解",
+        comment=None,
+        page_break=False,
+    )
+    data = sess.finish()
+    joined = _all_text(data)
+    assert "一、对项目的理解" in joined
+    assert "方案正文内容" in joined
+    assert "主会话撰写" not in joined
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
