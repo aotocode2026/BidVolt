@@ -80,7 +80,7 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     # 已知字段回填（修订插入可见）
     assert "本采购由测试招标人实施，项目为测试采购项目。" in joined
     assert "供应商名称：测试供应商" in joined
-    assert "联系电话：【待补充】" in joined
+    assert "联系电话：【待补充：联系电话】" in joined
     # 应答函裸标签形态：致：采购人 → 致：真实招标人
     assert "致：测试招标人" in joined
     # 标签紧邻空位整体回填：____（项目名称）→ 项目名，而不是【待补充】+项目名
@@ -470,6 +470,23 @@ def test_remaining_blanks_signal():
     assert "电话" not in labels  # 已填的不出现在剩余清单
     ctx = {i["label"]: i.get("context", "") for i in items}
     assert "分标" in ctx["分标名称"] or ctx["分标名称"] == ""
+
+
+def test_underscore_blanks_auto_labeled():
+    """裸下划线空位：前文有"标签："自动带标签，无标签上下文才裸【待补充】。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    src.add_paragraph("不含税单价：________，税率：13%。")
+    src.add_paragraph("特授权________代表我方全权办理。")  # 无标签上下文 → 裸（留给 agent fills）
+    sess = _FillSession(src, "", "", "", "")
+    sess.apply_to_doc()
+    data = sess.finish()
+    joined = _all_text(data)
+    assert "不含税单价：【待补充：不含税单价】" in joined
+    assert "特授权【待补充】代表我方全权办理" in joined
 
 
 def test_draft_label_format():
