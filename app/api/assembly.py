@@ -161,13 +161,16 @@ async def build_quote_xlsx(
     user: UserContext = Depends(require_capability("build_quote_xlsx")),
 ) -> dict:
     await _ensure_project(session, user.enterprise_id, project_id)
-    return await assembly_service.quote_xlsx(
-        session,
-        user.enterprise_id,
-        project_id,
-        _cap_task(request),
-        body.get("sheets"),
-    )
+    try:
+        return await assembly_service.quote_xlsx(
+            session,
+            user.enterprise_id,
+            project_id,
+            _cap_task(request),
+            body.get("sheets"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/{project_id}/assembly/package", status_code=status.HTTP_201_CREATED)

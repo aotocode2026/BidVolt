@@ -212,16 +212,34 @@ ASSEMBLY_TOOL_DEFS = [
     {
         "name": "build_quote_xlsx",
         "description": (
-            "成文工具（机制）：按主会话给出的 sheets=[{name,rows}] 生成报价单 xlsx 并落产物库，"
-            "返回 artifact_id。金额未知处由主会话在 rows 里标【待补充】，禁止整表省略。"
+            "成文工具（机制）：按主会话给出的 sheets 生成报价单 xlsx 并落产物库，"
+            "返回 artifact_id。rows 必须是【数组的数组】（每行是一个字符串/数字数组），"
+            "金额未知处标【待补充】，禁止整表省略。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "integer"},
-                "sheets": {"type": "array"},
+                "sheets": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "rows": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": ["string", "number", "null"]},
+                                },
+                            },
+                        },
+                        "required": ["name", "rows"],
+                        "additionalProperties": False,
+                    },
+                },
             },
-            "required": ["project_id"],
+            "required": ["project_id", "sheets"],
             "additionalProperties": False,
         },
         "handler": _build_quote_xlsx,

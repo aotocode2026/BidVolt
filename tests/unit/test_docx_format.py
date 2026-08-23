@@ -298,6 +298,12 @@ def test_xlsx_bytes_shape_tolerant():
     wb = sheets_of(xlsx_bytes({"version_no": 2, "model": {"rows": [["x", "y"]]}}))
     assert wb.active["A1"].value == "x"
 
+    # 生成侧序列化退化：rows 写成对象（{"item": [...]}）必须报可操作的错，不得静默产出残缺表
+    import pytest
+
+    with pytest.raises(ValueError, match="数组的数组"):
+        xlsx_bytes({"sheets": [{"name": "报价单", "rows": {"item": ["合计"]}}]})
+
 
 def test_draft_download_filename_marks_source(client):
     """下载文件名标注底稿来源（产品要求：一眼可见底稿是谁）。"""

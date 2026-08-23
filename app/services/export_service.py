@@ -1261,7 +1261,8 @@ def _normalize_xlsx_sheets(model) -> list[dict]:
 
     兼容：旧方案 {sheets:[{name,rows}]}；新方案 agent 落库的 {docModel:{sections:[...]}}；
     以及裸 {rows}/ {nodes} / 被 {version_no, model} 包装的形状。
-    """
+    对 agent 生成侧的序列化退化（rows 误写成对象而非数组的数组，如
+    {"item": [...], "item": [...]}）做恢复；恢复不了抛出可操作的 ValueError。"""
     if not isinstance(model, dict):
         model = {}
     inner = model.get("model")
@@ -1269,7 +1270,28 @@ def _normalize_xlsx_sheets(model) -> list[dict]:
         model = inner
     sheets = model.get("sheets")
     if isinstance(sheets, list) and sheets:
-        return sheets
+        normalized = []
+        for sh in sheets:
+            if not isinstance(sh, dict):
+                raise ValueError(
+                    "sheets 元素必须是对象 {name, rows}，收到的元素不是对象——"
+                    "请按 sheets=[{name:'报价单', rows:[['列1','列2'],...]}] 重发。"
+                )
+            name = str(sh.get("name") or "报价单")[:31]
+            rows = sh.get("rows")
+            if isinstance(rows, dict):
+                # 生成侧序列化退化：{"item": [...]}（对象而非数组）——重复键在 JSON 解析时
+                # 已丢数据，宁可报错让主会话按数组的数组重发，也不静默接受残缺行
+                raise ValueError(
+                    "报价单 rows 形状异常：rows 是对象而非数组的数组（疑似生成侧序列化错误）。"
+                    "请重发为 rows=[[...],[...]]，每行是一个数组。"
+                )
+            if not isinstance(rows, list):
+                raise ValueError(
+                    "报价单 rows 形状异常：rows 必须是数组的数组 rows=[[...],[...]]。"
+                )
+            normalized.append({"name": name, "rows": rows})
+        return normalized
     doc_model = model.get("docModel")
     if isinstance(doc_model, dict):
         sections = doc_model.get("sections")
