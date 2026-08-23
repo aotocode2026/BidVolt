@@ -93,6 +93,9 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "seal_template_item",
         "build_quote_xlsx",
         "package_response_zip",
+        # 产物自检（验收子 agent 直接核对导出产物，补模型↔产物之间的验证盲区）
+        "list_agent_artifacts",
+        "inspect_agent_artifact",
         # 网络搜索（AnySearch，后端 DLP 脱敏+域名白名单+门禁；只补公开可查事实，
         # 应答人自身企业事实禁止用网络信息，只能来自企业资料库）
         "search_web",

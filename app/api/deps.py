@@ -54,6 +54,8 @@ TOOL_PERMISSION: dict[str, str] = {
     "seal_template_item": Permission.DELIVERABLE_EXPORT,
     "build_quote_xlsx": Permission.DELIVERABLE_EXPORT,
     "package_response_zip": Permission.DELIVERABLE_EXPORT,
+    "list_agent_artifacts": Permission.FILE_READ,
+    "inspect_agent_artifact": Permission.FILE_READ,
 }
 
 

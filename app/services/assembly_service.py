@@ -204,6 +204,7 @@ async def create_slice(
         "source_text": source_text,
         "file_id": int(file_id),
         "req_id": int(req_id),
+        "title": (row.content or "").split("\n")[0].strip(),
         "task_id": int(task_id),
         "project_id": int(project_id),
         "enterprise_id": int(enterprise_id),
@@ -258,7 +259,11 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
         from app.services import export_service
 
         n_fills += export_service.replace_text_tracked(sess.editor, find, value, comment)
-    return {"slice_id": slice_id, "explicit_fills": n_fills}
+    return {
+        "slice_id": slice_id,
+        "explicit_fills": n_fills,
+        "fields_used": {k: str(v) for k, v in (fields or {}).items() if v},
+    }
 
 
 def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment: str | None) -> dict:
@@ -303,6 +308,14 @@ async def seal_slice(
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     await _set_rls_context(session, s["enterprise_id"])
+    # 文件名兜底：主会话未给可读文件名时，用该条目的模板标题（清理后）作默认名，
+    # 避免产物退化成 slice_id.docx 这类不可读名字
+    if not str(filename or "").strip():
+        from app.services.export_service import _clean_item_name, _safe_filename
+
+        filename = _safe_filename(_clean_item_name(s.get("title") or "")) + ".docx"
+    if not filename.endswith(".docx"):
+        filename += ".docx"
     art = AgentArtifact(
         enterprise_id=s["enterprise_id"],
         project_id=s["project_id"],
@@ -396,7 +409,17 @@ async def package_zip(
     seen: set[str] = set()
     with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
         for a in arts:
-            name = a.name if a.name in seen else a.name
+            # 同名产物去重：zip 内同名条目会被解压器静默覆盖（内容丢失类缺陷），
+            # 必须重命名为 名称(2).ext，绝不静默覆盖
+            name = a.name
+            k = 2
+            while name in seen:
+                if "." in name.rsplit("/", 1)[-1]:
+                    stem, dot, ext = name.rpartition(".")
+                    name = f"{stem}({k}).{ext}"
+                else:
+                    name = f"{name}({k})"
+                k += 1
             seen.add(name)
             zf.writestr(name, a.content)
             files_manifest.append({"name": name, "bytes": len(a.content)})
@@ -409,12 +432,30 @@ async def package_zip(
                 files_manifest.append({"name": "会话记录/主会话记录.md", "bytes": len(record.encode("utf-8"))})
             except Exception:  # noqa: BLE001 会话记录缺失不影响打包主体
                 logger.warning("打包附会话记录失败", exc_info=True)
+
+        # 完整性信号（机制给信号、主会话决策）：模板清单 is_file_item 条目是否都有封存文件进包。
+        # 缺失不拦截（有正当跳过的条目），如实返回 missing_item_titles 并写入 manifest。
+        def _norm(s: str) -> str:
+            return "".join(str(s).split())
+
+        sealed_norm = [_norm(a.name.rsplit("/", 1)[-1]) for a in arts if a.kind == "item_docx"]
+        missing_items: list[str] = []
+        try:
+            outline = await get_template_outline(session, enterprise_id, project_id)
+            for items in outline["items_by_role"].values():
+                for it in items:
+                    if it.get("is_file_item") and not any(_norm(it["title"]) in n for n in sealed_norm):
+                        missing_items.append(it["title"])
+        except Exception:  # noqa: BLE001 清单读取失败不阻塞打包
+            logger.warning("打包完整性核对失败", exc_info=True)
+
         manifest = {
             "project_id": int(project_id),
             "task_id": int(task_id),
             "draft": draft_name,
             "note": "主会话经成文工具链（切片→填空→追加→校验→封存→打包）自主成文；"
                     "全部改动可在 Word【审阅→所有标记】中逐处查看；附主会话全程记录。",
+            "missing_file_items": missing_items,
             "files": files_manifest,
         }
         zf.writestr("manifest.json", _json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -432,4 +473,122 @@ async def package_zip(
     session.add(art)
     await session.commit()
     await _set_rls_context(session, enterprise_id)
-    return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "file_count": len(files_manifest)}
+    return {
+        "artifact_id": art.id,
+        "name": art.name,
+        "bytes": len(data),
+        "file_count": len(files_manifest),
+        "missing_file_items": missing_items,
+    }
+
+
+async def list_artifacts(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    task_id: int,
+) -> dict:
+    """产物清单（产物自检）：本任务已封存的全部产物（条目 docx/报价单 xlsx/响应包 zip）。"""
+    from sqlalchemy import select as sa_select
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, enterprise_id)
+    rows = (
+        await session.scalars(
+            sa_select(AgentArtifact)
+            .where(
+                AgentArtifact.enterprise_id == enterprise_id,
+                AgentArtifact.project_id == int(project_id),
+                AgentArtifact.task_id == int(task_id),
+            )
+            .order_by(AgentArtifact.id)
+        )
+    ).all()
+    return {
+        "artifacts": [
+            {
+                "artifact_id": a.id,
+                "kind": a.kind,
+                "name": a.name,
+                "bytes": len(a.content or b""),
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in rows
+        ]
+    }
+
+
+async def inspect_artifact(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    task_id: int,
+    artifact_id: int,
+) -> dict:
+    """产物自检：预览已封存产物的内容（docx 文本/修订计数/待补充计数；xlsx 表格预览；zip 文件清单），
+    供主会话/验收子 agent 核对"导出产物"与"成果模型"是否一致——补上模型与产物之间的验证盲区。"""
+    import io as _io
+    import zipfile as _zip
+
+    from sqlalchemy import select as sa_select
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, enterprise_id)
+    art = await session.scalar(
+        sa_select(AgentArtifact).where(
+            AgentArtifact.id == int(artifact_id),
+            AgentArtifact.enterprise_id == enterprise_id,
+            AgentArtifact.project_id == int(project_id),
+            AgentArtifact.task_id == int(task_id),
+        )
+    )
+    if art is None:
+        raise ValueError("产物不存在或不属于本任务")
+    base = {
+        "artifact_id": art.id,
+        "kind": art.kind,
+        "name": art.name,
+        "bytes": len(art.content or b""),
+    }
+    if art.kind == "item_docx":
+        from lxml import etree as _etree
+
+        W = "{%s}" % "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
+            doc = _etree.fromstring(zf.read("word/document.xml"))
+        text = "".join(doc.itertext())
+        base.update(
+            {
+                "text_preview_head": text[:600],
+                "text_preview_tail": text[-300:],
+                "chars": len(text),
+                "pending_count": text.count("【待补充"),
+                "ins_count": len(doc.findall(".//" + W + "ins")),
+                "del_count": len(doc.findall(".//" + W + "del")),
+            }
+        )
+    elif art.kind == "xlsx":
+        from openpyxl import load_workbook
+
+        wb = load_workbook(_io.BytesIO(art.content))
+        sheets = []
+        for name in wb.sheetnames:
+            ws = wb[name]
+            preview = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i >= 4:
+                    preview.append("…")
+                    break
+                preview.append([" " if c is None else str(c)[:40] for c in row])
+            sheets.append({"name": name, "rows": ws.max_row, "cols": ws.max_column, "preview": preview})
+        base["sheets"] = sheets
+    elif art.kind == "zip":
+        with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
+            base["entries"] = [{"name": n, "bytes": zf.getinfo(n).file_size} for n in zf.namelist()]
+    else:
+        base["note"] = "该产物类型无结构化预览"
+    return base

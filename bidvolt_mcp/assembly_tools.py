@@ -71,6 +71,14 @@ def _package_response_zip(args: dict) -> dict:
     )
 
 
+def _list_agent_artifacts(args: dict) -> dict:
+    return _get(f"/api/v1/projects/{args['project_id']}/assembly/artifacts")
+
+
+def _inspect_agent_artifact(args: dict) -> dict:
+    return _get(f"/api/v1/projects/{args['project_id']}/assembly/artifacts/{args['artifact_id']}/inspect")
+
+
 ASSEMBLY_TOOL_DEFS = [
     {
         "name": "resolve_template_draft",
@@ -243,6 +251,38 @@ ASSEMBLY_TOOL_DEFS = [
             "additionalProperties": False,
         },
         "handler": _build_quote_xlsx,
+    },
+    {
+        "name": "list_agent_artifacts",
+        "description": (
+            "成文工具（产物自检）：列出本任务已封存的全部产物（条目 docx/报价单 xlsx/响应包 zip）"
+            "的 artifact_id/kind/name/大小。验收子 agent 用它核对「导出产物」是否齐全。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "integer"}},
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+        "handler": _list_agent_artifacts,
+    },
+    {
+        "name": "inspect_agent_artifact",
+        "description": (
+            "成文工具（产物自检）：预览单个封存产物的内容——docx 返回文本头尾/字数/【待补充】计数/修订计数；"
+            "xlsx 返回各表行列数与前几行；zip 返回文件清单。验收子 agent 用它核对导出产物与成果模型是否一致"
+            "（例如报价单 xlsx 是否有完整表格而不是单格占位）。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "artifact_id": {"type": "integer"},
+            },
+            "required": ["project_id", "artifact_id"],
+            "additionalProperties": False,
+        },
+        "handler": _inspect_agent_artifact,
     },
     {
         "name": "package_response_zip",

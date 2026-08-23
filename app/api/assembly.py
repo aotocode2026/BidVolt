@@ -195,6 +195,36 @@ async def package_response_zip(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.get("/{project_id}/assembly/artifacts")
+async def list_agent_artifacts(
+    project_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("list_agent_artifacts")),
+) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
+    return await assembly_service.list_artifacts(
+        session, user.enterprise_id, project_id, _cap_task(request)
+    )
+
+
+@router.get("/{project_id}/assembly/artifacts/{artifact_id}/inspect")
+async def inspect_agent_artifact(
+    project_id: int,
+    artifact_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("inspect_agent_artifact")),
+) -> dict:
+    await _ensure_project(session, user.enterprise_id, project_id)
+    try:
+        return await assembly_service.inspect_artifact(
+            session, user.enterprise_id, project_id, _cap_task(request), artifact_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get("/{project_id}/agent-artifact/{artifact_id}/download")
 async def download_artifact(
     project_id: int,
