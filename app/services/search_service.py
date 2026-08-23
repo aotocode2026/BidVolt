@@ -188,3 +188,29 @@ def minimax_search(query: str, limit: int = 10) -> list[dict]:
             }
         )
     return out
+
+
+def minimax_vision(prompt: str, data_url: str) -> str:
+    """MiniMax 官方视觉理解（POST /v1/coding_plan/vlm）。
+    输入 data URL（data:image/...;base64,...），返回模型描述文本。
+    与主模型无关：主模型换成任何 provider，看图能力都走这里。"""
+    import json as _json
+
+    key = os.environ.get("MINIMAX_API_KEY", "").strip()
+    if not key:
+        raise ValueError("服务端未配置 MINIMAX_API_KEY，MiniMax 看图不可用")
+    payload = _json.dumps({"image_url": data_url, "prompt": prompt}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.minimaxi.com/v1/coding_plan/vlm",
+        data=payload,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = _json.loads(resp.read() or b"{}")
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"MiniMax 看图失败：{exc}") from exc
+    if (data.get("base_resp") or {}).get("status_code") not in (0, None):
+        raise ValueError(f"MiniMax 看图失败：{data.get('base_resp')}")
+    return str(data.get("content") or "").strip()

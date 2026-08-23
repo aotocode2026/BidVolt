@@ -106,6 +106,8 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "search_web_minimax",
         "save_source",
         "link_citation",
+        # 看图（MiniMax 官方视觉，与主模型无关：材料图片/印章印模/表格截图/流程图）
+        "vision_analyze_minimax",
         # 模拟评标（评审阶段落分/确认，主会话评审闭环用）
         "get_latest_score",
         "get_review_items",
@@ -139,6 +141,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "search_web",
         "search_web_minimax",
         "search_knowledge",
+        "vision_analyze_minimax",
     },
 }
 

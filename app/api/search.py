@@ -51,6 +51,48 @@ async def search_web_minimax(
     return {"provider": "minimax", "results": results}
 
 
+@router.post("/vision/minimax")
+async def vision_minimax(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("vision_analyze_minimax")),
+) -> dict:
+    """MiniMax 官方视觉理解（与主模型无关；支持 image_url 或项目材料 file_id）。"""
+    import base64 as _b64
+
+    from app.models.file import FileObject
+    from app.services.storage import StorageProvider
+
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 prompt")
+    data_url = str(body.get("image_url") or "").strip()
+    file_id = body.get("file_id")
+    if not data_url and file_id:
+        fobj = await session.get(FileObject, int(file_id))
+        if fobj is None or fobj.enterprise_id != user.enterprise_id or fobj.is_deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="材料文件不存在")
+        ext = (fobj.ext or "").strip(".").lower()
+        mime = {
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+        }.get(ext)
+        if mime is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"文件类型 {ext or '未知'} 不是可看图的图片（支持 png/jpg/gif/webp/bmp）",
+            )
+        raw = StorageProvider().open(fobj.bucket, fobj.object_key).read_bytes()
+        data_url = f"data:{mime};base64,{_b64.b64encode(raw).decode('ascii')}"
+    if not data_url:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 image_url 或 file_id")
+    try:
+        content = search_service.minimax_vision(prompt, data_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return {"provider": "minimax-vlm", "content": content}
+
+
 @router.post("/search-sources", status_code=status.HTTP_201_CREATED)
 async def save_source(
     body: dict,
