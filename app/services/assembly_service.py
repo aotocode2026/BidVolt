@@ -243,6 +243,7 @@ def _ensure_sess(s, fields: dict) -> Any:
             str(fields.get("supplier") or "").strip(),
             str(fields.get("tender_no") or "").strip(),
             label_values=(fields.get("label_values") if isinstance(fields.get("label_values"), dict) else {}),
+            values=(fields.get("values") if isinstance(fields.get("values"), dict) else {}),
         )
     else:
         sess = s["sess"]
@@ -256,6 +257,8 @@ def _ensure_sess(s, fields: dict) -> Any:
                 setattr(sess, attr, str(fields[key]).strip())
         if isinstance(fields.get("label_values"), dict) and fields["label_values"]:
             sess.set_label_values(fields["label_values"])
+        if isinstance(fields.get("values"), dict) and fields["values"]:
+            sess.set_label_values(fields["values"])
     return s["sess"]
 
 

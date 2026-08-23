@@ -167,6 +167,7 @@ class _FillSession:
         supplier: str,
         tender_no: str = "",
         label_values: dict | None = None,
+        values: dict | None = None,
     ):
         import re as _re
 
@@ -180,7 +181,34 @@ class _FillSession:
         self.project_name = project_name
         self.supplier = supplier
         self.tender_no = tender_no
-        self.label_values: dict[str, str] = dict(label_values or {})
+        # 通用词表：模板词 → {value, source}。词可以是占位符（采购人）、标签（电话/分标名称）
+        # 或任意自定义词；值从哪取由 agent 决定（资料库/采购文件/搜索/推断），机制不预设业务字段。
+        self.values: dict[str, dict] = {}
+        core = (
+            ("采购人", buyer, "招标文件封面/采购公告"),
+            ("招标人", buyer, "招标文件封面/采购公告"),
+            ("（采购人）", buyer, "招标文件封面/采购公告"),
+            ("（响应供应商名称）", supplier, "企业资料-企业名称"),
+            ("响应供应商名称", supplier, "企业资料-企业名称"),
+            ("响应供应商", supplier, "企业资料-企业名称"),
+            ("供应商名称", supplier, "企业资料-企业名称"),
+            ("（项目名称）", project_name, "招标文件封面/采购公告"),
+            ("项目名称", project_name, "招标文件封面/采购公告"),
+            ("采购编号", tender_no, "招标文件封面/采购公告"),
+        )
+        for tok, val, src in core:
+            if val:
+                self.values[tok] = {"value": str(val), "source": src}
+        for k, v in (label_values or {}).items():
+            self.values[str(k)] = {"value": str(v), "source": "企业资料"}
+        for k, v in (values or {}).items():
+            if isinstance(v, dict):
+                self.values[str(k)] = {
+                    "value": str(v.get("value") or ""),
+                    "source": str(v.get("source") or "应答资料"),
+                }
+            else:
+                self.values[str(k)] = {"value": str(v), "source": "应答资料"}
         self._re = _re
         self._qn = qn
         self._Pt = Pt
@@ -190,7 +218,7 @@ class _FillSession:
         )
         # 带标签空位（模板空位为空格/无下划线形态，如"采购编号：    ，"与"包名称：   采购文件"）：
         # P1 = 标签后直接是标点/行尾（空位零宽）；P2 = 标签后有空白再跟正文。
-        # 标签词表 = 常见模板标签（兜底标记用）+ agent 传入的任意标签（通用填值）。
+        # 标签词表 = 常见模板标签（兜底标记用）+ agent 传入的任意词（通用填值）。
         self._LABEL_BASE = (
             "采购编号|项目名称|分标名称|分标编号|包名称|包号|响应供应商|单位地址|法定地址|"
             "法定代表人（单位负责人）或授权代表|法定代表人（单位负责人）|法定代表人|"
@@ -209,35 +237,47 @@ class _FillSession:
                 settings_el.append(tc)
 
     def _compile_label_regexes(self) -> None:
-        """标签词表 = 常见标签 ∪ agent 传入的任意标签键（通用填值，不写死业务字段）。"""
+        """标签词表 = 常见标签 ∪ agent 传入的任意词键（通用填值，不写死业务字段）。"""
         extra = "|".join(
-            self._re.escape(str(k)) for k in self.label_values.keys() if str(k).strip()
+            self._re.escape(str(k)) for k in self.values.keys() if str(k).strip()
         )
         labels = self._LABEL_BASE if not extra else f"{self._LABEL_BASE}|{extra}"
         self._LABEL_P1 = self._re.compile(rf"({labels})[：:]\s*(?=[，,。;；）)（(]|$)")
         self._LABEL_P2 = self._re.compile(rf"({labels})[：:][ \u3000]+(?=[^，,。;；）)\s])")
 
     def set_label_values(self, label_values: dict) -> None:
-        """agent 随时补充任意标签的填值（数据来源由 agent 决定：资料库/采购文件/搜索/推断）。"""
-        self.label_values.update({str(k): str(v) for k, v in (label_values or {}).items()})
+        """agent 随时补充任意词的填值（数据来源由 agent 决定：资料库/采购文件/搜索/推断）。"""
+        for k, v in (label_values or {}).items():
+            if isinstance(v, dict):
+                self.values[str(k)] = {
+                    "value": str(v.get("value") or ""),
+                    "source": str(v.get("source") or "应答资料"),
+                }
+            else:
+                self.values[str(k)] = {"value": str(v), "source": "应答资料"}
         self._compile_label_regexes()
 
+    def _v(self, *tokens: str) -> str:
+        """取词表中第一个有值的 token（占位符/标签通用取值）。"""
+        for t in tokens:
+            entry = self.values.get(t)
+            if entry and entry.get("value"):
+                return str(entry["value"])
+        return ""
+
     def _labeled_value(self, label: str) -> str:
-        """带标签空位的回填值：agent 传了该标签的值就填；没传就原位【待补充：标签】（不编造）。
+        """带标签空位的回填值：agent 传了该词的值就填；没传就原位【待补充：标签】（不编造）。
         数据来源由 agent 决定（资料库/采购文件/搜索/推断），机制不预设业务字段。"""
-        if label == "采购编号":
-            return self.tender_no or self.label_values.get(label) or "【待补充：采购编号】"
-        if label == "项目名称":
-            return self.project_name or self.label_values.get(label) or "【待补充：项目名称】"
-        if label == "响应供应商":
-            return self.supplier or self.label_values.get(label) or "【待补充：供应商名称】"
-        if label in self.label_values:
-            return self.label_values[label]
+        val = self._v(label)
+        if val:
+            return val
         return f"【待补充：{label}】"
 
     def fill(self, text: str) -> str:
         _re = self._re
-        buyer, project_name, supplier = self.buyer, self.project_name, self.supplier
+        buyer = self._v("采购人", "招标人", "（采购人）")
+        project_name = self._v("项目名称", "（项目名称）")
+        supplier = self._v("响应供应商名称", "（响应供应商名称）", "供应商名称", "响应供应商")
         out = text
         # 标签紧邻空位：整体回填（"办理____（项目名称）"的下划线才是字段本身）
         if project_name:
@@ -266,7 +306,7 @@ class _FillSession:
             out = _re.sub(r"项目名称[：:]\s*【待补充】", f"项目名称：{project_name}", out)
         if buyer:
             out = _re.sub(r"(?:招标人|采购人)[：:]\s*【待补充】", f"招标人：{buyer}", out)
-        # 带标签空位（空格/零宽形态）：有资料回填，无资料原位【待补充：标签】
+        # 带标签空位（空格/零宽形态）：有值回填，无值原位【待补充：标签】
         def _rep(m):
             return f"{m.group(1)}：{self._labeled_value(m.group(1))}"
 
@@ -276,31 +316,31 @@ class _FillSession:
 
     def comment(self, old: str, new: str) -> str:
         """修订批注：说明改了什么、依据来源（产品要求：批注必须说明来自哪里）。
-        批注是审阅侧留痕，措辞保持专业投标口吻，不带系统痕迹。"""
-        buyer, project_name, supplier = self.buyer, self.project_name, self.supplier
+        来源词表由 agent 提供（values），措辞保持专业投标口吻，不带系统痕迹。"""
+        added: list[str] = []
         filled: list[str] = []
-        if ("（采购人）" in old or "【招标人名称】" in old or "招标人：" in old) and buyer:
-            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告）")
-        elif ("致：" in old and "采购人" in old) and buyer:
-            filled.append(f"招标人=「{buyer}」（来源：招标文件封面/采购公告）")
-        if ("（响应供应商名称）" in old or "【供应商名称】" in old or "响应供应商名称" in old) and supplier:
-            filled.append(f"供应商=「{supplier}」（来源：企业资料-企业名称）")
-        if ("（项目名称）" in old or "【项目名称】" in old or "项目名称：" in old) and project_name:
-            filled.append(f"项目名称=「{project_name}」（来源：招标文件封面/采购公告）")
-        if "采购编号" in old and self.tender_no:
-            filled.append(f"采购编号=「{self.tender_no}」（来源：招标文件封面/采购公告）")
+        for tok in sorted(self.values.keys(), key=len, reverse=True):
+            entry = self.values.get(tok)
+            val = str((entry or {}).get("value") or "").strip()
+            if not val or tok not in old:
+                continue
+            if any(t != tok and (tok in t or t in tok) for t in added):
+                continue  # 同一处占位符的短词/括号词只记一次（取最长词）
+            added.append(tok)
+            src = str((entry or {}).get("source") or "应答资料").strip()
+            filled.append(f"{tok}=「{val}」（来源：{src}）")
         if self._re.search(r"(分标名称|分标编号|包名称|包号)[：:]", old) and "【待补充" in new:
             filled.append("分标/包 信息未指定应答分包，原位标注【待补充】（按所应答分包填写）")
         if filled:
             if "【待补充" in new:
                 return (
                     "已按来源资料回填：" + "；".join(filled)
-                    + "；本处其余空位（如授权人/被授权人等）未取得对应资料，原位标注【待补充】。请复核确认。"
+                    + "；本处其余空位未取得对应资料，原位标注【待补充】。请复核确认。"
                 )
             return "已按来源资料回填：" + "；".join(filled) + "，请复核。"
         if "【待补充" in new:
             return "模板空位未取得对应资料，原位标注【待补充】（不编造内容），取得资料后填写确认。"
-        return "按招标文件内容补充填写（供参考），请复核确认。"
+        return "按采购文件内容补充填写（供参考），请复核确认。"
 
     def apply_to_doc(self) -> None:
         """全文档（含表格、控件、文本框）逐段填空（修订模式+批注）。"""

@@ -987,12 +987,7 @@
               },
               "scope": {
                 "type": "string",
-                "enum": [
-                  "market",
-                  "competitor",
-                  "policy",
-                  "standard"
-                ]
+                "description": "可选：检索意图说明（透传，不约束）"
               }
             },
             "required": [
@@ -1324,7 +1319,7 @@
               },
               "fields": {
                 "type": "object",
-                "description": "buyer/project_name/supplier/tender_no 为核心四值；label_values={模板标签:值} 是通用标签填值——任意标签都可以给值（如 {电话:010-…, 单位地址:…, 法定代表人:张建国, 分标名称:…}），值从哪取由主会话决定：企业资料库 search_assets / 采购文件 / 网络搜索 / 推断均可"
+                "description": "buyer/project_name/supplier/tender_no 为四个便捷键；values={模板词: {value, source}} 是通用词表填值——模板里出现什么词就填什么（占位符如（采购人）、标签如电话/单位地址/分标名称、任意自定义词都可以），值从哪取由主会话决定：企业资料库 search_assets / 采购文件 / 网络搜索 / 推断均可，source 写来源（进批注）；label_values={词:值} 为不带来源的简写"
               },
               "fills": {
                 "type": "array",

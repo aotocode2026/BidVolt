@@ -648,7 +648,7 @@ TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "scope": {"type": "string", "enum": ["market", "competitor", "policy", "standard"]},
+                "scope": {"type": "string", "description": "可选：检索意图说明（透传，不约束）"},
             },
             "required": ["query"],
             "additionalProperties": False,
