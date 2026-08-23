@@ -196,6 +196,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "成文要求：get_template_outline 里 is_file_item=true 的全部条目都必须"
             "slice→fill→append→verify→seal 后一起 package_response_zip；"
             "build_quote_xlsx 的 sheets[].rows 必须是数组的数组（每行一个数组，不得用对象/带 item 键）。"
+            "商务/技术偏差表若应答无偏差：必须在表格标题旁或表内首行显式标注"
+            "「本表空白=无偏差（按采购文件约定，选择无偏差时无需填写本表）」并加批注，不得只留空表。"
             "评分步骤：submit_score_items 成功落分即算闭环，自动评分分数仅作记录不作验收门。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
