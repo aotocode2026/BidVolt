@@ -28,6 +28,7 @@ TOOL_PERMISSION: dict[str, str] = {
     "save_deliverable": Permission.DELIVERABLE_EDIT,
     "get_latest_score": Permission.SCORE_VIEW,
     "get_review_items": Permission.SCORE_VIEW,
+    "submit_score_items": Permission.SCORE_CONFIRM,
     "confirm_review_items": Permission.SCORE_CONFIRM,
     "list_requirements": Permission.FILE_READ,
     "get_requirement": Permission.FILE_READ,

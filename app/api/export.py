@@ -292,12 +292,13 @@ async def response_package(
         .limit(1)
     )
     if pipe_task is not None:
+        # 取该项目主会话最近一次打包的 zip（续跑链上的旧包仍有效：
+        # 续跑任务若只补评审/评分等非成文步骤，会沿用上一单的包）
         zip_art = await session.scalar(
             sa_select(AgentArtifact)
             .where(
                 AgentArtifact.enterprise_id == user.enterprise_id,
                 AgentArtifact.project_id == project_id,
-                AgentArtifact.task_id == pipe_task.id,
                 AgentArtifact.kind == "zip",
             )
             .order_by(AgentArtifact.id.desc())

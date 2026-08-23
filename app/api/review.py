@@ -22,7 +22,7 @@ async def evaluate(
     project_id: int,
     body: dict | None = None,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.SCORE_CONFIRM)),
+    user: UserContext = Depends(require_capability("submit_score_items")),
 ) -> dict:
     """发起评审（Issue #6 P0）：可显式指定 provider_id，非法/禁用/跨租户/不支持的引擎失败关闭。"""
     provider_id = (body or {}).get("provider_id")
