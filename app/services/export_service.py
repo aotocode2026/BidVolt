@@ -298,7 +298,16 @@ class _FillSession:
         out = out.replace("【招标人名称】", buyer or "【待补充：招标人名称】")
         out = out.replace("【供应商名称】", supplier or "【待补充：供应商名称】")
         out = out.replace("【项目名称】", project_name or "【待补充：项目名称】")
-        out = _re.sub(r"_{2,}", "【待补充】", out)
+        # 裸下划线空位：前文有"标签："时自动带标签（如"不含税单价：____" → 【待补充：不含税单价】），
+        # 无标签上下文才用裸【待补充】——裸待补充让客户不知道补什么，属于质量缺陷
+        _orig = out
+
+        def _blank_rep(m):
+            ctx = _orig[max(0, m.start() - 24):m.start()]
+            mm = _re.search(r"([\u4e00-\u9fffA-Za-z0-9（）()、/·\-]{2,20})[：:]\s*$", ctx)
+            return f"【待补充：{mm.group(1)}】" if mm else "【待补充】"
+
+        out = _re.sub(r"_{2,}", _blank_rep, out)
         # 带标签的空位原位回填（如"响应供应商名称：____（盖章）"）
         if supplier:
             out = _re.sub(r"响应供应商名称[：:]\s*【待补充】", f"响应供应商名称：{supplier}", out)
