@@ -482,7 +482,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "（系统复核确认）请对交付件做最后确认：用 list_agent_artifacts + inspect_agent_artifact "
             "逐份打开每一份交付文件，核对 remaining_blanks/pending_items——"
             "凡能从采购文件/企业资料库/搜索取得的（如分标/包、电话/地址/邮编/法人）必须填实；"
-            "只允许客户独占数据待补充且标签具体（客户照着就能补）。"
+            "只允许客户独占数据待补充且标签具体（客户照着就能补）；"
+            "**裸【待补充】（pending_items 里 kind=bare，或 package 回执 audit.bare_pending 非空）必须清零**——"
+            "逐处用 fills 改成具体标签（如【待补充：被授权人姓名】）。"
             "发现问题立即修复（重新 fill/seal/package）后再输出结束标记；"
             "确认无误最后一行输出 " + MARK_COMPLETE + "；确有无法修复项输出 " + MARK_INCOMPLETE + " 原因…。"
         )

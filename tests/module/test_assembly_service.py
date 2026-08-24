@@ -426,4 +426,8 @@ def test_inspect_artifact_pending_items_signal():
     assert "电话" in labels
     assert "" in labels  # 裸【待补充】如实暴露（label 为空）
     assert info["pending_count"] == len(info["pending_items"])
+    # 裸待补充排最前 + kind=bare
+    kinds = [i["kind"] for i in info["pending_items"]]
+    assert "bare" in kinds and kinds.index("bare") == 0
+    assert info["bare_pending_count"] >= 1
     asyncio.run(engine.dispose())

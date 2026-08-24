@@ -493,6 +493,8 @@ async def package_zip(
     # 2) 同部分不雷同：每个目录内任意两份 docx 原文是否一致；
     # 3) 身份绑定：每份 docx 正文开头是否含自身条目标题。
     # 发现项如实返回/写入 manifest，由主会话决定回修后重新打包。
+    import re as _re
+
     from lxml import etree as _etree
 
     from app.services.export_service import _item_key, canonical_text
@@ -545,6 +547,22 @@ async def package_zip(
         key = _item_key(_stem(a))
         if a.id in texts and key and key not in _norm(texts[a.id])[:1200]:
             identity_issues.append(f"{a.name}：正文开头不含自身条目标题「{key}」")
+    # 裸待补充信号：label 为空或「具体标签」字样的逐处列出（含插入文本，需全量 itertext）
+    bare_pending: dict[str, list] = {}
+    for a in item_arts:
+        try:
+            with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                root = _etree.fromstring(zf.read("word/document.xml"))
+            full = "".join(root.itertext())
+        except Exception:  # noqa: BLE001
+            continue
+        items = []
+        for m in _re.finditer(r"【待补充[^】]*】", full):
+            label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
+            if not label or "具体标签" in label:
+                items.append({"label": label, "context": full[max(0, m.start() - 12):m.start()]})
+        if items:
+            bare_pending[a.name] = items
     audit = {
         "checked": len(item_arts),
         "coverage_ok": not missing_items,
@@ -553,6 +571,8 @@ async def package_zip(
         "missing_file_items": missing_items,
         "duplicate_pairs": dup_pairs,
         "identity_issues": identity_issues,
+        "bare_pending": bare_pending,
+        "bare_pending_count": sum(len(v) for v in bare_pending.values()),
     }
 
     buf = _io.BytesIO()
@@ -704,7 +724,8 @@ async def inspect_artifact(
             doc = _etree.fromstring(zf.read("word/document.xml"))
         text = "".join(doc.itertext())
         # 待补充逐项清单（信息信号）：让检查者一眼看到"哪些还没填、分别要补什么"，
-        # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题
+        # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题；
+        # 裸待补充（label 空）与「具体标签」模板字样打 kind=bare 并排最前——验收判据最该先看它们
         pending_items: list[dict] = []
         for m in _re.finditer(r"【待补充[^】]*】", text):
             label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
@@ -713,8 +734,11 @@ async def inspect_artifact(
                 {
                     "label": label,
                     "context": text[start:m.start()],
+                    "kind": "bare" if (not label or "具体标签" in label) else "labeled",
                 }
             )
+        pending_items.sort(key=lambda x: 0 if x["kind"] == "bare" else 1)
+        bare_count = sum(1 for x in pending_items if x["kind"] == "bare")
         base.update(
             {
                 "text_preview_head": text[:600],
@@ -722,6 +746,7 @@ async def inspect_artifact(
                 "chars": len(text),
                 "pending_count": text.count("【待补充"),
                 "pending_items": pending_items,
+                "bare_pending_count": bare_count,
                 "tables": tables_inventory(doc),
                 "ins_count": len(doc.findall(".//" + W + "ins")),
                 "del_count": len(doc.findall(".//" + W + "del")),
