@@ -1346,7 +1346,7 @@
               },
               "table_fills": {
                 "type": "array",
-                "description": "把内容填进模板自身表格的单元格（表格/表单类条目必须逐格填表，不要空着表格把内容挂文末）",
+                "description": "指定单元格填值（表格/表单类条目逐格填，不要空着表格把内容挂文末）",
                 "items": {
                   "type": "object",
                   "properties": {
@@ -1356,7 +1356,7 @@
                     },
                     "row": {
                       "type": "integer",
-                      "description": "行号（0 起）"
+                      "description": "行号（0 起，表头为 0）"
                     },
                     "col": {
                       "type": "integer",
@@ -1375,6 +1375,34 @@
                     "row",
                     "col",
                     "value"
+                  ]
+                }
+              },
+              "table_rows": {
+                "type": "array",
+                "description": "整行数据自动放置（推荐）：服务端从第一个空数据行开始连续放置，不用数行号——一次传全部数据行，填表位置交给机制（业绩表/人员表首选此方式）",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "table": {
+                      "type": "integer",
+                      "description": "切片内表格序号（0 起）"
+                    },
+                    "values": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "一行的各列值（按表头列顺序）"
+                    },
+                    "comment": {
+                      "type": "string",
+                      "description": "批注：来源与依据"
+                    }
+                  },
+                  "required": [
+                    "table",
+                    "values"
                   ]
                 }
               }

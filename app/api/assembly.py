@@ -95,7 +95,8 @@ async def fill_template_slice(
     await _ensure_project(session, user.enterprise_id, project_id)
     try:
         return assembly_service.fill_slice(
-            slice_id, _cap_task(request), body.get("fields"), body.get("fills"), body.get("table_fills")
+            slice_id, _cap_task(request), body.get("fields"), body.get("fills"),
+            body.get("table_fills"), body.get("table_rows"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
