@@ -437,6 +437,40 @@ class _FillSession:
         p_pr.append(outline)
         return p
 
+    def fill_table_rows(self, table_idx: int, rows_values: list[list[str]], comment: str | None = None) -> dict:
+        """把若干行数据按顺序填进模板表格的**第一个空数据行**起（连续放置）。
+        agent 只给内容，位置由机制决定——填表不再依赖 agent 数行号（曾填到行 3-4 而非行 1-2）。"""
+        tables = self.doc.tables
+        if table_idx < 0 or table_idx >= len(tables):
+            return {"filled_rows": 0, "results": [], "error": f"表 {table_idx} 不存在（共 {len(tables)} 张表）"}
+        tb = tables[table_idx]
+        results: list[dict] = []
+
+        def _cell_text(cell) -> str:
+            # 用 lxml itertext：修订插入的 run 包在 w:ins 里，python-docx cell.text 看不到，
+            # 会误判已填行仍为空（导致重复填同一行）
+            return "".join(cell._tc.itertext()).strip()
+
+        cursor = 1  # 从第一个数据行（跳过表头）开始找空行
+        for values in rows_values:
+            target = None
+            for r in range(cursor, len(tb.rows)):
+                if not any(_cell_text(c) for c in tb.rows[r].cells):
+                    target = r
+                    break
+            if target is None:
+                tb.add_row()
+                target = len(tb.rows) - 1
+            n = 0
+            for ci, v in enumerate(values):
+                if ci >= len(tb.rows[target].cells):
+                    break
+                self.fill_table_cell(table_idx, target, ci, str(v), comment)
+                n += 1
+            results.append({"row": target, "filled_cols": n})
+            cursor = target + 1
+        return {"filled_rows": len(results), "results": results, "error": ""}
+
     def remaining_blanks(self, limit: int = 30) -> list[dict]:
         """本文档还有哪些空位没填（信息信号）：逐处列出待补充标签与上下文。
         填完即反馈，主会话逐项处理：能填的填（values/fills/table_fills），不能填的确认标签具体。"""
@@ -534,6 +568,20 @@ def tables_inventory(root, header_limit: int = 20) -> list[dict]:
                 for tc in trs[0].findall(W + "tc")
             ]
         out.append({"index": ti, "rows": len(trs), "cols": len(header), "header": header})
+    return out
+
+
+def empty_table_rows(root) -> list[dict]:
+    """表格空数据行信号：每张表里全空的非表头行（表序号+行号+列数）。
+    让 agent 一眼看到哪些行还空着，配合 fill_table_rows 一次填满。"""
+    W = f"{{{_W_NS}}}"
+    out: list[dict] = []
+    for ti, tb in enumerate(root.iter(W + "tbl")):
+        trs = tb.findall(W + "tr")
+        for ri, tr in enumerate(trs[1:], start=1):
+            cells = ["".join(tc.itertext()).strip() for tc in tr.findall(W + "tc")]
+            if cells and not any(cells):
+                out.append({"table": ti, "row": ri, "cols": len(cells)})
     return out
 
 

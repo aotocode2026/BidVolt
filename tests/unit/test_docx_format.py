@@ -489,6 +489,44 @@ def test_underscore_blanks_auto_labeled():
     assert "特授权【待补充】代表我方全权办理" in joined
 
 
+def test_table_rows_auto_placement():
+    """table_rows 整行自动放置：从第一个空数据行开始连续填，不依赖 agent 数行号。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession, empty_table_rows
+
+    src = Document()
+    tb = src.add_table(rows=4, cols=3)
+    tb.rows[0].cells[0].text = "表头A"
+    tb.rows[0].cells[1].text = "表头B"
+    tb.rows[0].cells[2].text = "表头C"
+    sess = _FillSession(src, "", "", "", "")
+    assert empty_table_rows(src.element) == [
+        {"table": 0, "row": 1, "cols": 3},
+        {"table": 0, "row": 2, "cols": 3},
+        {"table": 0, "row": 3, "cols": 3},
+    ]
+    r = sess.fill_table_rows(0, [["甲1", "甲2", "甲3"], ["乙1", "乙2", "乙3"]], "业绩填写")
+    assert r["filled_rows"] == 2
+    assert [x["row"] for x in r["results"]] == [1, 2]
+    # 已填行（修订插入包在 w:ins 里）不得被误判为空：继续排到下一空行
+    r2 = sess.fill_table_rows(0, [["丙1", "丙2", "丙3"]], None)
+    assert r2["results"][0]["row"] == 3
+    # 行不够自动追加
+    r3 = sess.fill_table_rows(0, [["丁1", "丁2", "丁3"], ["戊1", "戊2", "戊3"]], None)
+    assert [x["row"] for x in r3["results"]] == [4, 5]
+    assert len(tb.rows) == 6
+    # 越界表号如实报错
+    r4 = sess.fill_table_rows(5, [["x"]], None)
+    assert r4["filled_rows"] == 0 and "5 不存在" in r4["error"]
+    # 序列化产物校验（读取侧 itertext 会重复，不能用）
+    data = sess.finish()
+    joined = _all_text(data)
+    assert joined.count("甲1") == 1
+    assert joined.count("乙2") == 1
+    assert joined.count("戊3") == 1
+
+
 def test_draft_label_format():
     from app.services.export_service import _draft_label
 
