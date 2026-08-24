@@ -284,22 +284,42 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
 
         n_fills += export_service.replace_text_tracked(sess.editor, find, value, comment)
     n_table = 0
+    table_results: list[dict] = []
+
+    def _idx(v, default: int = -1) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
     for tf in table_fills or []:
-        ok = sess.fill_table_cell(
-            int(tf.get("table") or -1),
-            int(tf.get("row") or -1),
-            int(tf.get("col") or -1),
-            str(tf.get("value") or ""),
-            str(tf.get("comment") or "") or None,
-        )
+        # 注意：0 是合法坐标（表 0/行 0/列 0），不能用 `or -1` 兜底（曾把 0 腐蚀成 -1，
+        # 导致所有以 0 开头的坐标全部越界，agent 误判"机制未生效"而放弃填原表）
+        ti = _idx(tf.get("table"))
+        ri = _idx(tf.get("row"))
+        ci = _idx(tf.get("col"))
+        err = ""
+        try:
+            ok = sess.fill_table_cell(ti, ri, ci, str(tf.get("value") or ""), str(tf.get("comment") or "") or None)
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            err = f"{type(exc).__name__}: {exc}"
         if ok:
             n_table += 1
+        else:
+            n_tables = len(sess.doc.tables)
+            err = err or f"坐标越界：本切片共 {n_tables} 张表（table 索引 0-{n_tables - 1}），"
+            if n_tables and 0 <= ti < n_tables:
+                rows, cols = len(sess.doc.tables[ti].rows), len(sess.doc.tables[ti].rows[0].cells)
+                err += f"表 {ti} 为 {rows} 行 × {cols} 列"
+        table_results.append({"table": ti, "row": ri, "col": ci, "ok": ok, "error": err})
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
     remaining = sess.remaining_blanks()
     return {
         "slice_id": slice_id,
         "explicit_fills": n_fills,
         "table_fills_done": n_table,
+        "table_fills_results": table_results,
         "fields_used": {k: str(v) for k, v in (fields or {}).items() if v},
         # 填完即反馈：本文档还有哪些空位没填（逐项标签+上下文），主会话逐项清零到只剩客户独占数据
         "remaining_blanks": remaining,
