@@ -438,8 +438,8 @@ class _FillSession:
         return p
 
     def fill_table_rows(self, table_idx: int, rows_values: list[list[str]], comment: str | None = None) -> dict:
-        """把若干行数据按顺序填进模板表格的**第一个空数据行**起（连续放置）。
-        agent 只给内容，位置由机制决定——填表不再依赖 agent 数行号（曾填到行 3-4 而非行 1-2）。"""
+        """（保留兼容，产品决定由 agent 用 table_fills 自行决定填哪行哪列；
+        本方法不再被 skill 推荐，等价于按传入顺序从第一个空数据行起放置。）"""
         tables = self.doc.tables
         if table_idx < 0 or table_idx >= len(tables):
             return {"filled_rows": 0, "results": [], "error": f"表 {table_idx} 不存在（共 {len(tables)} 张表）"}
@@ -447,11 +447,9 @@ class _FillSession:
         results: list[dict] = []
 
         def _cell_text(cell) -> str:
-            # 用 lxml itertext：修订插入的 run 包在 w:ins 里，python-docx cell.text 看不到，
-            # 会误判已填行仍为空（导致重复填同一行）
             return "".join(cell._tc.itertext()).strip()
 
-        cursor = 1  # 从第一个数据行（跳过表头）开始找空行
+        cursor = 1
         for values in rows_values:
             target = None
             for r in range(cursor, len(tb.rows)):
@@ -536,10 +534,12 @@ class _FillSession:
 
 
 def _scan_remaining(root, limit: int = 30) -> list[dict]:
-    """模块级空位扫描（fill/verify 共用）：逐处列出【待补充】标签与上下文、剩余裸下划线。"""
+    """模块级空位扫描（fill/verify 共用）：逐处列出【待补充】标签与上下文、剩余裸下划线。
+    文本只收 w:t（python-docx CT 的 itertext 会逐层重复计算属性文本）。"""
     import re as _re2
 
-    text = "".join(root.itertext())
+    W = f"{{{_W_NS}}}"
+    text = "".join(t.text or "" for t in root.iter(W + "t"))
     items: list[dict] = []
     for m in _re2.finditer(r"【待补充[^】]*】", text):
         label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
@@ -553,33 +553,45 @@ def _scan_remaining(root, limit: int = 30) -> list[dict]:
     return items
 
 
-def tables_inventory(root, header_limit: int = 20) -> list[dict]:
-    """文档表格清册（信息信号）：每张表的序号/行数/列数/表头。
-    让 agent 看到表格坐标与结构，才能用 table_fills 把内容填进模板自身的表格
-    （而不是空表+文末挂文字——那不是投标件该有的形态）。"""
+def tables_inventory(root, header_limit: int = 20, row_limit: int = 6, cell_limit: int = 14) -> list[dict]:
+    """文档表格清册（信息信号）：每张表的序号/行数/列数/表头 + **逐行现状**（行号+各列内容）。
+    工具只描述——填哪行哪列由 agent 决定（table_fills 给坐标）。
+    文本只收 w:t（python-docx CT 元素的 itertext 会把计算属性文本逐层重复）。"""
     W = f"{{{_W_NS}}}"
+
+    def _t(tc) -> str:
+        return "".join(t.text or "" for t in tc.iter(W + "t")).strip()
+
     out: list[dict] = []
     for ti, tb in enumerate(root.iter(W + "tbl")):
         trs = tb.findall(W + "tr")
         header: list[str] = []
         if trs:
-            header = [
-                "".join(tc.itertext()).strip()[:header_limit]
-                for tc in trs[0].findall(W + "tc")
-            ]
-        out.append({"index": ti, "rows": len(trs), "cols": len(header), "header": header})
+            header = [_t(tc)[:header_limit] for tc in trs[0].findall(W + "tc")]
+        rows_detail: list[dict] = []
+        for ri, tr in enumerate(trs[:row_limit]):
+            rows_detail.append({"row": ri, "cells": [_t(tc)[:cell_limit] for tc in tr.findall(W + "tc")]})
+        out.append(
+            {
+                "index": ti,
+                "rows": len(trs),
+                "cols": len(header),
+                "header": header,
+                "rows_detail": rows_detail,
+            }
+        )
     return out
 
 
 def empty_table_rows(root) -> list[dict]:
     """表格空数据行信号：每张表里全空的非表头行（表序号+行号+列数）。
-    让 agent 一眼看到哪些行还空着，配合 fill_table_rows 一次填满。"""
+    让 agent 一眼看到哪些行还空着；填哪行由 agent 决定。"""
     W = f"{{{_W_NS}}}"
     out: list[dict] = []
     for ti, tb in enumerate(root.iter(W + "tbl")):
         trs = tb.findall(W + "tr")
         for ri, tr in enumerate(trs[1:], start=1):
-            cells = ["".join(tc.itertext()).strip() for tc in tr.findall(W + "tc")]
+            cells = ["".join(t.text or "" for t in tc.iter(W + "t")).strip() for tc in tr.findall(W + "tc")]
             if cells and not any(cells):
                 out.append({"table": ti, "row": ri, "cols": len(cells)})
     return out

@@ -35,7 +35,7 @@ def _fill_template_slice(args: dict) -> dict:
     return _post(
         f"/api/v1/projects/{args['project_id']}/assembly/slices/{args['slice_id']}/fill",
         {"fields": args.get("fields"), "fills": args.get("fills"),
-         "table_fills": args.get("table_fills"), "table_rows": args.get("table_rows")},
+         "table_fills": args.get("table_fills")},
     )
 
 
@@ -161,32 +161,18 @@ ASSEMBLY_TOOL_DEFS = [
                 },
                 "table_fills": {
                     "type": "array",
-                    "description": "指定单元格填值（表格/表单类条目逐格填，不要空着表格把内容挂文末）",
+                    "description": "按坐标填单元格：slice 回执 tables 清册给出每张表的表头与逐行现状（行号+各列内容），"
+                                    "填哪行哪列由主会话决定（通常从第一个空数据行起连续填，表头行为 0）",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "table": {"type": "integer", "description": "切片内表格序号（0 起）"},
+                            "table": {"type": "integer", "description": "切片内表格序号（0 起，见 tables 清册）"},
                             "row": {"type": "integer", "description": "行号（0 起，表头为 0）"},
                             "col": {"type": "integer", "description": "列号（0 起）"},
                             "value": {"type": "string"},
                             "comment": {"type": "string", "description": "批注：来源与依据"},
                         },
                         "required": ["table", "row", "col", "value"],
-                    },
-                },
-                "table_rows": {
-                    "type": "array",
-                    "description": "整行数据自动放置（推荐）：服务端从第一个空数据行开始连续放置，"
-                                    "不用数行号——一次传全部数据行，填表位置交给机制（业绩表/人员表首选此方式）",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "table": {"type": "integer", "description": "切片内表格序号（0 起）"},
-                            "values": {"type": "array", "items": {"type": "string"},
-                                       "description": "一行的各列值（按表头列顺序）"},
-                            "comment": {"type": "string", "description": "批注：来源与依据"},
-                        },
-                        "required": ["table", "values"],
                     },
                 },
             },
