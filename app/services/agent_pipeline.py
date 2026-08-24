@@ -33,8 +33,9 @@ from app.models.task import Task
 
 logger = logging.getLogger(__name__)
 
-# 主会话最大时长（秒）：端到端包含多轮子任务，给足预算
-PIPELINE_TIMEOUT = 7200
+# 主会话最大时长（秒）：端到端包含多轮子任务 + 跑内验收回修循环 + 完成复核，
+# 主会话自主收敛需要充足预算（378 实测 2h 不够，验收循环干到超时被切）——给足 3h
+PIPELINE_TIMEOUT = 10800
 # 事件落库节流：每 5 秒刷一次
 EVENT_FLUSH_SECONDS = 5
 # 卡顿阈值：无任何新输出超过该时长则温和催办一次
