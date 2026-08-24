@@ -265,12 +265,11 @@ def _ensure_sess(s, fields: dict) -> Any:
     return s["sess"]
 
 
-def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dict] | None, table_fills: list[dict] | None = None, table_rows: list[dict] | None = None) -> dict:
+def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dict] | None, table_fills: list[dict] | None = None) -> dict:
     """填空：标准字段（buyer/project_name/supplier/tender_no）→ 带标签空位规则（无资料原位【待补充】），
     再按主会话给出的显式 fills=[{find,value,comment}] 定向替换；
-    table_fills=[{table,row,col,value,comment}] 指定单元格填值；
-    table_rows=[{table,values:[...],comment}] 整行数据自动放进第一个空数据行起（无需数行号）。
-    全部修订模式+批注。"""
+    table_fills=[{table,row,col,value,comment}] 按 agent 决定的坐标填单元格（工具只给表格清册，
+    填哪行哪列由 agent 决定）。全部修订模式+批注。"""
     s = _slice(slice_id, task_id)
     sess = _ensure_sess(s, fields or {})
     sess.apply_to_doc()
@@ -314,13 +313,6 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
                 rows, cols = len(sess.doc.tables[ti].rows), len(sess.doc.tables[ti].rows[0].cells)
                 err += f"表 {ti} 为 {rows} 行 × {cols} 列"
         table_results.append({"table": ti, "row": ri, "col": ci, "ok": ok, "error": err})
-    rows_results: list[dict] = []
-    for tr in table_rows or []:
-        ti = _idx(tr.get("table"))
-        vals = [str(v) for v in (tr.get("values") or [])]
-        rr = sess.fill_table_rows(ti, vals, str(tr.get("comment") or "") or None)
-        rr["table"] = ti
-        rows_results.append(rr)
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
     remaining = sess.remaining_blanks()
     return {
@@ -328,12 +320,11 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
         "explicit_fills": n_fills,
         "table_fills_done": n_table,
         "table_fills_results": table_results,
-        "table_rows_results": rows_results,
         "fields_used": {k: str(v) for k, v in (fields or {}).items() if v},
         # 填完即反馈：本文档还有哪些空位没填（逐项标签+上下文），主会话逐项清零到只剩客户独占数据
         "remaining_blanks": remaining,
         "remaining_count": len(remaining),
-        # 表格还有哪些全空数据行（信号）：配合 fill_table_rows 一次填满
+        # 表格还有哪些全空数据行（描述信号，位置决定权在 agent）
         "empty_table_rows": export_service.empty_table_rows(sess.doc.element),
     }
 
