@@ -519,6 +519,24 @@ def _scan_remaining(root, limit: int = 30) -> list[dict]:
     return items
 
 
+def tables_inventory(root, header_limit: int = 20) -> list[dict]:
+    """文档表格清册（信息信号）：每张表的序号/行数/列数/表头。
+    让 agent 看到表格坐标与结构，才能用 table_fills 把内容填进模板自身的表格
+    （而不是空表+文末挂文字——那不是投标件该有的形态）。"""
+    W = f"{{{_W_NS}}}"
+    out: list[dict] = []
+    for ti, tb in enumerate(root.iter(W + "tbl")):
+        trs = tb.findall(W + "tr")
+        header: list[str] = []
+        if trs:
+            header = [
+                "".join(tc.itertext()).strip()[:header_limit]
+                for tc in trs[0].findall(W + "tc")
+            ]
+        out.append({"index": ti, "rows": len(trs), "cols": len(header), "header": header})
+    return out
+
+
 def docx_from_template(source_path, model: dict) -> bytes:
     """底稿式整本成文（保留能力）：复制采购文件原 docx，整本保留——
     填空（修订模式+批注来源）+ 文末追加"补充响应内容"（修订插入+批注）。

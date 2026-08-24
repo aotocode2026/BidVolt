@@ -228,6 +228,9 @@ async def create_slice(
         "req_title": req_title[:80],
         "file_id": int(file_id),
         "req_id": int(req_id),
+        # 表格清册：让 agent 看到本切片有哪些模板表格（坐标/行数/列数/表头），
+        # 才能用 table_fills 把内容填进模板自身的表格
+        "tables": export_service.tables_inventory(doc.element),
         "warn": warn,
     }
 
@@ -672,7 +675,7 @@ async def inspect_artifact(
 
         from lxml import etree as _etree
 
-        from app.services.export_service import _W_NS
+        from app.services.export_service import _W_NS, tables_inventory
 
         W = f"{{{_W_NS}}}"
         with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
@@ -697,6 +700,7 @@ async def inspect_artifact(
                 "chars": len(text),
                 "pending_count": text.count("【待补充"),
                 "pending_items": pending_items,
+                "tables": tables_inventory(doc),
                 "ins_count": len(doc.findall(".//" + W + "ins")),
                 "del_count": len(doc.findall(".//" + W + "del")),
             }
