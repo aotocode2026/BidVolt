@@ -337,6 +337,47 @@ def test_inspect_artifact_previews(client, monkeypatch):
     asyncio.run(engine.dispose())
 
 
+def test_fill_slice_table_fills_per_item_feedback():
+    """table_fills 逐项回执：成功/失败各自说明（坐标越界给表数提示）——回归：
+    agent 曾把越界试出的 done=0 误判为'机制未生效'而放弃填原表。"""
+    import time
+
+    from docx import Document
+
+    from app.services import assembly_service
+
+    src = Document()
+    tb = src.add_table(rows=3, cols=3)
+    tb.rows[0].cells[0].text = "表头"
+    assembly_service._SLICES["stf1"] = {
+        "doc": src,
+        "sess": None,
+        "source_text": "x",
+        "file_id": 1,
+        "req_id": 1,
+        "title": "t",
+        "matched_title": "t",
+        "verified": False,
+        "task_id": 1,
+        "project_id": 1,
+        "enterprise_id": 1,
+        "created": time.time(),
+    }
+    r = assembly_service.fill_slice(
+        "stf1", 1, {}, [],
+        [
+            {"table": 0, "row": 1, "col": 0, "value": "有效填值"},
+            {"table": 3, "row": 0, "col": 0, "value": "越界"},
+        ],
+    )
+    assert r["table_fills_done"] == 1
+    ok = [x for x in r["table_fills_results"] if x["ok"]]
+    bad = [x for x in r["table_fills_results"] if not x["ok"]]
+    assert len(ok) == 1 and len(bad) == 1
+    assert "1 张表" in bad[0]["error"], bad[0]
+    assembly_service._SLICES.pop("stf1", None)
+
+
 def test_inspect_artifact_pending_items_signal():
     """产物自检：docx 返回 pending_items 逐项清单（标签+上下文），不再只有计数——
     回归：计数会掩盖'本可填实却空着/标签含混'，检查者靠清单逐项核对。"""
