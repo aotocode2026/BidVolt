@@ -139,6 +139,7 @@ def test_enterprise_upload_returns_asset_id_and_auto_ingest(client):
     assert item["file_id"] > 0
     assert item["asset_id"] > 0
     assert item["auto_ingest"] is True
+    assert item["facts_extracted"] == 0  # "材料.txt" 无分类关键词 → 无初始事实（如实回传信号）
 
 
 def test_project_upload_document_role(client):

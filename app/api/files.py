@@ -12,7 +12,7 @@ from app.config import settings
 from app.constants import Permission
 from app.db import get_session
 from app.models.doc import DocBlock
-from app.models.enterprise_domain import EnterpriseAsset
+from app.models.enterprise_domain import EnterpriseAsset, EnterpriseFact
 from app.models.file import FileObject
 from app.models.project_material import ProjectMaterial
 from app.schemas.project import Page
@@ -80,12 +80,21 @@ async def upload_files(
                     "parse_status": fobj.parse_status,
                 }
                 if target == "enterprise":
-                    # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest
+                    # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest。
+                    # 上传即自动入库（按文件名分类+抽取初始事实），facts_extracted 给出实际条数信号。
                     asset = await session.scalar(
                         select(EnterpriseAsset).where(EnterpriseAsset.source_file_id == fobj.id)
                     )
                     item["asset_id"] = asset.id if asset else None
                     item["auto_ingest"] = True
+                    item["facts_extracted"] = (
+                        await session.scalar(
+                            select(func.count()).select_from(EnterpriseFact).where(
+                                EnterpriseFact.asset_id == asset.id
+                            )
+                        )
+                        or 0
+                    ) if asset else 0
             results.append(item)
         except ValueError as exc:
             results.append({"name": upload.filename, "error": str(exc)})

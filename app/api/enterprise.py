@@ -19,38 +19,14 @@ from app.models.enterprise_domain import (
 )
 from app.models.task import Task
 from app.services.audit import write_audit
+from app.services.enterprise_service import (
+    classify_asset_name as _classify,
+)
+from app.services.enterprise_service import (
+    ensure_asset_categories as _ensure_categories,
+)
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
-
-
-def _classify(name: str) -> tuple[str, list[tuple[str, str, float]]]:
-    lower = name.lower()
-    rules = (
-        (("营业执照", "执照"), "证照", [("credit_code", "营业执照", 0.9)]),
-        (("资质", "许可证"), "资质", [("qualification", name, 0.6)]),
-        (("业绩", "合同", "中标"), "业绩", [("performance", name, 0.6)]),
-        (("身份证", "证书"), "人员", [("personnel", name, 0.6)]),
-        (("检测", "报告"), "检测报告", [("test_report", name, 0.6)]),
-        (("参数", "产品"), "产品参数", [("product_param", name, 0.6)]),
-    )
-    for keywords, category, facts in rules:
-        if any(k in lower for k in keywords):
-            return category, facts
-    return "其他", []
-
-
-async def _ensure_categories(session: AsyncSession, enterprise_id: int) -> dict[str, int]:
-    existing = await session.scalars(
-        select(EnterpriseAssetCategory).where(EnterpriseAssetCategory.enterprise_id == enterprise_id)
-    )
-    mapping = {c.name: c.id for c in existing}
-    for name in ("证照", "资质", "业绩", "人员", "产品参数", "检测报告", "其他"):
-        if name not in mapping:
-            cat = EnterpriseAssetCategory(enterprise_id=enterprise_id, name=name)
-            session.add(cat)
-            await session.flush()
-            mapping[name] = cat.id
-    return mapping
 
 
 @router.get("/categories")
@@ -196,7 +172,14 @@ async def trigger_ingest(
         asset.category_id = categories.get(category)
         asset.asset_type = category
         asset.status = 2  # 待确认
+        existing_keys = set(
+            (await session.scalars(
+                select(EnterpriseFact.fact_key).where(EnterpriseFact.asset_id == asset.id)
+            )).all()
+        )
         for fact_key, value, confidence in facts:
+            if fact_key in existing_keys:
+                continue  # 幂等：同名事实已存在（含上传自动入库），不重复插入
             session.add(
                 EnterpriseFact(
                     enterprise_id=user.enterprise_id,
