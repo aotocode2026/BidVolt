@@ -364,13 +364,17 @@ def test_fill_slice_table_fills_per_item_feedback():
         "created": time.time(),
     }
     r = assembly_service.fill_slice(
-        "stf1", 1, {}, [],
+        "stf1", 1, {}, [{"find": "不存在的原文", "value": "x"}, {"find": "表头", "value": "改表头"}],
         [
             {"table": 0, "row": 1, "col": 0, "value": "有效填值"},
             {"table": 3, "row": 0, "col": 0, "value": "越界"},
         ],
     )
     assert r["table_fills_done"] == 1
+    # 逐项 fills 回执：找不到的原文如实报 found=False（不再静默 0）
+    found_flags = {x["find"]: x["found"] for x in r["fills_results"]}
+    assert found_flags["不存在的原文"] is False
+    assert found_flags["表头"] is True
     ok = [x for x in r["table_fills_results"] if x["ok"]]
     bad = [x for x in r["table_fills_results"] if not x["ok"]]
     assert len(ok) == 1 and len(bad) == 1

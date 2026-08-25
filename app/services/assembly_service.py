@@ -231,6 +231,12 @@ async def create_slice(
         # 表格清册：让 agent 看到本切片有哪些模板表格（坐标/行数/列数/表头），
         # 才能用 table_fills 把内容填进模板自身的表格
         "tables": export_service.tables_inventory(doc.element),
+        # 切片内容预览：agent 填之前先看到这段原文（信息信号，机制只描述）
+        "slice_preview": {
+            "text_head": "".join(
+                t.text or "" for t in doc.element.iter(f"{{{export_service._W_NS}}}t")
+            )[:600],
+        },
         "warn": warn,
     }
 
@@ -276,13 +282,23 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
     from app.services import export_service  # noqa: PLC0415
 
     n_fills = 0
+    fills_results: list[dict] = []
     for f in fills or []:
         find = str(f.get("find") or "")
         if not find:
             continue
         value = str(f.get("value") or "")
         comment = str(f.get("comment") or "") or None
-        n_fills += export_service.replace_text_tracked(sess.editor, find, value, comment)
+        n = export_service.replace_text_tracked(sess.editor, find, value, comment)
+        n_fills += n
+        fills_results.append(
+            {
+                "find": find[:60],
+                "value": value[:60],
+                "replaced": n,
+                "found": n > 0,
+            }
+        )
     n_table = 0
     table_results: list[dict] = []
 
@@ -318,6 +334,7 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
     return {
         "slice_id": slice_id,
         "explicit_fills": n_fills,
+        "fills_results": fills_results,
         "table_fills_done": n_table,
         "table_fills_results": table_results,
         "fields_used": {k: str(v) for k, v in (fields or {}).items() if v},
