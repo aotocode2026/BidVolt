@@ -133,6 +133,10 @@ ASSEMBLY_TOOL_DEFS = [
             "成文工具（机制）：对切片做修订模式填空+批注。先按 fields（buyer/project_name/supplier/tender_no）"
             "走标准填空规则（无资料的空位原位标注【待补充：标签】），再按 fills=[{find,value,comment}] 定向替换。"
             "所有改动均带修订标记与来源批注，模板原文保留为删除线。"
+            "机制边界（必读）：values 只命中「标签：空位/下划线」形态（标签+冒号紧跟空位）；"
+            "无标签下划线（如「特授权____」「____（盖章）」）values 打不到——回执 remaining_blanks 里"
+            "label 为空的 underscore/裸【待补充】项就是没打到的，逐个用 fills 定向替换成"
+            "带具体标签的【待补充：xxx】或直接填实值，不留裸【待补充】。"
         ),
         "inputSchema": {
             "type": "object",
