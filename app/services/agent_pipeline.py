@@ -787,19 +787,17 @@ def _is_noise_line(s: str) -> bool:
 
 def condense_session_markdown(md: str) -> str:
     """精简版会话记录：逐块过滤状态噪音，保留全部内容块（块内只要有一条内容行就整块保留，
-    绝不丢正文）。供交付包附件与网页「精简视图」使用。"""
+    绝不丢正文）。文件头部（任务 id/会话 id/事件数等元信息）原样保留。供交付包附件与网页「精简视图」使用。"""
     out: list[str] = []
+    preamble: list[str] = []
     head = ""
     buf: list[str] = []
     in_code = False
-    n_kept = 0
-    n_total = 0
+    started = False
 
     def _flush() -> None:
-        nonlocal n_kept, n_total
         if not buf:
             return
-        n_total += 1
         body = [ln for ln in buf if ln.strip()]
         if not body or not all(_is_noise_line(ln) for ln in body):
             out.append(head)
@@ -807,15 +805,18 @@ def condense_session_markdown(md: str) -> str:
             out.extend(buf)
             out.append("```")
             out.append("")
-            n_kept += 1
 
     for line in md.splitlines():
         m = re.match(r"^## \[\d+\] (.+)$", line)
         if m:
+            started = True
             _flush()
             head = line
             buf = []
             in_code = False
+            continue
+        if not started:
+            preamble.append(line)
             continue
         if line.strip() == "```text":
             in_code = True
@@ -826,7 +827,7 @@ def condense_session_markdown(md: str) -> str:
         if in_code:
             buf.append(line)
     _flush()
-    return "\n".join(out)
+    return "\n".join(preamble + out)
 
 
 async def _refresh_zip_record(session: AsyncSession, task: Task) -> None:

@@ -63,6 +63,8 @@ todo 计划已列：A-G
 
 def test_condense_drops_noise_keeps_content():
     out = condense_session_markdown(MD)
+    # 头部元信息保留
+    assert out.startswith("# Hermes 主会话 · 全程记录")
     # 内容块保留
     assert "请执行投标流程。" in out
     assert "企业资料 1 条" in out
