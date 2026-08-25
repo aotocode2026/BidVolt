@@ -43,6 +43,10 @@ input{padding:6px;margin:4px;width:280px}
 <div>
   <input id="c-msg" placeholder="给主会话发消息（任务完成后可对话）" style="width:520px">
   <button onclick="chatSend()">发送</button>
+  <label style="margin-left:14px;user-select:none">
+    <input type="checkbox" id="c-condensed" onchange="renderConsole()"> 精简视图
+    <span title="过滤状态噪音（进度条/中断提示/思考动画/画框线），与交付包内『主会话记录-精简版.md』同一套规则">ⓘ</span>
+  </label>
   <button onclick="consoleClose()">关闭控制台</button>
 </div>
 <div id="console" style="display:none;background:#10202f;color:#cfe6f8;padding:12px;border-radius:8px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;min-height:260px;max-height:520px;overflow:auto"></div>
@@ -116,22 +120,59 @@ const KIND_LABEL = {
   user:    "👤 客户 → 主会话",
 };
 
-function consoleAppend(seq, kind, content){
-  const el = document.getElementById("console");
-  let head = KIND_LABEL[kind] || kind;
-  // 催办/告警类服务消息加粗醒目前缀（控制台正文里也一眼可见）
-  if(kind === "service" && /催办|系统提示|判定|未闭环|续跑/.test(content || "")){
-    head = "🔔 " + head;
+let consoleEvents = [];
+
+/* 精简视图噪音行判定（与后端 session_record 精简版同一套规则） */
+const NOISE_LINE = [/^⚕/, /^❯/, /^\(°ロ°\)/, /^\(⌐■_■\)/, /^\(¬_¬\)/, /^╭─/, /^╰─/, /^┌─/, /^└/, /^[│╭╰╞┌└─═]+$/];
+const BOX_CHARS = "█░╭╮╰╯│┤┐┌└┘─═╞╡┴┬├";
+function isNoiseLine(s){
+  s = (s || "").trim();
+  if(!s) return false;
+  for(const re of NOISE_LINE){ if(re.test(s)) return true; }
+  if(/^┊ (⚡|🔀|💻) preparing/.test(s) || /^(⚡ mcp__|💻|🔀)/.test(s)) return false;
+  const body = s.split("").filter(ch => ch !== " ");
+  if(body.length){
+    let n = 0;
+    for(const ch of body){ if(BOX_CHARS.includes(ch)) n++; }
+    if(n / body.length > 0.55) return true;
   }
-  const line = `\n\n=== ${head} [seq ${seq}] ===\n${content}`;
-  el.innerText += line;
+  return false;
+}
+function eventVisible(content){
+  if(!document.getElementById("c-condensed").checked) return true;
+  const lines = String(content || "").split("\n").filter(l => l.trim());
+  if(!lines.length) return true;
+  return !lines.every(isNoiseLine);
+}
+
+function renderConsole(){
+  const el = document.getElementById("console");
+  const condensed = document.getElementById("c-condensed").checked;
+  let out = "";
+  let hidden = 0;
+  for(const e of consoleEvents){
+    if(condensed && !eventVisible(e.content)){ hidden++; continue; }
+    let head = KIND_LABEL[e.kind] || e.kind;
+    if(e.kind === "service" && /催办|系统提示|判定|未闭环|续跑/.test(e.content || "")){
+      head = "🔔 " + head;
+    }
+    out += `\n\n=== ${head} [seq ${e.seq}] ===\n${e.content}`;
+  }
+  if(condensed && hidden) out += `\n\n……（精简视图已过滤 ${hidden} 条噪音事件；取消勾选查看全量原始记录）`;
+  el.innerText = out;
   el.scrollTop = el.scrollHeight;
+}
+
+function consoleAppend(seq, kind, content){
+  consoleEvents.push({seq, kind, content});
   consoleSeq = Math.max(consoleSeq, seq || 0);
+  renderConsole();
 }
 
 async function openConsole(){
   const el = document.getElementById("console");
   el.style.display = "block";
+  consoleEvents = [];
   el.innerText = "";
   if(!taskId){ log("还没有任务，先点 Agent 主会话"); return; }
   if(consoleAbort) consoleAbort.abort();

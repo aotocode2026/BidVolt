@@ -557,6 +557,13 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             f"（session_id={sid}，可恢复后续跑）"
         )
 
+    # 收尾：把最终 zip 附带的会话记录刷新为完整版（含最终回执）+ 附精简版。
+    # 打包时的快照早于最终回执，不刷新交付包里的会话记录会戛然而止。
+    try:
+        await _refresh_zip_record(session, task)
+    except Exception:  # noqa: BLE001 记录刷新失败不影响任务结论
+        logger.warning("收尾刷新会话记录失败（task=%s）", task.id, exc_info=True)
+
 
 async def _export_session_json(hermes_bin: str, env: dict, session_id: str) -> dict | None:
     """导出一个 Hermes 会话的最新 jsonl 记录（最后一条）。失败返回 None。"""
@@ -739,3 +746,138 @@ async def session_record_markdown(session: AsyncSession, task: Task) -> str:
         lines.append("```")
         lines.append("")
     return "\n".join(lines)
+
+
+_NOISE_LINE_RES = (
+    re.compile(r"^⚕"),
+    re.compile(r"^❯"),
+    re.compile(r"^\(°ロ°\)"),
+    re.compile(r"^\(⌐■_■\)"),
+    re.compile(r"^\(¬_¬\)"),
+    re.compile(r"^╭─"),
+    re.compile(r"^╰─"),
+    re.compile(r"^┌─"),
+    re.compile(r"^└"),
+    re.compile(r"^[│╭╰╞┌└─═]+$"),
+)
+_BOX_CHARS = set("█░╭╮╰╯│┤┐┌└┘─═╞╡┴┬├╌╍═")
+
+
+def _is_noise_line(s: str) -> bool:
+    """会话记录噪音行判定：进度条/中断提示/思考动画/banner 框线。工具调用横幅不算噪音。"""
+    s = s.strip()
+    if not s:
+        return False
+    if any(p.match(s) for p in _NOISE_LINE_RES):
+        return True
+    if (
+        s.startswith("┊ ⚡ preparing")
+        or s.startswith("┊ 🔀 preparing")
+        or s.startswith("┊ 💻 preparing")
+        or s.startswith("⚡ mcp__")
+        or s.startswith("💻")
+        or s.startswith("🔀")
+    ):
+        return False
+    body = [ch for ch in s if ch != " "]
+    if body and sum(1 for ch in body if ch in _BOX_CHARS) / len(body) > 0.55:
+        return True
+    return False
+
+
+def condense_session_markdown(md: str) -> str:
+    """精简版会话记录：逐块过滤状态噪音，保留全部内容块（块内只要有一条内容行就整块保留，
+    绝不丢正文）。供交付包附件与网页「精简视图」使用。"""
+    out: list[str] = []
+    head = ""
+    buf: list[str] = []
+    in_code = False
+    n_kept = 0
+    n_total = 0
+
+    def _flush() -> None:
+        nonlocal n_kept, n_total
+        if not buf:
+            return
+        n_total += 1
+        body = [ln for ln in buf if ln.strip()]
+        if not body or not all(_is_noise_line(ln) for ln in body):
+            out.append(head)
+            out.append("```text")
+            out.extend(buf)
+            out.append("```")
+            out.append("")
+            n_kept += 1
+
+    for line in md.splitlines():
+        m = re.match(r"^## \[\d+\] (.+)$", line)
+        if m:
+            _flush()
+            head = line
+            buf = []
+            in_code = False
+            continue
+        if line.strip() == "```text":
+            in_code = True
+            continue
+        if line.strip() == "```":
+            in_code = False
+            continue
+        if in_code:
+            buf.append(line)
+    _flush()
+    return "\n".join(out)
+
+
+async def _refresh_zip_record(session: AsyncSession, task: Task) -> None:
+    """任务收尾：把最终 zip 附带的会话记录刷新为完整版（含最终回执）并附精简版。
+    打包时的记录快照必然早于主会话最终回执（回执在最后一次 package 之后才输出），
+    不刷新的话交付包里的会话记录会戛然而止（任务 380 教训）。"""
+    import io as _io
+    import json as _json
+    import zipfile as _zip
+
+    from sqlalchemy import select as sa_select
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, task.enterprise_id)
+    art = await session.scalar(
+        sa_select(AgentArtifact)
+        .where(AgentArtifact.task_id == task.id, AgentArtifact.kind == "zip")
+        .order_by(AgentArtifact.id.desc())
+        .limit(1)
+    )
+    if art is None:
+        return
+    full = await session_record_markdown(session, task)
+    condensed = condense_session_markdown(full)
+    try:
+        with _zip.ZipFile(_io.BytesIO(art.content or b""), "r") as zin:
+            entries = {n: zin.read(n) for n in zin.namelist()}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("收尾刷新会话记录失败（zip 无法读取，task=%s）：%s", task.id, exc)
+        return
+    full_b = full.encode("utf-8")
+    cond_b = condensed.encode("utf-8")
+    entries["会话记录/主会话记录.md"] = full_b
+    entries["会话记录/主会话记录-精简版.md"] = cond_b
+    try:
+        man = _json.loads(entries.get("manifest.json") or b"{}")
+        files = [
+            f for f in man.get("files", [])
+            if f.get("name") not in ("会话记录/主会话记录.md", "会话记录/主会话记录-精简版.md")
+        ]
+        files.append({"name": "会话记录/主会话记录.md", "bytes": len(full_b)})
+        files.append({"name": "会话记录/主会话记录-精简版.md", "bytes": len(cond_b)})
+        man["files"] = files
+        entries["manifest.json"] = _json.dumps(man, ensure_ascii=False, indent=2).encode("utf-8")
+    except Exception:  # noqa: BLE001 manifest 刷新失败不影响记录本体
+        pass
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zout:
+        for name, data in entries.items():
+            zout.writestr(name, data)
+    art.content = buf.getvalue()
+    await session.commit()
