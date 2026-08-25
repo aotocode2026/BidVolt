@@ -514,7 +514,7 @@ async def package_zip(
 
     from lxml import etree as _etree
 
-    from app.services.export_service import _item_key, canonical_text
+    from app.services.export_service import _elem_text, _item_key, canonical_text
 
     def _norm(s: str) -> str:
         return "".join(str(s).split())
@@ -564,13 +564,16 @@ async def package_zip(
         key = _item_key(_stem(a))
         if a.id in texts and key and key not in _norm(texts[a.id])[:1200]:
             identity_issues.append(f"{a.name}：正文开头不含自身条目标题「{key}」")
-    # 裸待补充信号：label 为空或「具体标签」字样的逐处列出（含插入文本，需全量 itertext）
+    # 裸待补充信号：label 为空或「具体标签」字样的逐处列出。
+    # 文本口径=最终文本：只收 w:t（插入层 w:ins 的 w:t 天然包含；删除层 w:delText 不是 w:t，天然排除）。
+    # 曾用 root.itertext() 把删除层旧标记一并计入（fill 多轮后旧【待补充】落在 w:delText）→ 误报
+    # 与 verify 的 remaining_blanks 口径不一致，逼得主会话自行解包核对（任务 380 教训）。
     bare_pending: dict[str, list] = {}
     for a in item_arts:
         try:
             with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
                 root = _etree.fromstring(zf.read("word/document.xml"))
-            full = "".join(root.itertext())
+            full = _elem_text(root)
         except Exception:  # noqa: BLE001
             continue
         items = []
@@ -734,12 +737,14 @@ async def inspect_artifact(
 
         from lxml import etree as _etree
 
-        from app.services.export_service import _W_NS, tables_inventory
+        from app.services.export_service import _W_NS, _elem_text, tables_inventory
 
         W = f"{{{_W_NS}}}"
         with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
             doc = _etree.fromstring(zf.read("word/document.xml"))
-        text = "".join(doc.itertext())
+        # 最终文本口径：只收 w:t（含插入层、不含删除层 w:delText——多轮 fill 后旧标记落在删除层，
+        # itertext 会把它们算进来造成"audit 报裸、verify 报干净"的口径打架，任务 380 曾因此空转）
+        text = _elem_text(doc)
         # 待补充逐项清单（信息信号）：让检查者一眼看到"哪些还没填、分别要补什么"，
         # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题；
         # 裸待补充（label 空）与「具体标签」模板字样打 kind=bare 并排最前——验收判据最该先看它们

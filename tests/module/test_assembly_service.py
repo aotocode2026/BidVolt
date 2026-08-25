@@ -35,6 +35,23 @@ def _docx_bytes(paragraphs: list[str]) -> bytes:
     return buf.getvalue()
 
 
+def _docx_bytes_with_deleted_bare(paragraphs: list[str]) -> bytes:
+    """docx 首段注入删除层裸【待补充】（w:delText）——模拟多轮 fill 后旧标记落在删除层。"""
+    raw = _docx_bytes(paragraphs)
+    zin = zipfile.ZipFile(io.BytesIO(raw))
+    xml = zin.read("word/document.xml")
+    inj = (
+        b'<w:del w:id="99" w:author="t" w:date="2026-01-01T00:00:00Z">'
+        b"<w:r><w:delText>\xe3\x80\x90\xe5\xbe\x85\xe8\xa1\xa5\xe5\x85\x85\xe3\x80\x91</w:delText></w:r></w:del>"
+    )
+    xml = xml.replace(b"<w:p>", b"<w:p>" + inj, 1)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in zin.namelist():
+            zout.writestr(n, xml if n == "word/document.xml" else zin.read(n))
+    return buf.getvalue()
+
+
 def test_seal_returns_identity_signals(client, monkeypatch):
     """seal 只给信息信号、不拦截：回执带 req_title/matched_title/was_verified，供 agent 自查。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
@@ -184,6 +201,84 @@ def test_package_zip_reports_missing_item(client, monkeypatch):
     result = _pack(maker, pid, tid)
     assert "（二）报价明细表" in result["missing_file_items"]
     assert result["audit"]["coverage_ok"] is False
+    asyncio.run(engine.dispose())
+
+
+def test_audit_bare_pending_counts_final_text_only(client, monkeypatch):
+    """回归：audit.bare_pending 只算最终文本（w:t），删除层（w:delText）旧标记不算——
+    曾用 itertext 把删除层也算进来，与 verify 口径打架，主会话被迫解包核对（任务 380 教训）。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    tid = _seed_pkg(
+        maker, pid,
+        [("价格文件/（一）响应函及报价汇总表.docx",
+          _docx_bytes_with_deleted_bare(["（一）响应函及报价汇总表", "我方承诺【待补充】其余【待补充：被授权人姓名】"]))],
+    )
+    result = _pack(maker, pid, tid)
+    audit = result["audit"]
+    # 最终文本 1 处裸（"我方承诺【待补充】"）；删除层 1 处不算；带标签的不算裸
+    assert audit["bare_pending_count"] == 1, audit
+    items = audit["bare_pending"].get("价格文件/（一）响应函及报价汇总表.docx", [])
+    assert len(items) == 1 and items[0]["label"] == "", audit["bare_pending"]
+    asyncio.run(engine.dispose())
+
+
+def test_inspect_artifact_excludes_deleted_layer(client, monkeypatch):
+    """回归：inspect_agent_artifact 的 pending_items/bare_pending_count 只算最终文本。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+
+    from app.models.agent import AgentArtifact
+    from app.models.task import Task
+    from app.services import assembly_service
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _seed():
+        async with maker() as session:
+            task = Task(
+                enterprise_id=1,
+                project_id=pid,
+                task_type="agent_pipeline",
+                idempotency_key="asm-del-" + str(time.time_ns()),
+                status=2,
+                payload={},
+            )
+            session.add(task)
+            await session.flush()
+            session.add(
+                AgentArtifact(
+                    enterprise_id=1,
+                    project_id=pid,
+                    task_id=task.id,
+                    kind="item_docx",
+                    name="商务文件/（四）补充文件.docx",
+                    mime="application/octet-stream",
+                    content=_docx_bytes_with_deleted_bare(["（四）补充文件", "承诺【待补充】其余【待补充：被授权人姓名】"]),
+                )
+            )
+            await session.commit()
+            return task.id
+
+    task_id = asyncio.run(_seed())
+
+    async def _inspect():
+        async with maker() as session:
+            from sqlalchemy import text
+
+            aid = (
+                await session.execute(
+                    text("select id from agent_artifact where task_id=:t"), {"t": task_id}
+                )
+            ).fetchone()[0]
+            return await assembly_service.inspect_artifact(session, 1, pid, task_id, aid)
+
+    info = asyncio.run(_inspect())
+    assert info["bare_pending_count"] == 1, info
+    assert info["pending_count"] == 2, info  # 最终文本 2 处【待补充】（1 裸 + 1 带标签）；删除层 1 处不计
     asyncio.run(engine.dispose())
 
 
