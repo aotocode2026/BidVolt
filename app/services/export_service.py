@@ -447,7 +447,8 @@ class _FillSession:
         results: list[dict] = []
 
         def _cell_text(cell) -> str:
-            return "".join(cell._tc.itertext()).strip()
+            # 只收 w:t：python-docx CT 的 itertext 会逐层重复（曾致"甲1甲1"）
+            return "".join(t.text or "" for t in cell._tc.iter(f"{{{_W_NS}}}t")).strip()
 
         cursor = 1
         for values in rows_values:
@@ -674,7 +675,8 @@ def _item_key(s: str) -> str:
 
 
 def _elem_text(el) -> str:
-    return "".join(el.itertext())
+    """元素可见文本：只收 w:t（python-docx CT 的 itertext 会逐层重复计算属性文本）。"""
+    return "".join(t.text or "" for t in el.iter(f"{{{_W_NS}}}t"))
 
 
 def _iter_body_elems(doc):
