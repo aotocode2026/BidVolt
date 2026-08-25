@@ -7,11 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext
 from app.models.doc import DocBlock
-from app.models.enterprise_domain import EnterpriseAsset, EnterpriseAssetRevision
+from app.models.enterprise_domain import EnterpriseAsset, EnterpriseAssetRevision, EnterpriseFact
 from app.models.file import ArchiveJob, FileObject
 from app.models.project import Project
 from app.models.project_material import ProjectEvent, ProjectMaterial, ProjectMaterialRevision
 from app.services import file_safety, parser
+from app.services.enterprise_service import classify_asset_name, ensure_asset_categories
 from app.services.quota_service import check_storage
 from app.services.storage import StorageProvider
 
@@ -19,25 +20,9 @@ storage = StorageProvider()
 
 
 def _category_heuristic(name: str) -> str | None:
-    lower = name.lower()
-    for keyword, category in (
-        ("营业执照", "证照"),
-        ("执照", "证照"),
-        ("资质", "资质"),
-        ("许可证", "资质"),
-        ("业绩", "业绩"),
-        ("合同", "业绩"),
-        ("中标", "业绩"),
-        ("身份证", "人员"),
-        ("证书", "人员"),
-        ("检测", "检测报告"),
-        ("报告", "检测报告"),
-        ("参数", "产品参数"),
-        ("产品", "产品参数"),
-    ):
-        if keyword in lower:
-            return category
-    return None
+    """文件分类展示用：与 classify_asset_name 同一套规则，无匹配返回 None。"""
+    category, _ = classify_asset_name(name)
+    return None if category == "其他" else category
 
 
 async def _get_project(session: AsyncSession, enterprise_id: int, project_id: int) -> Project:
@@ -173,7 +158,7 @@ async def process_upload(
         asset = EnterpriseAsset(
             enterprise_id=user.enterprise_id,
             name=filename,
-            asset_type=_category_heuristic(filename) or "other",
+            asset_type=_category_heuristic(filename) or "其他",
             source_file_id=fobj.id,
             status=1,
         )
@@ -189,6 +174,24 @@ async def process_upload(
                 created_by=user.user_id,
             )
         )
+        # 上传即自动入库（Issue #6 auto_ingest 落地）：与 POST /enterprise/ingest 同一套
+        # 分类/事实抽取逻辑；/ingest 幂等（同名事实不重复插入），可随时手动重跑。
+        category, facts = classify_asset_name(filename)
+        categories = await ensure_asset_categories(session, user.enterprise_id)
+        asset.category_id = categories.get(category)
+        asset.asset_type = category
+        asset.status = 2  # 待确认（已带初始事实）
+        for fact_key, value, confidence in facts:
+            session.add(
+                EnterpriseFact(
+                    enterprise_id=user.enterprise_id,
+                    asset_id=asset.id,
+                    fact_key=fact_key,
+                    fact_value={"value": value},
+                    confidence=confidence,
+                    status=1,
+                )
+            )
     else:
         material = ProjectMaterial(
             enterprise_id=user.enterprise_id,
