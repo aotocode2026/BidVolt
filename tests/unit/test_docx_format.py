@@ -566,6 +566,46 @@ def test_xlsx_bytes_shape_tolerant():
         xlsx_bytes({"sheets": [{"name": "报价单", "rows": {"item": ["合计"]}}]})
 
 
+def test_xlsx_bytes_auto_sum_formula():
+    """'=SUM' 标记被替换为同列上方全部数值的求和公式（agent 不手写坐标）；
+    上方无数值时置空，不编造合计。"""
+    from openpyxl import load_workbook
+
+    from app.services.export_service import xlsx_bytes
+
+    wb = load_workbook(
+        io.BytesIO(
+            xlsx_bytes(
+                {
+                    "sheets": [
+                        {
+                            "name": "报价单",
+                            "rows": [
+                                ["序号", "分项", "含税合价（万元）"],
+                                [1, "软件", 120.0],
+                                [2, "硬件", 50.5],
+                                ["", "响应总价（含税）", "=SUM"],
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+    )
+    ws = wb.active
+    assert ws["C4"].value == "=SUM(C2:C3)", ws["C4"].value
+
+    # 上方无数值（全是文本）→ 置空而非编造
+    wb2 = load_workbook(
+        io.BytesIO(
+            xlsx_bytes(
+                {"sheets": [{"name": "报价单", "rows": [["分项", "含税合价"], ["软件", "待补充"], ["响应总价", "=SUM"]]}]}
+            )
+        )
+    )
+    assert wb2.active["B3"].value in (None, "")  # 置空（openpyxl 回读为 None）
+
+
 def test_draft_download_filename_marks_source(client):
     """下载文件名标注底稿来源（产品要求：一眼可见底稿是谁）。"""
     r = client.post(

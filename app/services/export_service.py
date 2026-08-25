@@ -1489,6 +1489,32 @@ async def docx_bytes_with_source(
         ) from exc
 
 
+def _auto_sum_formulas(ws) -> int:
+    """把标记 '=SUM'（字面量，agent 写在合计单元格）替换为「同列上方全部数值」的求和公式。
+    agent 无需手写坐标：填哪列由它决定，公式区间由服务端按该列现有数值计算。
+    上方无数值（如全为待补充文本）时置空——不编造合计。"""
+    from openpyxl.utils import get_column_letter
+
+    replaced = 0
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.strip() == "=SUM":
+                col = cell.column
+                numeric_rows = [
+                    r
+                    for r in range(1, cell.row)
+                    if isinstance((v := ws.cell(row=r, column=col).value), (int, float))
+                    and not isinstance(v, bool)
+                ]
+                if numeric_rows:
+                    letter = get_column_letter(col)
+                    cell.value = f"=SUM({letter}{numeric_rows[0]}:{letter}{numeric_rows[-1]})"
+                else:
+                    cell.value = ""
+                replaced += 1
+    return replaced
+
+
 def xlsx_bytes(model: dict) -> bytes:
     from openpyxl import Workbook
 
@@ -1503,6 +1529,7 @@ def xlsx_bytes(model: dict) -> bytes:
                 ws.append(["" if c is None else c for c in row])
             else:
                 ws.append(["" if row is None else row])
+        _auto_sum_formulas(ws)
     if not wb.worksheets:  # 兜底：openpyxl 要求至少一个可见工作表
         wb.create_sheet("报价单").append(["（无表格数据）"])
     buf = BytesIO()
