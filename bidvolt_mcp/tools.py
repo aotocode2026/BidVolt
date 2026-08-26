@@ -405,7 +405,13 @@ TOOL_DEFS: list[dict] = [
     },
     {
         "name": "get_project_material_blocks",
-        "description": "读取项目材料解析出的 doc_block 文本块（带坐标）",
+        "description": (
+            "读取项目材料解析出的 doc_block 文本块（带坐标、分页）。"
+            "注意：这是解析层索引，可能不完整——扫描件/图片可能没有文字层、表格/页眉页脚/图片内文字"
+            "可能未被提取；block_count=0 时文件内容完全未被提取。"
+            "任何引用、切片、填充都必须以逐块通读的原文为准；文字层缺失或存疑时用 vision 工具读原件图片核对，"
+            "不得把解析索引当作全文。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -420,7 +426,12 @@ TOOL_DEFS: list[dict] = [
     },
     {
         "name": "list_project_materials",
-        "description": "列出项目当前招标材料",
+        "description": (
+            "列出项目当前招标材料（含文件名、解析状态、可提取文本块数）。"
+            "status=3 表示已解析但索引可能不完整；status=4 表示解析失败、只能读原件；"
+            "block_count=0 表示无文字层（多为扫描件），必须用 vision 工具读原件图。"
+            "解析索引仅用于定位，内容一律以原件为准。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"project_id": {"type": "integer"}},
