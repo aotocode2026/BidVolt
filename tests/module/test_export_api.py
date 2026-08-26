@@ -298,15 +298,20 @@ def test_response_package_by_item_list(client):
     # 响应函 = 底稿切片 + 填空 + 对应撰写内容
     from lxml import etree
 
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+    def _wt(root):
+        return "".join(t.text or "" for t in root.iter(W + "t"))
+
     with zipfile.ZipFile(io.BytesIO(pkg.content)) as zf:
         inner = zipfile.ZipFile(io.BytesIO(zf.read("商务文件/（一）响应函.docx")))
         root = etree.fromstring(inner.read("word/document.xml"))
-        text = "".join(root.itertext())
+        text = _wt(root)  # 最终文本（含插入、不含删除层——最小差异修订）
         assert "致：测试招标人" in text  # 填空（修订插入）
         assert "我方已仔细研究采购文件全部内容。" in text  # 对应撰写内容已分配进响应函
         assert "无偏离声明。" not in text  # 商务偏差内容不混入响应函
         inner2 = zipfile.ZipFile(io.BytesIO(zf.read("商务文件/（二）商务偏差表.docx")))
-        text2 = "".join(etree.fromstring(inner2.read("word/document.xml")).itertext())
+        text2 = _wt(etree.fromstring(inner2.read("word/document.xml")))
         assert "无偏离声明。" in text2
         assert "供货期" in text2  # 表格原文保留
 
