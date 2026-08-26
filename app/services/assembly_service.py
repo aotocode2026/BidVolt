@@ -291,14 +291,16 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
         comment = str(f.get("comment") or "") or None
         n = export_service.replace_text_tracked(sess.editor, find, value, comment)
         n_fills += n
-        fills_results.append(
-            {
-                "find": find[:60],
-                "value": value[:60],
-                "replaced": n,
-                "found": n > 0,
-            }
-        )
+        res: dict = {
+            "find": find[:60],
+            "value": value[:60],
+            "replaced": n,
+            "found": n > 0,
+        }
+        if n == 0:
+            # 信号（非裁决）：最常见原因是 find 串跨了段落——替换只按段落匹配。
+            res["hint"] = "find 只按段落匹配：若 find 串跨两个段落会匹配不到，请拆成单段 find 重试"
+        fills_results.append(res)
     n_table = 0
     table_results: list[dict] = []
 

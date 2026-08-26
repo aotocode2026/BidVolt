@@ -753,14 +753,26 @@ def _iter_body_elems(doc):
             yield ("tbl", child)
 
 
-def _locate_item_slices(doc, items_by_role: dict) -> dict:
-    """按底稿大纲级别切分条目（v2，优先）：outlineLvl=1 为部分标题（价格/商务/技术文件），
-    outlineLvl=2 为文件条目标题（（一）响应函…）。返回 {role: [(heading, elements)]}。
-    返回空结果时调用方回退行级清单匹配。"""
+def _outline_level(el) -> int | None:
     from docx.oxml.ns import qn as _qn
 
-    elems = list(_iter_body_elems(doc))
-    # 章起点：最后一次出现"响应文件格式"（跳过目录里的 TOC 同名条目）
+    ppr = el.find(_qn("w:pPr"))
+    if ppr is None:
+        return None
+    lvl = ppr.find(_qn("w:outlineLvl"))
+    if lvl is None:
+        return None
+    try:
+        return int(lvl.get(_qn("w:val")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _response_format_region(elems) -> list:
+    """响应文件格式章切片区域。部分底稿把「技术文件」章排在评分标准**之后**
+    （商务文件条目 → 商务/技术评分标准 → 技术文件条目），结束标记直接截断会把
+    技术文件章整体排除（任务 384 教训）——结束标记之后若存在 lvl=1 的「技术文件」章，
+    该章续接进区域（到下一个结束标记为止）。"""
     start = None
     for i in range(len(elems) - 1, -1, -1):
         kind, el = elems[i]
@@ -768,18 +780,40 @@ def _locate_item_slices(doc, items_by_role: dict) -> dict:
             start = i
             break
     if start is None:
-        return {}
-    end = None
-    for i in range(start + 1, len(elems)):
+        return []
+
+    def _find_end(from_idx: int) -> int:
+        for i in range(from_idx, len(elems)):
+            kind, el = elems[i]
+            t = _norm_text(_elem_text(el))
+            if kind == "p" and len(t) <= 24 and any(m in t for m in _END_MARKERS):
+                return i
+        return len(elems)
+
+    end1 = _find_end(start + 1)
+    region = elems[start + 1 : end1]
+    tech_start = None
+    for i in range(end1, len(elems)):
         kind, el = elems[i]
-        t = _norm_text(_elem_text(el))
-        # 结束标记只认短标题行（评分标准章标题），正文中的长句引用不截断区域
-        if kind == "p" and len(t) <= 24 and any(m in t for m in _END_MARKERS):
-            end = i
+        if kind == "p" and _outline_level(el) == 1 and "技术文件" in _norm_text(_elem_text(el)):
+            tech_start = i
             break
-    if end is None:
-        end = len(elems)
-    region = elems[start + 1 : end]
+    if tech_start is not None:
+        end2 = _find_end(tech_start + 1)
+        region = region + elems[tech_start:end2]
+    return region
+
+
+def _locate_item_slices(doc, items_by_role: dict) -> dict:
+    """按底稿大纲级别切分条目（v2，优先）：outlineLvl=1 为部分标题（价格/商务/技术文件），
+    outlineLvl=2 为文件条目标题（（一）响应函…）。返回 {role: [(heading, elements)]}。
+    返回空结果时调用方回退行级清单匹配。"""
+    from docx.oxml.ns import qn as _qn
+
+    elems = list(_iter_body_elems(doc))
+    region = _response_format_region(elems)
+    if not region:
+        return {}
 
     def outline_of(el) -> int | None:
         ppr = el.find(_qn("w:pPr"))
@@ -839,24 +873,9 @@ def _locate_item_slices(doc, items_by_role: dict) -> dict:
 def _locate_item_slices_by_rows(doc, items_by_role: dict) -> dict:
     """行级清单匹配（兜底：底稿无大纲级别信号时用）。返回 {role: [(row, elements|None)]}。"""
     elems = list(_iter_body_elems(doc))
-    start = None
-    for i in range(len(elems) - 1, -1, -1):
-        kind, el = elems[i]
-        if kind == "p" and "响应文件格式" in _elem_text(el):
-            start = i
-            break
-    if start is None:
+    region = _response_format_region(elems)
+    if not region:
         return {role: [(r, None) for r in rows] for role, rows in items_by_role.items()}
-    end = None
-    for i in range(start + 1, len(elems)):
-        kind, el = elems[i]
-        t = _norm_text(_elem_text(el))
-        if kind == "p" and len(t) <= 24 and any(m in t for m in _END_MARKERS):
-            end = i
-            break
-    if end is None:
-        end = len(elems)
-    region = elems[start:end]
     pos: dict[str, int] = {}
     for i, (kind, el) in enumerate(region):
         if kind != "p":
