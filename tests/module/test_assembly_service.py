@@ -352,6 +352,7 @@ def test_package_zip_passes_full_audit_and_dedupes(client, monkeypatch):
         assert any("(2)" in n for n in names), names
         assert "价格文件/（二）报价明细表.docx" in names
         assert "会话记录/主会话记录.md" in names
+        assert "会话记录/主会话记录-精简版.md" in names  # 纯代码生成：每个包都带完整版+精简版
         import json
 
         manifest = json.loads(zf.read("manifest.json"))

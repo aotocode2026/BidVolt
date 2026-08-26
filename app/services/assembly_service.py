@@ -614,13 +614,16 @@ async def package_zip(
             seen.add(name)
             zf.writestr(name, a.content)
             files_manifest.append({"name": name, "bytes": len(a.content)})
-        # 主会话全程记录
+        # 主会话全程记录（纯代码生成：完整版 + 精简版都由服务端从事件库渲染，主会话不感知）
         task = await session.scalar(sa_select(Task).where(Task.id == int(task_id)))
         if task is not None:
             try:
                 record = await agent_pipeline.session_record_markdown(session, task)
                 zf.writestr("会话记录/主会话记录.md", record.encode("utf-8"))
                 files_manifest.append({"name": "会话记录/主会话记录.md", "bytes": len(record.encode("utf-8"))})
+                condensed = agent_pipeline.condense_session_markdown(record)
+                zf.writestr("会话记录/主会话记录-精简版.md", condensed.encode("utf-8"))
+                files_manifest.append({"name": "会话记录/主会话记录-精简版.md", "bytes": len(condensed.encode("utf-8"))})
             except Exception:  # noqa: BLE001 会话记录缺失不影响打包主体
                 logger.warning("打包附会话记录失败", exc_info=True)
 
