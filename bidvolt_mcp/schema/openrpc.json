@@ -504,6 +504,10 @@
               "min_profit_rate": {
                 "type": "number"
               },
+              "unit": {
+                "type": "string",
+                "description": "成本/样本口径单位（元 或 万元；行情库样本为万元，折扣率样本不参与金额测算）"
+              },
               "strategy": {
                 "type": "string",
                 "enum": [
@@ -538,15 +542,32 @@
     },
     {
       "name": "get_history_price",
-      "summary": "查询历史中标记录（外部 Provider 只读）",
+      "summary": "历史中标价行情库联合查询（公共共建库+本企业私有库，只读信号）：返回逐条原始样本（发布单位/品类/包名/报价方式/限价/中标价/证据原文/官网链接/公告ID）与按报价方式分组的聚合 stats。聚合仅标注样本口径供快速参考，决策必须基于逐条原始样本；折扣率类与金额类样本分开看。",
       "params": [
         {
           "name": "args",
           "schema": {
             "type": "object",
             "properties": {
-              "material_ref": {
-                "type": "string"
+              "category": {
+                "type": "string",
+                "description": "分标/品类关键词（模糊匹配）"
+              },
+              "publisher": {
+                "type": "string",
+                "description": "发布单位关键词"
+              },
+              "price_mode": {
+                "type": "string",
+                "description": "报价方式（折扣率/固定总价/比例报价/系数报价/其他）"
+              },
+              "scope": {
+                "type": "string",
+                "description": "all（公共+私有，默认）/ public / private"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "返回条数（默认 50）"
               }
             },
             "additionalProperties": false

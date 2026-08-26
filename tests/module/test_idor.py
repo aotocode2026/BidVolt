@@ -93,13 +93,16 @@ def test_cross_tenant_all_object_interfaces(client):
     assert client.get(f"/api/v1/search-sources/{src_id}", headers=hb).status_code == 404
     assert client.get(f"/api/v1/deliverables/{did}/references", headers=hb).status_code == 404
 
-    # 报价：外部只读 Provider，历史/测算不携带租户数据；快照按租户隔离
+    # 报价：公共行情库（全平台可见）供测算，样本与租户无关；快照按租户隔离
+    from tests.module.test_quotes_api import _seed_public
+
+    _seed_public()
     r = client.post(
         "/api/v1/quotes/calculate",
-        json={"material_ref": "CABLE-YJV-3x95", "cost": 100},
+        json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "unit": "万元"},
         headers=hb,
     )
-    assert r.status_code == 200  # 外部样本与租户无关
+    assert r.status_code == 200  # 公共库样本与租户无关
 
     # A 自己的数据不受影响
     assert client.get(f"/api/v1/tasks/{task_id}", headers=ha).status_code == 200

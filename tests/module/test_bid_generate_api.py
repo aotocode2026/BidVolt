@@ -34,6 +34,9 @@ def _drain_one_task():
 
 
 def test_bid_generate_creates_three_deliverables(client):
+    from tests.module.test_quotes_api import _seed_public
+
+    _seed_public()  # 公共行情库样本（无 Mock：测算数据源改为行情库）
     h, pid = _setup(client)
     client.post(
         f"/api/v1/projects/{pid}/requirements/upsert",
@@ -49,7 +52,7 @@ def test_bid_generate_creates_three_deliverables(client):
         f"/api/v1/projects/{pid}/tasks",
         json={
             "task_type": "bid_generate",
-            "payload": {"material_ref": "CABLE-YJV-3x95", "cost": 100},
+            "payload": {"material_ref": "CABLE-YJV-3x95", "cost": 100, "unit": "万元"},
             "idempotency_key": "bidgen-1",
         },
         headers=h,

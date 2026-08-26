@@ -144,6 +144,7 @@ def _calculate_quote(args: dict) -> Any:
         "cost": args["cost"],
         "min_profit_rate": args.get("min_profit_rate", 0.05),
         "strategy": args.get("strategy"),
+        "unit": args.get("unit", "元"),
     }
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
         resp = client.post("/api/v1/quotes/calculate", json=body, headers=_headers())
@@ -152,7 +153,8 @@ def _calculate_quote(args: dict) -> Any:
 
 
 def _get_history_price(args: dict) -> Any:
-    return _get("/api/v1/quotes/history", {"material_ref": args.get("material_ref")})
+    params = {k: args[k] for k in ("category", "publisher", "price_mode", "scope", "limit") if args.get(k) is not None}
+    return _get("/api/v1/quotes/history", params)
 
 
 def _get_latest_score(args: dict) -> Any:
@@ -479,6 +481,7 @@ TOOL_DEFS: list[dict] = [
                 "material_ref": {"type": "string"},
                 "cost": {"type": "number"},
                 "min_profit_rate": {"type": "number"},
+                "unit": {"type": "string", "description": "成本/样本口径单位（元 或 万元；行情库样本为万元，折扣率样本不参与金额测算）"},
                 "strategy": {"type": "string", "enum": ["win", "balance", "profit"]},
             },
             "required": ["material_ref", "cost"],
@@ -488,10 +491,21 @@ TOOL_DEFS: list[dict] = [
     },
     {
         "name": "get_history_price",
-        "description": "查询历史中标记录（外部 Provider 只读）",
+        "description": (
+            "历史中标价行情库联合查询（公共共建库+本企业私有库，只读信号）："
+            "返回逐条原始样本（发布单位/品类/包名/报价方式/限价/中标价/证据原文/官网链接/公告ID）"
+            "与按报价方式分组的聚合 stats。聚合仅标注样本口径供快速参考，决策必须基于逐条原始样本；"
+            "折扣率类与金额类样本分开看。"
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {"material_ref": {"type": "string"}},
+            "properties": {
+                "category": {"type": "string", "description": "分标/品类关键词（模糊匹配）"},
+                "publisher": {"type": "string", "description": "发布单位关键词"},
+                "price_mode": {"type": "string", "description": "报价方式（折扣率/固定总价/比例报价/系数报价/其他）"},
+                "scope": {"type": "string", "description": "all（公共+私有，默认）/ public / private"},
+                "limit": {"type": "integer", "description": "返回条数（默认 50）"},
+            },
             "additionalProperties": False,
         },
         "handler": _get_history_price,

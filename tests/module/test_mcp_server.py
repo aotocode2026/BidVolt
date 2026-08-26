@@ -31,7 +31,14 @@ class _MockBackend(BaseHTTPRequestHandler):
             body = json.dumps({"deliverable_id": 9, "version_no": 1, "model": {"nodes": []}}).encode()
             self.send_response(200)
         elif self.path.startswith("/api/v1/quotes/history"):
-            body = json.dumps({"sample_count": 8, "samples": [], "readonly": True}).encode()
+            body = json.dumps(
+                {
+                    "sample_count": 8,
+                    "samples": [{"source": "public", "package_name": "电缆框架", "win_price": "110.5", "price_mode": "固定总价"}],
+                    "stats": [{"price_mode": "固定总价", "count": 8, "win_price_range": ["105.0", "120.0"]}],
+                    "readonly": False,
+                }
+            ).encode()
             self.send_response(200)
         elif self.path.startswith("/api/v1/requirements"):
             body = json.dumps([{"req_id": 1, "req_type": "qualification", "content": "三级资质"}]).encode()
@@ -230,7 +237,7 @@ def test_mcp_quote_tools():
                 port,
                 "quote-token",
                 [
-                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_history_price", "arguments": {"material_ref": "CABLE"}}},
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_history_price", "arguments": {"category": "电缆"}}},
                     {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "calculate_quote", "arguments": {"material_ref": "CABLE", "cost": 100}}},
                 ],
             )
@@ -239,7 +246,9 @@ def test_mcp_quote_tools():
 
     lines = [json.loads(line) for line in out.strip().splitlines()]
     history = json.loads(lines[0]["result"]["content"][0]["text"])
-    assert history["readonly"] is True
+    assert history["readonly"] is False
+    assert history["sample_count"] == 8
+    assert history["samples"][0]["win_price"] == "110.5"
     calc = json.loads(lines[1]["result"]["content"][0]["text"])
     assert calc["result"]["suggested"] == 120.0
 
@@ -260,7 +269,7 @@ def test_mcp_forwards_capability_token():
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "tools/call",
-                        "params": {"name": "get_history_price", "arguments": {"material_ref": "CABLE"}},
+                        "params": {"name": "get_history_price", "arguments": {"publisher": "国网"}},
                     }
                 ],
             )
