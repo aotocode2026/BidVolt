@@ -40,24 +40,13 @@ async def _parse_file(session: AsyncSession, fobj: FileObject) -> None:
         path = storage.open(fobj.bucket, fobj.object_key)
         image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
         if fobj.ext in image_exts:
-            from app.services.llm import DashScopeVLClient, vl_enabled
-
-            if vl_enabled():
-                text = await DashScopeVLClient().describe(path.read_bytes(), mime=fobj.mime_type or "image/png")
-                session.add(
-                    DocBlock(
-                        file_id=fobj.id,
-                        block_type="paragraph",
-                        page_no=None,
-                        block_index=0,
-                        text_content=text,
-                        extra={"source": "qwen-vl"},
-                    )
-                )
-                fobj.status = 3
-                fobj.category = fobj.category or _category_heuristic(fobj.original_name)
-                return
-            raise ValueError("视觉模型门禁关闭（P1），图片解析不可用")
+            # 图片上传不阻塞、不强制视觉描述：入库成功，block_count=0 即"无文字层"信号，
+            # agent 按需用 vision_analyze_minimax 读图取证。此前每张图同步调 qwen-vl——
+            # 大批量图片（企业资料汇编 1300+ 张）上传极慢、失败即拒件，且与
+            # "服务端只给信号、不裁决"不符；图片内嵌指令也不会在上传时被任何模型执行。
+            fobj.status = 3
+            fobj.category = fobj.category or _category_heuristic(fobj.original_name)
+            return
         if fobj.ext in (".zip", ".rar", ".7z"):
             # 压缩包不作文本解析：.zip 供"压缩包导入"流程使用（导入前校验完整性，
             # 坏包红字拒绝）；.rar/.7z 当前既不能解析也不能导入，直接拒绝避免歧义。

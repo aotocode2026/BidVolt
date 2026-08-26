@@ -77,7 +77,8 @@ def test_tender_parse_with_injection_gate_closed_is_inert(client):
 
 
 def test_scan_image_injection_does_not_change_authorization(client):
-    """A-3 扫描件/图片内嵌指令：视觉门禁关闭时不执行任何指令，且不改变权限。"""
+    """A-3 扫描件/图片内嵌指令：上传即入库成功，但服务端不上传时对图片执行任何视觉模型——
+    图片内嵌指令无从执行；block_count=0 为"无文字层"信号，由 agent 按需 vision 读图。"""
     h, pid = _setup(client)
     r = client.post(
         "/api/v1/files/upload",
@@ -96,9 +97,11 @@ def test_scan_image_injection_does_not_change_authorization(client):
     )
     assert r.status_code == 200
     entry = r.json()["files"][0]
-    # 视觉门禁关闭：不调用 VL，上传被整体拒绝并给出可理解的原因，而非执行"指令"
-    assert "error" in entry
-    assert "视觉模型门禁关闭" in entry["error"]
+    # 图片入库成功（不因视觉门禁拒件），且无任何 VL 描述块
+    assert "error" not in entry
+    assert entry["status"] == 3
+    mats = client.get(f"/api/v1/files/projects/{pid}/materials", headers=h).json()
+    assert mats and mats[0]["block_count"] == 0  # 无文字层信号
 
     # 权限未被提升
     me = client.get("/api/v1/auth/me", headers=h).json()
