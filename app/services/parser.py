@@ -1,7 +1,11 @@
-"""文档解析（4.3）：文本/表格提取为 doc_block（M3 起由任务队列调度）。"""
+"""文档解析（4.3）：文本/表格提取为 doc_block（M3 起由任务队列调度）。
+
+旧版 Office 格式（.doc/.xls/.ppt）统一经 LibreOffice 无头转新版（docx/xlsx/pptx）后解析，
+表格结构保留；转换失败给出可操作提示而非"不支持的格式"。"""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -9,7 +13,12 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
     """返回 [{block_type, page_no, block_index, text_content, extra}]。"""
     ext = ext.lower()
     if ext in (".txt", ".csv"):
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        # 中文常见 GBK 编码：utf-8 失败回退 gbk，避免乱码块
+        raw = Path(path).read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")
         return [{"block_type": "paragraph", "page_no": None, "block_index": 0, "text_content": text}]
 
     if ext == ".ofd":
@@ -19,32 +28,15 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
         return _parse_docx(path)
 
     if ext == ".xlsx":
-        import io as _io
+        return _parse_xlsx(path)
 
-        from openpyxl import load_workbook
-
-        # 生产存储对象路径为内容寻址的 ".../<sha256>/original"（无扩展名）；
-        # openpyxl 会按“文件名扩展名”做格式校验并拒绝无扩展名路径
-        # （InvalidFileException: "does not support  file format"——格式位为空）。
-        # 从字节流加载可绕过文件名检查；本地测试用带扩展名临时文件，永远踩不到此差异。
-        wb = load_workbook(_io.BytesIO(Path(path).read_bytes()), read_only=True, data_only=True)
-        blocks = []
-        idx = 0
-        for ws in wb.worksheets:
-            for row in ws.iter_rows(values_only=True):
-                vals = ["" if v is None else str(v) for v in row]
-                if any(vals):
-                    blocks.append(
-                        {
-                            "block_type": "table",
-                            "page_no": None,
-                            "block_index": idx,
-                            "text_content": " | ".join(vals),
-                            "extra": {"sheet": ws.title, "cols": vals},
-                        }
-                    )
-                    idx += 1
-        wb.close()
+    if ext == ".xls":
+        with _converted(path, "xlsx") as out:
+            blocks = _parse_xlsx(out)
+        if not blocks:
+            raise ValueError("表格无可提取内容（可能为空白文件或扫描件）")
+        for b in blocks:
+            b.setdefault("extra", {})["source"] = "libreoffice-xls"
         return blocks
 
     if ext == ".pdf":
@@ -71,37 +63,16 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
         return blocks
 
     if ext == ".pptx":
-        try:
-            from pptx import Presentation
+        return _parse_pptx(path)
 
-            prs = Presentation(str(path))
-            blocks = []
-            idx = 0
-            for slide_no, slide in enumerate(prs.slides, start=1):
-                parts: list[str] = []
-                for shape in slide.shapes:
-                    if getattr(shape, "has_text_frame", False):
-                        parts.append(shape.text_frame.text)
-                    if getattr(shape, "has_table", False):
-                        for row in shape.table.rows:
-                            parts.append(" | ".join(cell.text for cell in row.cells))
-                text = "\n".join(p for p in parts if p.strip())
-                if text.strip():
-                    blocks.append(
-                        {
-                            "block_type": "paragraph",
-                            "page_no": slide_no,
-                            "block_index": idx,
-                            "text_content": text,
-                            "extra": {"source": "pptx-slide", "page": slide_no},
-                        }
-                    )
-                    idx += 1
-            if blocks:
-                return blocks
-        except Exception:  # noqa: BLE001 库缺失或包结构异常 → 纯标准库兜底
-            pass
-        return _parse_pptx_stdlib(path)
+    if ext == ".ppt":
+        with _converted(path, "pptx") as out:
+            blocks = _parse_pptx(out)
+        if not blocks:
+            raise ValueError("演示文稿无可提取文本（可能为空白文件或纯图片）")
+        for b in blocks:
+            b.setdefault("extra", {})["source"] = "libreoffice-ppt"
+        return blocks
 
     if ext in (".html", ".htm"):
         # 公告网页导入（Issue #4/#6）：去标签提取正文（纯标准库，无第三方依赖）
@@ -127,6 +98,103 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
         return _parse_legacy_doc(path)
 
     raise ValueError(f"不支持的格式：{ext}")
+
+
+@contextmanager
+def _converted(path: Path, dst_fmt: str):
+    """LibreOffice 无头转换到临时目录，产出 source.<dst_fmt>；退出自动清理。
+
+    无 LibreOffice 或转换失败时给出可操作提示（此前旧格式直接报"不支持的格式"，
+    用户无从下手——Issue #8 任务 224 同类问题）。"""
+    import shutil
+    import subprocess
+    import tempfile
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        raise ValueError("旧版 Office 文件需 LibreOffice 转换，但服务器未安装转换组件；请用 Office 另存为新格式后重新上传")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / f"source{path.suffix.lower() or ''}"
+        src.write_bytes(path.read_bytes())
+        try:
+            proc = subprocess.run(
+                [soffice, "--headless", "--norestore", "--convert-to", dst_fmt, "--outdir", tmp, str(src)],
+                capture_output=True,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("旧版 Office 文件转换超时；请用 Office 另存为新格式后重新上传") from exc
+        if proc.returncode != 0:
+            raise ValueError("旧版 Office 文件转换失败；请用 Office 另存为新格式后重新上传")
+        out = Path(tmp) / f"source.{dst_fmt}"
+        if not out.exists():
+            raise ValueError("旧版 Office 文件转换未产出目标格式；请用 Office 另存为新格式后重新上传")
+        yield out
+
+
+def _parse_xlsx(path: Path) -> list[dict]:
+    """xlsx：各 sheet 行提取为 table block。"""
+    import io as _io
+
+    from openpyxl import load_workbook
+
+    # 生产存储对象路径为内容寻址的 ".../<sha256>/original"（无扩展名）；
+    # openpyxl 会按“文件名扩展名”做格式校验并拒绝无扩展名路径。
+    # 从字节流加载可绕过文件名检查；本地测试用带扩展名临时文件，永远踩不到此差异。
+    wb = load_workbook(_io.BytesIO(Path(path).read_bytes()), read_only=True, data_only=True)
+    blocks = []
+    idx = 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            vals = ["" if v is None else str(v) for v in row]
+            if any(vals):
+                blocks.append(
+                    {
+                        "block_type": "table",
+                        "page_no": None,
+                        "block_index": idx,
+                        "text_content": " | ".join(vals),
+                        "extra": {"sheet": ws.title, "cols": vals},
+                    }
+                )
+                idx += 1
+    wb.close()
+    return blocks
+
+
+def _parse_pptx(path: Path) -> list[dict]:
+    """pptx：每页文本+表格提取为块；python-pptx 不可用时纯标准库兜底。"""
+    try:
+        from pptx import Presentation
+
+        prs = Presentation(str(path))
+        blocks = []
+        idx = 0
+        for slide_no, slide in enumerate(prs.slides, start=1):
+            parts: list[str] = []
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False):
+                    parts.append(shape.text_frame.text)
+                if getattr(shape, "has_table", False):
+                    for row in shape.table.rows:
+                        parts.append(" | ".join(cell.text for cell in row.cells))
+            text = "\n".join(p for p in parts if p.strip())
+            if text.strip():
+                blocks.append(
+                    {
+                        "block_type": "paragraph",
+                        "page_no": slide_no,
+                        "block_index": idx,
+                        "text_content": text,
+                        "extra": {"source": "pptx-slide", "page": slide_no},
+                    }
+                )
+                idx += 1
+        if blocks:
+            return blocks
+    except Exception:  # noqa: BLE001 库缺失或包结构异常 → 纯标准库兜底
+        pass
+    return _parse_pptx_stdlib(path)
 
 
 def _parse_docx(path: Path) -> list[dict]:
@@ -155,6 +223,23 @@ def _parse_docx(path: Path) -> list[dict]:
                 }
             )
             idx += 1
+    # 页眉/页脚（正文解析不覆盖，作为索引补充块）
+    for section in doc.sections:
+        for part_name, part in (("header", section.header), ("footer", section.footer)):
+            if part is None or part.is_linked_to_previous:
+                continue
+            for para in part.paragraphs:
+                if para.text.strip():
+                    blocks.append(
+                        {
+                            "block_type": "header_footer",
+                            "page_no": None,
+                            "block_index": idx,
+                            "text_content": para.text,
+                            "extra": {"source": f"docx-{part_name}"},
+                        }
+                    )
+                    idx += 1
     return blocks
 
 
@@ -162,29 +247,7 @@ def _parse_legacy_doc(path: Path) -> list[dict]:
     """旧版 Word .doc（OLE2 二进制）：LibreOffice 无头转 .docx 后按 docx 解析
     （表格结构保留；此前转 TXT 会丢表格）。转换失败给出可操作提示
     （Issue #8 任务 224：合同条款（空白）.doc 曾报"不支持的格式：.doc"）。"""
-    import shutil
-    import subprocess
-    import tempfile
-
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
-    if soffice is None:
-        raise ValueError("旧版 .doc 需 LibreOffice 转换，但服务器未安装转换组件；请用 Word 另存为 .docx 后重新上传")
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "source.doc"
-        src.write_bytes(path.read_bytes())
-        try:
-            proc = subprocess.run(
-                [soffice, "--headless", "--norestore", "--convert-to", "docx", "--outdir", tmp, str(src)],
-                capture_output=True,
-                timeout=180,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("旧版 .doc 转换超时；请用 Word 另存为 .docx 后重新上传") from exc
-        if proc.returncode != 0:
-            raise ValueError("旧版 .doc 转换失败；请用 Word 另存为 .docx 后重新上传")
-        out = Path(tmp) / "source.docx"
-        if not out.exists():
-            raise ValueError("旧版 .doc 转换未产出 docx；请用 Word 另存为 .docx 后重新上传")
+    with _converted(path, "docx") as out:
         blocks = _parse_docx(out)
     if not blocks:
         raise ValueError("文档无可提取文本（可能为空白文档或扫描件）；如为扫描件请走图片解析")
