@@ -1379,7 +1379,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     from app.models.project import Project
     from app.models.requirement import Requirement
     from app.services import deliverable_service, quote_engine
-    from app.services.history_provider import get_samples_with_fallback
+    from app.services.history_library import db_samples_for_quote
     from app.services.llm import LLMClient, llm_enabled
 
     project_id = task.project_id
@@ -1583,9 +1583,11 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             material_ref=material_ref,
             cost=cost,
             min_profit_rate=float(task.payload.get("min_profit_rate", 0.05)),
+            unit=str(task.payload.get("unit", "元")),
         )
         try:
-            samples, sample_source = await get_samples_with_fallback(material_ref)
+            samples = await db_samples_for_quote(session, task.enterprise_id, material_ref)
+            sample_source = "history_price_library" if samples else "insufficient_samples"
         except Exception:  # noqa: BLE001
             samples, sample_source = [], "none"
         try:

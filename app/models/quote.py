@@ -11,7 +11,10 @@ from app.models.base import Base, BigInt, JSONType, TimestampMixin
 
 
 class HistoryPriceSnapshot(Base, TimestampMixin):
-    """外部历史报价的本地不可变快照（审计/复算用，不回写外部库）。"""
+    """历史中标价快照库（两层）：
+    - enterprise_id=0：平台级公共行情库（全平台租户可见，用户上传共建）；
+    - enterprise_id=本企业：企业私有历史价（仅本企业可见）。
+    不可变快照，不回写外部库。"""
 
     __tablename__ = "history_price_snapshot"
 
@@ -28,6 +31,18 @@ class HistoryPriceSnapshot(Base, TimestampMixin):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # —— 公共/私有行情库扩展（限价↔中标价配对，源自公开采集 xlsx 共建）——
+    publisher: Mapped[str | None] = mapped_column(String(200))  # 发布单位
+    category: Mapped[str | None] = mapped_column(String(200))  # 分标/品类
+    package_name: Mapped[str | None] = mapped_column(String(300))  # 包/项目名称
+    price_mode: Mapped[str | None] = mapped_column(String(30))  # 报价方式（归一枚举）
+    limit_price: Mapped[float | None] = mapped_column(Numeric(18, 4))  # 限价（万元；折扣率类为 None）
+    publish_date: Mapped[date | None] = mapped_column(Date)  # 公告发布时间
+    notice_id: Mapped[str | None] = mapped_column(String(100))  # 公告ID
+    limit_evidence: Mapped[str | None] = mapped_column(String(300))  # 限价证据原文
+    win_evidence: Mapped[str | None] = mapped_column(String(300))  # 中标价证据原文
+    limit_evidence_url: Mapped[str | None] = mapped_column(String(500))
+    win_evidence_url: Mapped[str | None] = mapped_column(String(500))
 
 
 class QuoteCalc(Base, TimestampMixin):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.module.test_quotes_api import _seed_public
+
 
 def _setup(client):
     r = client.post(
@@ -8,9 +10,11 @@ def _setup(client):
     )
     headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
     pid = client.post("/api/v1/projects", json={"name": "P"}, headers=headers).json()["project_id"]
+    _seed_public()
     calc = client.post(
         "/api/v1/quotes/calculate",
-        json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1, "project_id": pid},
+        json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1,
+              "unit": "万元", "project_id": pid},
         headers=headers,
     )
     assert calc.status_code == 200
@@ -49,9 +53,9 @@ def test_sample_detail_and_trend(client):
     tr = client.get("/api/v1/quotes/history/CABLE-YJV-3x95/trend", headers=h)
     assert tr.status_code == 200
     trend = tr.json()
-    assert trend["sample_count"] == 8
+    assert trend["sample_count"] == 8  # 公共库 8 条（快照副本不计入行情库）
     assert trend["median_price"] and trend["max_price"] and trend["min_price"]
-    assert trend["region_breakdown"]["华东"]["count"] == 8
+    assert trend["region_breakdown"]["国网测试电力"]["count"] == 8
     assert trend["readonly"] is True
 
 

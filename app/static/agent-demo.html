@@ -39,6 +39,35 @@ input{padding:6px;margin:4px;width:280px}
   <button onclick="downloadPackage()">下载响应文件包</button>
 </div>
 <hr>
+<h2>历史中标价行情库（公共共建库 + 本企业私有库，联合查询 / xlsx 共建导入）</h2>
+<div>
+  <input id="hl-cat" placeholder="品类关键词（如：调控云）" style="width:220px">
+  <input id="hl-pub" placeholder="发布单位关键词" style="width:220px">
+  <select id="hl-scope" style="padding:6px;margin:4px">
+    <option value="all">全部（公共+私有）</option>
+    <option value="public">仅公共库</option>
+    <option value="private">仅私有库</option>
+  </select>
+  <select id="hl-mode" style="padding:6px;margin:4px">
+    <option value="">报价方式（不限）</option>
+    <option value="折扣率">折扣率</option>
+    <option value="固定总价">固定总价</option>
+    <option value="比例报价">比例报价</option>
+    <option value="系数报价">系数报价</option>
+  </select>
+  <button onclick="historyQuery()">查询行情库</button>
+</div>
+<div>
+  <input type="file" id="hl-file" accept=".xlsx">
+  <select id="hl-target" style="padding:6px;margin:4px">
+    <option value="public">导入到公共库（全平台共建可见）</option>
+    <option value="private">导入到本企业私有库</option>
+  </select>
+  <button onclick="historyImport()">导入 xlsx（限价↔中标价明细）</button>
+</div>
+<div id="hl-out" style="background:#fff;border:1px solid #d9e2ec;border-radius:8px;padding:10px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;max-height:420px;overflow:auto;display:none"></div>
+
+<hr>
 <h2>会话控制台（服务 ↔ Hermes 主会话 全量消息；可直接对话）</h2>
 <div>
   <input id="c-msg" placeholder="给主会话发消息（任务完成后可对话）" style="width:520px">
@@ -316,6 +345,43 @@ async function downloadPackage(){
   a.download = "响应文件包.zip";
   a.click();
   log("响应文件包已下载 " + blob.size + " B");
+}
+async function historyQuery(){
+  const p = new URLSearchParams();
+  const cat = document.getElementById("hl-cat").value.trim();
+  const pub = document.getElementById("hl-pub").value.trim();
+  const mode = document.getElementById("hl-mode").value;
+  if(cat) p.set("category", cat);
+  if(pub) p.set("publisher", pub);
+  if(mode) p.set("price_mode", mode);
+  p.set("scope", document.getElementById("hl-scope").value);
+  p.set("limit", "50");
+  const d = await api("GET", "/api/v1/quotes/history?" + p.toString());
+  const out = document.getElementById("hl-out");
+  out.style.display = "block";
+  let txt = `共 ${d.sample_count} 条样本\n`;
+  for(const st of (d.stats||[])){
+    txt += `  [${st.price_mode}] ${st.count} 条，中标价区间 ${(st.win_price_range||[]).join(" ~ ")}\n`;
+  }
+  for(const s of (d.samples||[])){
+    txt += `\n${s.source === "public" ? "【公共】" : "【私有】"} ${s.notice_id || ""}\n  品类: ${s.category||"-"}  包名: ${s.package_name||"-"}\n  发布: ${s.publisher||"-"}  ${s.publish_date||""}  方式: ${s.price_mode}\n  限价: ${s.limit_price ?? "-"}  中标价: ${s.win_price}  比值: ${s.win_ratio ?? "-"}\n  中标证据: ${s.win_evidence_url || s.win_evidence || "-"}`;
+  }
+  out.innerText = txt;
+}
+async function historyImport(){
+  const f = document.getElementById("hl-file").files[0];
+  if(!f){log("先选 xlsx 文件");return;}
+  const fd = new FormData();
+  fd.append("target", document.getElementById("hl-target").value);
+  fd.append("file", f);
+  const resp = await fetch(BASE + "/api/v1/quotes/history/import", {method:"POST", headers:{"Authorization":"Bearer "+token}, body:fd});
+  const d = await resp.json();
+  if(resp.ok){
+    log(`行情导入完成：入库 ${d.imported} 条（解析 ${d.parsed_total}，跳过 ${d.skipped_rows}），范围 ${d.scope}`);
+    historyQuery();
+  } else {
+    log("导入失败: " + resp.status + " " + JSON.stringify(d).slice(0,300));
+  }
 }
 </script>
 </body>
