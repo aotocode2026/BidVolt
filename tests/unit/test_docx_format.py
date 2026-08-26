@@ -606,6 +606,95 @@ def test_xlsx_bytes_auto_sum_formula():
     assert wb2.active["B3"].value in (None, "")  # 置空（openpyxl 回读为 None）
 
 
+def test_consume_auto_tag_does_not_break_fidelity(tmp_path):
+    """回归：fills 消费自动标注标签（段落首 run 在插入层外、且此前有逐节点删除）时，
+    删除层只收敛为模板原文——标签文本不得进入原文流，忠实性校验不误报。
+    历史教训：授权委托书「特授权【待补充：被授权人姓名】【待补充】」消费标签导致 verify 误报不忠实。"""
+    import zipfile as _z
+
+    from docx import Document
+    from docx.oxml.ns import qn
+    from lxml import etree as _e
+
+    from app.services.export_service import (
+        _build_item_document,
+        _FillSession,
+        check_doc_fidelity,
+        replace_text_tracked,
+    )
+
+    src = Document()
+    src.add_paragraph("（一）法定代表人（单位负责人）授权委托书")
+    src.add_paragraph("特授权____代表我方全权办理项目响应事宜。")
+    p = tmp_path / "src.docx"
+    src.save(str(p))
+
+    src2 = Document(str(p))
+    elems = [("p", el) for el in src2.element.body.iterchildren() if el.tag == qn("w:p")]
+    doc, _ = _build_item_document(str(p), None, elems)
+    sess = _FillSession(doc, "", "", "", "")
+    sess.apply_to_doc()  # "特授权____" → "特授权【待补充】…"（逐节点修订：del "____" + ins 标签）
+    n = replace_text_tracked(sess.editor, "特授权【待补充】", "特授权张三", "指定被授权人")
+    assert n == 1
+
+    with _z.ZipFile(str(p)) as zf:
+        src_text = "".join(_e.fromstring(zf.read("word/document.xml")).itertext())
+    r = check_doc_fidelity(doc, src_text)
+    assert r["ok"] is True, r["issues"]
+
+
+def test_consume_tag_in_ins_only_paragraph(tmp_path):
+    """消费整段只有插入文本的标签：无模板原文可删，直接移除旧插入+新插入，忠实性保持。"""
+    import zipfile as _z
+
+    from docx import Document
+    from docx.oxml.ns import qn
+    from lxml import etree as _e
+
+    from app.services.export_service import (
+        _build_item_document,
+        _FillSession,
+        check_doc_fidelity,
+        replace_text_tracked,
+    )
+
+    src = Document()
+    src.add_paragraph("致：（采购人）")
+    p = tmp_path / "src.docx"
+    src.save(str(p))
+
+    src2 = Document(str(p))
+    elems = [("p", el) for el in src2.element.body.iterchildren() if el.tag == qn("w:p")]
+    doc, _ = _build_item_document(str(p), None, elems)
+    sess = _FillSession(doc, "招标人甲", "", "", "")
+    sess.apply_to_doc()  # 整段替换：del 原文 + ins "致：招标人甲"
+    n = replace_text_tracked(sess.editor, "致：招标人甲", "致：招标人乙", "修正采购人")
+    assert n == 1
+    with _z.ZipFile(str(p)) as zf:
+        src_text = "".join(_e.fromstring(zf.read("word/document.xml")).itertext())
+    r = check_doc_fidelity(doc, src_text)
+    assert r["ok"] is True, r["issues"]
+
+
+def test_blank_after_parenthetical_label_gets_labeled():
+    """下划线后紧跟（标签）时自动继承标签，不再产生裸【待补充】。
+    回归：授权委托书「____（营业执照法定代表人（单位负责人））」空位曾产生裸标签（任务 381 三轮才清掉）。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    src.add_paragraph("_____________（营业执照法定代表人（单位负责人））特授权____代表我方全权办理。")
+    sess = _FillSession(src, "", "", "", "")
+    sess.apply_to_doc()
+    from app.services.export_service import _elem_text
+
+    txt = _elem_text(src.element)
+    assert "【待补充：营业执照法定代表人（单位负责人）】" in txt, txt
+    # 第二个空位（特授权____）无标签上下文仍为裸——行为不变
+    assert txt.count("【待补充】") == 1, txt
+
+
 def test_draft_download_filename_marks_source(client):
     """下载文件名标注底稿来源（产品要求：一眼可见底稿是谁）。"""
     r = client.post(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -10,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+# 自动标注的待补充标签（机制生成，底稿原文里绝无此字样）：忠实性比对两侧统一剔除——
+# agent 用 fills 消费冗余标签时，标签文本会落进删除层，若不剔除会误报"原文不忠实"
+_AUTO_TAG_RE = re.compile(r"【待补充[^】]*】")
 
 
 class _TrackedEditor:
@@ -99,17 +103,70 @@ class _TrackedEditor:
         t_el.text = ""
 
     def track_paragraph_replace(self, t_nodes, old_full: str, new_full: str, comment: str) -> None:
-        """整段替换（占位符跨 run 拆分时）：整段原文删除线 + 整段新文插入 + 批注。"""
-        first_r = t_nodes[0].getparent()
+        """整段替换（占位符跨 run 拆分 / 显式定向替换）：整段删除线 + 整段新文插入 + 批注。
+        段落级替换取代本段全部既有修订：删除层收敛为「本段模板原文」（既有 delText ∪ 非插入 w:t），
+        旧 w:ins 运行移除——消费自动标注标签时不把标签文本带进原文流（忠实性校验不误报）。"""
+        qn = self._qn
+        first_r = t_nodes[0].getparent() if t_nodes else None
+        p_el = first_r
+        while p_el is not None and p_el.tag != qn("w:p"):
+            p_el = p_el.getparent()
+        if p_el is None:
+            return
+
+        def _in_ins(el) -> bool:
+            a = el.getparent()
+            while a is not None:
+                if a.tag == qn("w:ins"):
+                    return True
+                if a.tag == qn("w:p"):
+                    return False
+                a = a.getparent()
+            return False
+
+        # 模板原文（含既有删除线）= 段落内 非插入 w:t + 全部 w:delText（文档序）
+        clean_old_parts: list[str] = []
+        for el in p_el.iter():
+            if el.tag == qn("w:t") and not _in_ins(el):
+                clean_old_parts.append(el.text or "")
+            elif el.tag == qn("w:delText") and not _in_ins(el):
+                clean_old_parts.append(el.text or "")
+        clean_old = "".join(clean_old_parts)
+
+        # 移除本段既有修订运行（删除层/插入层一并重置，由本次替换接管）
+        for child in list(p_el):
+            if child.tag in (qn("w:del"), qn("w:ins")):
+                p_el.remove(child)
+
+        # 新删除线/插入锚点：剩余首个 w:r，没有就挂段尾
+        anchor = next((c for c in p_el.iterchildren() if c.tag == qn("w:r")), None)
         cid = self.add_comment(comment)
-        self._anchor(cid, first_r)
-        del_el = self._mark("w:del")
-        del_el.append(self._run("w:delText", old_full, first_r))
-        first_r.addprevious(del_el)
+        if anchor is not None:
+            self._anchor(cid, anchor)
+        if clean_old:
+            del_el = self._mark("w:del")
+            del_el.append(self._run("w:delText", clean_old, anchor))
+            if anchor is not None:
+                anchor.addprevious(del_el)
+            else:
+                p_el.append(del_el)
         ins_el = self._mark("w:ins")
-        ins_el.append(self._run("w:t", new_full, first_r))
-        first_r.addprevious(ins_el)
-        self._anchor_end_ref(cid, first_r)
+        ins_el.append(self._run("w:t", new_full, anchor))
+        if anchor is not None:
+            anchor.addprevious(ins_el)
+        else:
+            p_el.append(ins_el)
+        if anchor is not None:
+            self._anchor_end_ref(cid, anchor)
+        else:
+            end = self._mk("w:commentRangeEnd")
+            end.set(self._qn("w:id"), str(cid))
+            p_el.append(end)
+            ref_r = self._mk("w:r")
+            ref = self._mk("w:commentReference")
+            ref.set(self._qn("w:id"), str(cid))
+            ref_r.append(ref)
+            p_el.append(ref_r)
         for t in t_nodes:
             t.text = ""
 
@@ -305,7 +362,14 @@ class _FillSession:
         def _blank_rep(m):
             ctx = _orig[max(0, m.start() - 24):m.start()]
             mm = _re.search(r"([\u4e00-\u9fffA-Za-z0-9（）()、/·\-]{2,20})[：:]\s*$", ctx)
-            return f"【待补充：{mm.group(1)}】" if mm else "【待补充】"
+            if mm:
+                return f"【待补充：{mm.group(1)}】"
+            # 前瞻：下划线后紧跟（标签）——标签描述的就是这个空位（如 ____（营业执照法定代表人（单位负责人）））
+            after = _orig[m.end():m.end() + 24]
+            am = _re.match(r"\s*[（(]([\u4e00-\u9fffA-Za-z0-9（）()、/·\-]{2,20})[）)]", after)
+            if am:
+                return f"【待补充：{am.group(1)}】"
+            return "【待补充】"
 
         out = _re.sub(r"_{2,}", _blank_rep, out)
         # 带标签的空位原位回填（如"响应供应商名称：____（盖章）"）
@@ -1036,7 +1100,7 @@ def canonical_text(root) -> str:
             parts.append(el.text)
         if el.tail:
             parts.append(el.tail)
-    return "".join(parts)
+    return _AUTO_TAG_RE.sub("", "".join(parts))
 
 
 def check_doc_fidelity(doc, source_text: str) -> dict:

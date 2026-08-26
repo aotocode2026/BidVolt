@@ -694,6 +694,11 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
         raw = out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace")
         reply = _strip_session_trailer(raw).strip()
         await _append_events(session, task, seq, [("hermes", reply or raw.strip()[-800:])])
+        # 纯代码收尾：任务完成后的对话也会把会话记录刷新进最终 zip（完整版+精简版），主会话不感知
+        try:
+            await _refresh_zip_record(session, task)
+        except Exception:  # noqa: BLE001
+            logger.warning("chat 后刷新会话记录失败（task=%s）", task.id, exc_info=True)
         return {"reply": reply, "session_id": sid, "returncode": proc.returncode}
 
 
