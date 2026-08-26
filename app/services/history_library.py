@@ -190,13 +190,32 @@ def _row_hash(row: dict) -> str:
 async def import_rows(
     session: AsyncSession, enterprise_id: int, target: str, rows: list[dict]
 ) -> dict:
-    """入公共库（enterprise_id=0）或本企业私有库；按 (notice_id, package_name, win_price) 去重。"""
+    """入公共库（enterprise_id=0）或本企业私有库；按 source_hash 去重（重复导入不产生重复行）。"""
     scope_eid = 0 if target == "public" else enterprise_id
+    provider = "market_xlsx_import" if target == "public" else "enterprise_private"
+    existing = {
+        h
+        for h in (
+            await session.scalars(
+                select(HistoryPriceSnapshot.source_hash).where(
+                    HistoryPriceSnapshot.enterprise_id == scope_eid,
+                    HistoryPriceSnapshot.provider_id == provider,
+                )
+            )
+        ).all()
+        if h
+    }
     imported = 0
+    dupes = 0
     for r in rows:
+        h = _row_hash(r)
+        if h in existing:
+            dupes += 1
+            continue
+        existing.add(h)
         row = HistoryPriceSnapshot(
             enterprise_id=scope_eid,
-            provider_id="market_xlsx_import" if target == "public" else "enterprise_private",
+            provider_id=provider,
             material_name=r["package_name"],
             category=r["category"],
             package_name=r["package_name"],
@@ -211,12 +230,12 @@ async def import_rows(
             win_evidence=r["win_evidence"],
             limit_evidence_url=r["limit_evidence_url"],
             win_evidence_url=r["win_evidence_url"],
-            source_hash=_row_hash(r),
+            source_hash=h,
         )
         session.add(row)
         imported += 1
     await session.flush()
-    return {"imported": imported, "skipped": 0, "scope": target}
+    return {"imported": imported, "skipped": dupes, "scope": target}
 
 
 async def query_library(
