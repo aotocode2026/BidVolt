@@ -265,13 +265,37 @@ async def project_materials(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("list_project_materials")),
 ) -> list[dict]:
-    rows = await session.scalars(
+    rows = list(await session.scalars(
         select(ProjectMaterial).where(
             ProjectMaterial.enterprise_id == user.enterprise_id,
             ProjectMaterial.project_id == project_id,
         )
-    )
+    ))
+    file_ids = [m.file_id for m in rows]
+    block_counts: dict[int, int] = {}
+    if file_ids:
+        cnt_rows = await session.execute(
+            select(DocBlock.file_id, func.count())
+            .where(DocBlock.file_id.in_(file_ids))
+            .group_by(DocBlock.file_id)
+        )
+        block_counts = {int(fid): int(n) for fid, n in cnt_rows}
+    files = {
+        f.id: f
+        for f in await session.scalars(select(FileObject).where(FileObject.id.in_(file_ids)))
+    } if file_ids else {}
     return [
-        {"material_id": m.id, "file_id": m.file_id, "status": m.status}
+        {
+            "material_id": m.id,
+            "file_id": m.file_id,
+            "file_name": (files.get(m.file_id).original_name if m.file_id in files else None),
+            "status": m.status,
+            # 解析完整性信号（服务端只给信号不裁决）：
+            # - status=3 已解析，但 block_count 只统计"可提取文字块"；扫描件/图表可能无文字层或块不完整，
+            #   解析索引永远只是导航辅助，内容以原件为准（读块工具 + 必要时 vision 读原图）。
+            # - status=4 解析失败，必须走原件。
+            "parse_status": (files.get(m.file_id).parse_status if m.file_id in files else None),
+            "block_count": block_counts.get(m.file_id, 0),
+        }
         for m in rows
     ]
