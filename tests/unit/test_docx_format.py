@@ -695,6 +695,58 @@ def test_blank_after_parenthetical_label_gets_labeled():
     assert txt.count("【待补充】") == 1, txt
 
 
+def test_slice_region_includes_tech_after_score_markers():
+    """回归：底稿把「技术文件」章排在评分标准之后时，切片区域须续接技术章
+    （任务 384 教训：结束标记直接截断导致 4522/4523 无法切片）。"""
+    from docx import Document
+
+    from app.services.export_service import _locate_item_slices
+
+    doc = Document()
+    doc.add_paragraph("第五章  响应文件格式")
+    doc.add_paragraph("一、价格文件")
+    doc.add_paragraph("（一）响应函及报价汇总表")
+    doc.add_paragraph("（二）报价明细表")
+    doc.add_paragraph("二、商务文件")
+    doc.add_paragraph("（一）法定代表人（单位负责人）授权委托书")
+    doc.add_paragraph("（二）商务偏差表")
+    doc.add_paragraph("（三）响应保证保险（如有）")
+    doc.add_paragraph("（四）补充文件")
+    doc.add_paragraph("（1）商务评分标准")  # 结束标记
+    doc.add_paragraph("（1.1）FWSW01:商务详评细则")
+    doc.add_paragraph("技术文件")  # 评分标准之后的技术章
+    doc.add_paragraph("（一）技术偏差表")
+    doc.add_paragraph("（二）专项响应文件")
+    doc.add_paragraph("（2）技术评分标准")
+
+    # 大纲级别：仅给部分标题与条目标题打 outlineLvl（模拟真实底稿）
+    from docx.oxml.ns import qn
+
+    def set_lvl(p, lvl):
+        ppr = p._p.get_or_add_pPr()
+        el = ppr.find(qn("w:outlineLvl"))
+        if el is None:
+            el = ppr.makeelement(qn("w:outlineLvl"), {})
+            ppr.append(el)
+        el.set(qn("w:val"), str(lvl))
+
+    paras = doc.paragraphs
+    set_lvl(paras[1], 1)
+    for i in (2, 3):
+        set_lvl(paras[i], 2)
+    set_lvl(paras[4], 1)
+    for i in (5, 6, 7, 8):
+        set_lvl(paras[i], 2)
+    set_lvl(paras[11], 1)  # 技术文件
+    set_lvl(paras[12], 2)
+    set_lvl(paras[13], 2)
+
+    result = _locate_item_slices(doc, {})
+    titles = [h for role in result for h, _ in result[role]]
+    assert any("技术偏差表" in h for h in titles), titles
+    assert any("专项响应文件" in h for h in titles), titles
+
+
 def test_draft_download_filename_marks_source(client):
     """下载文件名标注底稿来源（产品要求：一眼可见底稿是谁）。"""
     r = client.post(
