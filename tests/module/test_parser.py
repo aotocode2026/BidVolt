@@ -14,6 +14,14 @@ def test_parse_txt(tmp_path):
     assert "第一行" in blocks[0]["text_content"]
 
 
+def test_parse_txt_gbk_fallback(tmp_path):
+    """中文常见 GBK 编码文本：utf-8 失败回退 gbk，不得产出乱码块。"""
+    p = tmp_path / "a.csv"
+    p.write_bytes("名称,金额\n电缆,100\n".encode("gbk"))
+    blocks = parser.parse_to_blocks(p, ".csv")
+    assert "电缆" in blocks[0]["text_content"]
+
+
 def test_parse_docx(tmp_path):
     from docx import Document
 
@@ -39,7 +47,7 @@ def test_parse_legacy_doc_requires_libreoffice(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError) as exc:
         parser.parse_to_blocks(p, ".doc")
-    assert "另存为 .docx" in str(exc.value)
+    assert "另存为" in str(exc.value)
 
 
 def test_parse_legacy_doc_roundtrip_docx_keeps_tables(tmp_path):
@@ -78,6 +86,116 @@ def test_parse_legacy_doc_roundtrip_docx_keeps_tables(tmp_path):
     assert any("技术规范书测试" in t for t in texts)
     assert any(b["block_type"] == "table" and "接口调试" in b["text_content"] for b in blocks)
     assert all(b.get("extra", {}).get("source") == "libreoffice-doc" for b in blocks)
+
+
+def test_parse_docx_header_footer(tmp_path):
+    """docx 页眉/页脚进入索引块（正文解析不覆盖的区域）。"""
+    from docx import Document
+
+    p = tmp_path / "a.docx"
+    doc = Document()
+    doc.add_paragraph("正文内容")
+    doc.sections[0].header.paragraphs[0].text = "页眉公司名"
+    doc.sections[0].footer.paragraphs[0].text = "第 X 页"
+    doc.save(str(p))
+    blocks = parser.parse_to_blocks(p, ".docx")
+    hf = [b for b in blocks if b["block_type"] == "header_footer"]
+    assert any("页眉公司名" in b["text_content"] for b in hf)
+    assert any("第 X 页" in b["text_content"] for b in hf)
+
+
+def test_parse_legacy_xls_requires_libreoffice(tmp_path, monkeypatch):
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    p = tmp_path / "a.xls"
+    p.write_bytes(b"\xd0\xcf\x11\xe0")
+    import pytest
+
+    with pytest.raises(ValueError) as exc:
+        parser.parse_to_blocks(p, ".xls")
+    assert "另存为" in str(exc.value)
+
+
+def test_parse_legacy_ppt_requires_libreoffice(tmp_path, monkeypatch):
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    p = tmp_path / "a.ppt"
+    p.write_bytes(b"\xd0\xcf\x11\xe0")
+    import pytest
+
+    with pytest.raises(ValueError) as exc:
+        parser.parse_to_blocks(p, ".ppt")
+    assert "另存为" in str(exc.value)
+
+
+def _soffice_or_skip():
+    import shutil
+
+    import pytest
+
+    s = shutil.which("soffice") or shutil.which("libreoffice")
+    if s is None:
+        pytest.skip("本机无 LibreOffice，旧格式转换路径在 CI/容器验证")
+    return s
+
+
+def test_parse_legacy_xls_roundtrip_keeps_sheets(tmp_path):
+    """.xls → LibreOffice → xlsx → 表格行保留。"""
+    import subprocess
+
+    from openpyxl import Workbook
+
+    soffice = _soffice_or_skip()
+    xlsx_p = tmp_path / "a.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["材料", "单价"])
+    ws.append(["电缆", "120"])
+    wb.save(str(xlsx_p))
+
+    xls_p = tmp_path / "a.xls"
+    subprocess.run(
+        [soffice, "--headless", "--norestore", "--convert-to", "xls", "--outdir", str(tmp_path), str(xlsx_p)],
+        capture_output=True,
+        timeout=180,
+        check=True,
+    )
+    assert xls_p.exists()
+
+    blocks = parser.parse_to_blocks(xls_p, ".xls")
+    assert any(b["block_type"] == "table" and "电缆" in b["text_content"] for b in blocks)
+    assert all(b.get("extra", {}).get("source") == "libreoffice-xls" for b in blocks)
+
+
+def test_parse_legacy_ppt_roundtrip(tmp_path):
+    """.ppt → LibreOffice → pptx → 每页文本保留。"""
+    import subprocess
+
+    pytest = __import__("pytest")
+    pytest.importorskip("pptx")
+    from pptx import Presentation
+
+    soffice = _soffice_or_skip()
+    pptx_p = tmp_path / "a.pptx"
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "技术方案汇报"
+    prs.save(str(pptx_p))
+
+    ppt_p = tmp_path / "a.ppt"
+    subprocess.run(
+        [soffice, "--headless", "--norestore", "--convert-to", "ppt", "--outdir", str(tmp_path), str(pptx_p)],
+        capture_output=True,
+        timeout=180,
+        check=True,
+    )
+    assert ppt_p.exists()
+
+    blocks = parser.parse_to_blocks(ppt_p, ".ppt")
+    assert any("技术方案汇报" in b["text_content"] for b in blocks)
+    assert all(b.get("extra", {}).get("source") == "libreoffice-ppt" for b in blocks)
 
 
 def test_parse_xlsx(tmp_path):
