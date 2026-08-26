@@ -171,6 +171,20 @@ def test_history_import_public_builds_shared_library(client):
     q = client.get("/api/v1/quotes/history", params={"scope": "public"}, headers=h).json()
     assert q["sample_count"] == 3
     assert all(s["source"] == "public" for s in q["samples"])
+
+    # 重复导入同一文件：按 source_hash 去重，不产生重复行
+    r2 = client.post(
+        "/api/v1/quotes/history/import",
+        files={"file": ("market.xlsx", _market_xlsx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        data={"target": "public"},
+        headers=h,
+    )
+    assert r2.status_code == 201
+    assert r2.json()["imported"] == 0
+    assert r2.json()["skipped"] == 3
+    assert client.get("/api/v1/quotes/history", params={"scope": "public"}, headers=h).json()["sample_count"] == 3
+
     by_notice = {s["notice_id"]: s for s in q["samples"]}
     assert by_notice["N-1001"]["win_price"] == "110.5"
     assert by_notice["N-1001"]["limit_price"] == "120.0"
