@@ -28,6 +28,58 @@ def test_parse_docx(tmp_path):
     assert "技术响应测试" in texts
 
 
+def test_parse_legacy_doc_requires_libreoffice(tmp_path, monkeypatch):
+    """无 LibreOffice 时 .doc 给出可操作提示，而不是"不支持的格式"。"""
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    p = tmp_path / "a.doc"
+    p.write_bytes(b"\xd0\xcf\x11\xe0")
+    import pytest
+
+    with pytest.raises(ValueError) as exc:
+        parser.parse_to_blocks(p, ".doc")
+    assert "另存为 .docx" in str(exc.value)
+
+
+def test_parse_legacy_doc_roundtrip_docx_keeps_tables(tmp_path):
+    """有 LibreOffice（CI 容器）时：.doc 转 docx 解析，表格结构保留。"""
+    import shutil
+    import subprocess
+
+    import pytest
+    from docx import Document
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        pytest.skip("本机无 LibreOffice，.doc 转换路径在 CI/容器验证")
+
+    docx_p = tmp_path / "a.docx"
+    doc = Document()
+    doc.add_paragraph("技术规范书测试")
+    table = doc.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "序号"
+    table.rows[0].cells[1].text = "服务名称"
+    table.rows[1].cells[0].text = "1"
+    table.rows[1].cells[1].text = "接口调试"
+    doc.save(str(docx_p))
+
+    doc_p = tmp_path / "a.doc"
+    subprocess.run(
+        [soffice, "--headless", "--norestore", "--convert-to", "doc", "--outdir", str(tmp_path), str(docx_p)],
+        capture_output=True,
+        timeout=180,
+        check=True,
+    )
+    assert doc_p.exists()
+
+    blocks = parser.parse_to_blocks(doc_p, ".doc")
+    texts = [b["text_content"] for b in blocks]
+    assert any("技术规范书测试" in t for t in texts)
+    assert any(b["block_type"] == "table" and "接口调试" in b["text_content"] for b in blocks)
+    assert all(b.get("extra", {}).get("source") == "libreoffice-doc" for b in blocks)
+
+
 def test_parse_xlsx(tmp_path):
     from openpyxl import Workbook
 

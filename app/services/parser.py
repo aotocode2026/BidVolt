@@ -16,31 +16,7 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
         return _parse_ofd(path)
 
     if ext == ".docx":
-        from docx import Document
-
-        doc = Document(str(path))
-        blocks: list[dict] = []
-        idx = 0
-        for para in doc.paragraphs:
-            if para.text.strip():
-                blocks.append(
-                    {"block_type": "paragraph", "page_no": None, "block_index": idx, "text_content": para.text}
-                )
-                idx += 1
-        for table in doc.tables:
-            for row in table.rows:
-                cells = [cell.text for cell in row.cells]
-                blocks.append(
-                    {
-                        "block_type": "table",
-                        "page_no": None,
-                        "block_index": idx,
-                        "text_content": " | ".join(cells),
-                        "extra": {"cols": cells},
-                    }
-                )
-                idx += 1
-        return blocks
+        return _parse_docx(path)
 
     if ext == ".xlsx":
         import io as _io
@@ -153,12 +129,39 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
     raise ValueError(f"不支持的格式：{ext}")
 
 
-def _parse_legacy_doc(path: Path) -> list[dict]:
-    """旧版 Word .doc（OLE2 二进制）文本提取：LibreOffice 无头转 TXT（容器已装）。
+def _parse_docx(path: Path) -> list[dict]:
+    """docx：段落 + 表格行提取为 doc_block。"""
+    from docx import Document
 
-    转换失败给出可操作提示（Issue #8 任务 224：合同条款（空白）.doc 曾报
-    "不支持的格式：.doc" 导致整个解析任务失败，用户无从下手）。
-    """
+    doc = Document(str(path))
+    blocks: list[dict] = []
+    idx = 0
+    for para in doc.paragraphs:
+        if para.text.strip():
+            blocks.append(
+                {"block_type": "paragraph", "page_no": None, "block_index": idx, "text_content": para.text}
+            )
+            idx += 1
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text for cell in row.cells]
+            blocks.append(
+                {
+                    "block_type": "table",
+                    "page_no": None,
+                    "block_index": idx,
+                    "text_content": " | ".join(cells),
+                    "extra": {"cols": cells},
+                }
+            )
+            idx += 1
+    return blocks
+
+
+def _parse_legacy_doc(path: Path) -> list[dict]:
+    """旧版 Word .doc（OLE2 二进制）：LibreOffice 无头转 .docx 后按 docx 解析
+    （表格结构保留；此前转 TXT 会丢表格）。转换失败给出可操作提示
+    （Issue #8 任务 224：合同条款（空白）.doc 曾报"不支持的格式：.doc"）。"""
     import shutil
     import subprocess
     import tempfile
@@ -171,21 +174,23 @@ def _parse_legacy_doc(path: Path) -> list[dict]:
         src.write_bytes(path.read_bytes())
         try:
             proc = subprocess.run(
-                [soffice, "--headless", "--norestore", "--convert-to", "txt:Text (encoded):UTF8", "--outdir", tmp, str(src)],
+                [soffice, "--headless", "--norestore", "--convert-to", "docx", "--outdir", tmp, str(src)],
                 capture_output=True,
-                timeout=120,
+                timeout=180,
             )
         except subprocess.TimeoutExpired as exc:
             raise ValueError("旧版 .doc 转换超时；请用 Word 另存为 .docx 后重新上传") from exc
         if proc.returncode != 0:
             raise ValueError("旧版 .doc 转换失败；请用 Word 另存为 .docx 后重新上传")
-        txt = Path(tmp) / "source.txt"
-        if not txt.exists():
-            raise ValueError("旧版 .doc 转换未产出文本；请用 Word 另存为 .docx 后重新上传")
-        text = txt.read_text(encoding="utf-8", errors="replace")
-    if not text.strip():
+        out = Path(tmp) / "source.docx"
+        if not out.exists():
+            raise ValueError("旧版 .doc 转换未产出 docx；请用 Word 另存为 .docx 后重新上传")
+        blocks = _parse_docx(out)
+    if not blocks:
         raise ValueError("文档无可提取文本（可能为空白文档或扫描件）；如为扫描件请走图片解析")
-    return [{"block_type": "paragraph", "page_no": None, "block_index": 0, "text_content": text, "extra": {"source": "libreoffice-doc"}}]
+    for b in blocks:
+        b.setdefault("extra", {})["source"] = "libreoffice-doc"
+    return blocks
 
 
 def _parse_pptx_stdlib(path: Path) -> list[dict]:
