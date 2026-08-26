@@ -80,6 +80,37 @@ def live_server():
 @pytest.mark.e2e
 def test_full_business_flow(live_server):
     base = live_server
+
+    # 行情库公共样本（calculate 数据源，无 Mock）：先直接写入 e2e 库
+    from datetime import date
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models.quote import HistoryPriceSnapshot
+
+    eng = create_engine(f"sqlite:///{E2E_DB}")
+    with sessionmaker(bind=eng)() as s:
+        for i in range(6):
+            s.add(
+                HistoryPriceSnapshot(
+                    enterprise_id=0,
+                    provider_id="history_price_library",
+                    material_name="CABLE-YJV-3x95 电力电缆",
+                    category="电缆 / 物资",
+                    package_name="CABLE-YJV-3x95 框架采购",
+                    price_mode="固定总价",
+                    limit_price=130.0,
+                    win_price=115.0 + i * 1.2,
+                    win_date=date(2026, 6, 1),
+                    publish_date=date(2026, 5, 1),
+                    notice_id=f"E2E:{i}",
+                    publisher="国网测试",
+                    source_hash=f"e2e{i}",
+                )
+            )
+        s.commit()
+    eng.dispose()
+
     with httpx.Client(base_url=base, timeout=30) as c:
         reg = c.post(
             "/api/v1/auth/register",
@@ -144,10 +175,11 @@ def test_full_business_flow(live_server):
         )
         assert all(x["status"] in ("succeeded", "skipped") for x in confirm.json()["results"])
 
-        # 报价
+        # 报价（行情库公共样本，万元口径）
         calc = c.post(
             "/api/v1/quotes/calculate",
-            json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1, "project_id": pid},
+            json={"material_ref": "CABLE-YJV-3x95", "cost": 100, "min_profit_rate": 0.1,
+                  "unit": "万元", "project_id": pid},
             headers=headers,
         )
         assert calc.json()["result"]["sample_count"] >= 5
