@@ -12,7 +12,7 @@ from pathlib import Path
 def parse_to_blocks(path: Path, ext: str) -> list[dict]:
     """返回 [{block_type, page_no, block_index, text_content, extra}]。"""
     ext = ext.lower()
-    if ext in (".txt", ".csv"):
+    if ext in (".txt", ".csv", ".md"):
         # 中文常见 GBK 编码：utf-8 失败回退 gbk，避免乱码块
         raw = Path(path).read_bytes()
         try:

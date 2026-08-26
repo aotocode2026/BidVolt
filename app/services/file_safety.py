@@ -10,7 +10,7 @@ from app.config import settings
 
 ALLOWED_EXTS = {
     ".pdf", ".ofd", ".doc", ".docx", ".xls", ".xlsx", ".csv",
-    ".ppt", ".pptx", ".txt", ".jpg", ".jpeg", ".png", ".bmp",
+    ".ppt", ".pptx", ".txt", ".md", ".jpg", ".jpeg", ".png", ".bmp",
     ".tiff", ".zip", ".rar", ".7z", ".html", ".htm",
 }
 
