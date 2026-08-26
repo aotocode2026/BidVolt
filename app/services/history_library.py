@@ -137,6 +137,8 @@ def parse_market_xlsx(data: bytes) -> tuple[list[dict], list[str]]:
             win_raw = _cell(r, cols["中标价"])
             if not notice and not win_raw:
                 continue  # 表头/空行
+            if notice == "公告ID" or win_raw == "中标价":
+                continue  # 表头行本身
             if not notice:
                 skipped.append(f"无公告ID，跳过：{win_raw}")
                 continue
@@ -216,10 +218,10 @@ async def import_rows(
         row = HistoryPriceSnapshot(
             enterprise_id=scope_eid,
             provider_id=provider,
-            material_name=r["package_name"],
-            category=r["category"],
+            material_name=r["package_name"][:200],  # material_name 列宽 200，包名超长截断（全量在 package_name）
+            category=(r["category"] or "")[:200] or None,
             package_name=r["package_name"],
-            publisher=r["publisher"],
+            publisher=(r["publisher"] or "")[:200] or None,
             price_mode=r["price_mode"],
             limit_price=r["limit_price"],
             win_price=r["win_price"],
