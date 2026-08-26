@@ -135,7 +135,7 @@ async def snapshot_samples(
         row = HistoryPriceSnapshot(
             enterprise_id=enterprise_id,
             provider_id=provider,
-            material_name=s["material_name"],
+            material_name=(str(s.get("material_name") or ""))[:200],
             material_code=s.get("material_code"),
             spec=s.get("spec"),
             region=s.get("region"),
