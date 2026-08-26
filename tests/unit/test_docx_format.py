@@ -48,6 +48,12 @@ def _all_text(data: bytes) -> str:
     return "".join(_doc_xml(data).itertext())
 
 
+def _final_text(data: bytes) -> str:
+    """最终文本（w:t，含插入层、不含删除层）——最小差异替换后断言用。"""
+    root = _doc_xml(data)
+    return "".join(t.text or "" for t in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"))
+
+
 def _count_el(data: bytes, local_tag: str) -> int:
     return sum(1 for e in _doc_xml(data).iter() if e.tag.split("}")[-1] == local_tag)
 
@@ -73,19 +79,20 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     }
     data = docx_from_template(str(src), model)
     joined = _all_text(data)
+    final = _final_text(data)
     doc = Document(io.BytesIO(data))
     # 整本保留：原段落都在，表格保留
     assert "第一章 投标人须知" in joined
     assert len(doc.tables) == 1
-    # 已知字段回填（修订插入可见）
-    assert "本采购由测试招标人实施，项目为测试采购项目。" in joined
-    assert "供应商名称：测试供应商" in joined
-    assert "联系电话：【待补充：联系电话】" in joined
+    # 已知字段回填（修订插入可见）——最终文本断言（最小差异：标签原位、只删空位插值）
+    assert "本采购由测试招标人实施，项目为测试采购项目。" in final
+    assert "供应商名称：测试供应商" in final
+    assert "联系电话：【待补充：联系电话】" in final
     # 应答函裸标签形态：致：采购人 → 致：真实招标人
-    assert "致：测试招标人" in joined
+    assert "致：测试招标人" in final
     # 标签紧邻空位整体回填：____（项目名称）→ 项目名，而不是【待补充】+项目名
-    assert "全权办理测试采购项目（采购编号）" in joined
-    assert "【待补充】测试采购项目" not in joined
+    assert "全权办理测试采购项目（采购编号）" in final
+    assert "【待补充】测试采购项目" not in final
     # 补充节追加
     assert "补充响应内容" in joined
     assert "我方完全响应采购文件全部要求。" in joined
@@ -100,7 +107,7 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     # 批注部件存在且说明来源
     comments = _comment_texts(data)
     assert "来源" in comments and "BidVolt" in comments
-    # 批注范围顺序：commentRangeStart → del → ins → commentRangeEnd → commentReference
+    # 批注范围顺序：commentRangeStart → (原 run) → del → ins → commentRangeEnd
     root = _doc_xml(data)
     for p in root.iter():
         if p.tag.split("}")[-1] != "p":
@@ -112,8 +119,7 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
         i_del = tags.index("del")
         i_ins = tags.index("ins")
         i_end = tags.index("commentRangeEnd")
-        i_ref = next(i for i, t in enumerate(tags) if t == "r")
-        assert i_start < i_del < i_ins < i_end < i_ref, tags
+        assert i_start < i_del < i_ins < i_end, tags
 
 
 def test_draft_export_fills_unknown_with_placeholder(tmp_path):
@@ -189,13 +195,13 @@ def test_labeled_space_blank_fill():
     sess.apply_to_doc()
     data = sess.finish()
 
-    joined = _all_text(data)
-    assert "采购编号：412623-1，项目名称：项目乙，分标名称：【待补充：分标名称】，包名称：【待补充：包名称】采购文件的全部内容" in joined
-    assert "响应供应商：供应商丙" in joined
-    assert "响应供应商：供应商丙（盖章）" in joined
-    assert "电话：【待补充：电话】" in joined
-    assert "法定地址：【待补充：法定地址】" in joined
-    assert "项目名称：项目乙，采购编号：412623-1，包号：【待补充：包号】，单位：万元人民币" in joined
+    final = _final_text(data)
+    assert "采购编号：412623-1，项目名称：项目乙，分标名称：【待补充：分标名称】，包名称：【待补充：包名称】采购文件的全部内容" in final
+    assert "响应供应商：供应商丙" in final
+    assert "响应供应商：供应商丙（盖章）" in final
+    assert "电话：【待补充：电话】" in final
+    assert "法定地址：【待补充：法定地址】" in final
+    assert "项目名称：项目乙，采购编号：412623-1，包号：【待补充：包号】，单位：万元人民币" in final
     # 修订模式 + 批注（改什么都留痕）
     assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
     assert "采购编号=「412623-1」" in _comment_texts(data)
@@ -242,10 +248,10 @@ def test_assembly_primitives_roundtrip(tmp_path):
     assert r["ok"] is True, r["issues"]
 
     data = sess.finish()
-    joined = _all_text(data)
-    assert "采购编号：412623-1" in joined
-    assert "项目名称：项目乙" in joined
-    assert "包名称：包A" in joined
+    final = _final_text(data)
+    assert "采购编号：412623-1" in final
+    assert "项目名称：项目乙" in final
+    assert "包名称：包A" in final
     assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
 
 
@@ -442,13 +448,13 @@ def test_labeled_blanks_fill_enterprise_facts():
     )
     sess.apply_to_doc()
     data = sess.finish()
-    joined = _all_text(data)
-    assert "单位地址：北京市海淀区示例路1号" in joined
-    assert "法定代表人（单位负责人）或授权代表：张建国" in joined
-    assert "电话：010-88886666" in joined
-    assert "邮政编码：100000" in joined
-    assert "分标名称：标段一" in joined
-    assert "标段名称：标段一（自定义标签）" in joined
+    final = _final_text(data)
+    assert "单位地址：北京市海淀区示例路1号" in final
+    assert "法定代表人（单位负责人）或授权代表：张建国" in final
+    assert "电话：010-88886666" in final
+    assert "邮政编码：100000" in final
+    assert "分标名称：标段一" in final
+    assert "标段名称：标段一（自定义标签）" in final
     # 无资料才【待补充】
     sess2 = _FillSession(Document(), "", "", "", "")
     assert "【待补充：电话】" in sess2._labeled_value("电话")
@@ -484,9 +490,9 @@ def test_underscore_blanks_auto_labeled():
     sess = _FillSession(src, "", "", "", "")
     sess.apply_to_doc()
     data = sess.finish()
-    joined = _all_text(data)
-    assert "不含税单价：【待补充：不含税单价】" in joined
-    assert "特授权【待补充】代表我方全权办理" in joined
+    final = _final_text(data)
+    assert "不含税单价：【待补充：不含税单价】，税率：13%。" in final
+    assert "特授权【待补充】代表我方全权办理。" in final
 
 
 def test_tables_inventory_rows_detail():
@@ -745,6 +751,51 @@ def test_slice_region_includes_tech_after_score_markers():
     titles = [h for role in result for h, _ in result[role]]
     assert any("技术偏差表" in h for h in titles), titles
     assert any("专项响应文件" in h for h in titles), titles
+
+
+def test_fill_label_blank_minimal_diff_no_dup_label():
+    """回归：标签空位填值只删空位、插值——标签不重复划线、批注单一且正确。
+    （385 教训：单位地址出现「单位地址：单位地址：值」双标签 + 来源/待补充两矛盾批注。）"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession
+
+    src = Document()
+    src.add_paragraph("单位地址：____")
+    sess = _FillSession(src, "", "", "", "", label_values={"单位地址": "北京市海淀区中关村南大街5号院2号楼"})
+    sess.apply_to_doc()
+    data = sess.finish()
+    final = _final_text(data)
+    assert final.count("单位地址：") == 1
+    assert "单位地址：北京市海淀区中关村南大街5号院2号楼" in final
+    comments = _comment_texts(data)
+    assert "已按来源资料回填" in comments
+    assert "模板空位未取得对应资料" not in comments
+
+
+def test_consume_tag_drops_stale_comment_anchor():
+    """回归：先标待补充、后 fills 消费——旧批注锚点随段落重置移除，不剩矛盾批注。"""
+    from docx import Document
+
+    from app.services.export_service import _FillSession, replace_text_tracked
+
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    src = Document()
+    src.add_paragraph("传真：____")
+    sess = _FillSession(src, "", "", "", "")
+    sess.apply_to_doc()
+    n = replace_text_tracked(sess.editor, "【待补充：传真】", "无（以电话/邮箱联系）", "企业无传真机")
+    assert n == 1
+    data = sess.finish()
+    final = _final_text(data)
+    assert "传真：无（以电话/邮箱联系）" in final
+    root = _doc_xml(data)
+    for p in root.iter(W + "p"):
+        t = "".join(x.text or "" for x in p.iter(W + "t"))
+        if "传真" in t:
+            refs = [c for c in p.iter(W + "commentReference")]
+            assert len(refs) == 1, [r.get(W + "id") for r in refs]
+            break
 
 
 def test_draft_download_filename_marks_source(client):

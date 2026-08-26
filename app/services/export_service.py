@@ -88,24 +88,42 @@ class _TrackedEditor:
         return cid
 
     def track_replace(self, t_el, old_text: str, new_text: str, comment: str) -> None:
-        """单个文本节点的替换：原文删除线 + 新文插入 + 批注（保留原 run 格式）。
-        元素顺序：commentRangeStart → del → ins → commentRangeEnd → commentReference。"""
+        """单节点文本替换：最小差异（共同前缀保持原位，只删除/插入差异段），
+        如「单位地址：____」→「单位地址：值」只删空位、插值，标签不重复划线。"""
         r_el = t_el.getparent()
+        prefix = 0
+        while prefix < len(old_text) and prefix < len(new_text) and old_text[prefix] == new_text[prefix]:
+            prefix += 1
+        del_span = old_text[prefix:]
+        ins_span = new_text[prefix:]
+        t_el.text = old_text[:prefix]  # 前缀原位保留
+        if not del_span and not ins_span:
+            return
         cid = self.add_comment(comment)
         self._anchor(cid, r_el)
-        del_el = self._mark("w:del")
-        del_el.append(self._run("w:delText", old_text, r_el))
-        r_el.addprevious(del_el)
-        ins_el = self._mark("w:ins")
-        ins_el.append(self._run("w:t", new_text, r_el))
-        r_el.addprevious(ins_el)
-        self._anchor_end_ref(cid, r_el)
-        t_el.text = ""
+        if ins_span:
+            ins_el = self._mark("w:ins")
+            ins_el.append(self._run("w:t", ins_span, r_el))
+            r_el.addnext(ins_el)
+        if del_span:
+            del_el = self._mark("w:del")
+            del_el.append(self._run("w:delText", del_span, r_el))
+            r_el.addnext(del_el)
+        last = ins_el if ins_span else del_el
+        end = self._mk("w:commentRangeEnd")
+        end.set(self._qn("w:id"), str(cid))
+        ref_r = self._mk("w:r")
+        ref = self._mk("w:commentReference")
+        ref.set(self._qn("w:id"), str(cid))
+        ref_r.append(ref)
+        last.addnext(ref_r)
+        last.addnext(end)
 
     def track_paragraph_replace(self, t_nodes, old_full: str, new_full: str, comment: str) -> None:
-        """整段替换（占位符跨 run 拆分 / 显式定向替换）：整段删除线 + 整段新文插入 + 批注。
+        """整段替换（占位符跨 run 拆分 / 显式定向替换）：最小差异删除线 + 差异插入 + 批注。
         段落级替换取代本段全部既有修订：删除层收敛为「本段模板原文」（既有 delText ∪ 非插入 w:t），
-        旧 w:ins 运行移除——消费自动标注标签时不把标签文本带进原文流（忠实性校验不误报）。"""
+        旧 w:ins 运行与旧批注锚点移除——消费自动标注标签时不污染原文流、不留自相矛盾的陈旧批注；
+        共同前缀保持不变（如「单位地址：」标签不重复划线，只对差异段做删除/插入）。"""
         qn = self._qn
         first_r = t_nodes[0].getparent() if t_nodes else None
         p_el = first_r
@@ -133,42 +151,80 @@ class _TrackedEditor:
                 clean_old_parts.append(el.text or "")
         clean_old = "".join(clean_old_parts)
 
-        # 移除本段既有修订运行（删除层/插入层一并重置，由本次替换接管）
+        # 移除本段既有修订运行与旧批注锚点（插入层/删除层/批注区间一并重置，由本次替换接管）
         for child in list(p_el):
-            if child.tag in (qn("w:del"), qn("w:ins")):
+            if child.tag in (
+                qn("w:del"),
+                qn("w:ins"),
+                qn("w:commentRangeStart"),
+                qn("w:commentRangeEnd"),
+            ):
                 p_el.remove(child)
+            elif child.tag == qn("w:r"):
+                if child.find(qn("w:commentReference")) is not None:
+                    p_el.remove(child)
 
-        # 新删除线/插入锚点：剩余首个 w:r，没有就挂段尾
-        anchor = next((c for c in p_el.iterchildren() if c.tag == qn("w:r")), None)
+        # 最小差异：共同前缀保持原位（只删除/插入真正的差异段）
+        prefix = 0
+        while prefix < len(clean_old) and prefix < len(new_full) and clean_old[prefix] == new_full[prefix]:
+            prefix += 1
+        del_span = clean_old[prefix:]
+        ins_span = new_full[prefix:]
+
+        # 原非插入 w:t 全部清空；前缀回填到第一个原 run（保持格式、标签不重复划线）
+        orig_nodes = [el for el in p_el.iter() if el.tag == qn("w:t") and not _in_ins(el)]
+        for el in orig_nodes:
+            el.text = ""
+        anchor = None
+        if prefix:
+            if orig_nodes:
+                orig_nodes[0].text = clean_old[:prefix]
+                anchor = orig_nodes[0].getparent()
+            else:
+                # 原文全在已移除的删除层里：新建 run 承载前缀
+                new_r = self._mk("w:r")
+                new_t = self._mk("w:t")
+                new_t.set(self._qn("xml:space"), "preserve")
+                new_t.text = clean_old[:prefix]
+                new_r.append(new_t)
+                p_el.append(new_r)
+                anchor = new_r
+        if anchor is None:
+            anchor = next((c for c in p_el.iterchildren() if c.tag == qn("w:r")), None)
+
         cid = self.add_comment(comment)
         if anchor is not None:
             self._anchor(cid, anchor)
-        if clean_old:
-            del_el = self._mark("w:del")
-            del_el.append(self._run("w:delText", clean_old, anchor))
+        last_el = anchor
+        if ins_span:
+            ins_el = self._mark("w:ins")
+            ins_el.append(self._run("w:t", ins_span, anchor))
             if anchor is not None:
-                anchor.addprevious(del_el)
+                anchor.addnext(ins_el)
+            else:
+                p_el.append(ins_el)
+            last_el = ins_el
+        if del_span:
+            del_el = self._mark("w:del")
+            del_el.append(self._run("w:delText", del_span, anchor))
+            if anchor is not None:
+                anchor.addnext(del_el)  # addnext(ins) 之后插入 → anchor, del, ins 顺序
             else:
                 p_el.append(del_el)
-        ins_el = self._mark("w:ins")
-        ins_el.append(self._run("w:t", new_full, anchor))
-        if anchor is not None:
-            anchor.addprevious(ins_el)
+            if not ins_span:
+                last_el = del_el
+        end = self._mk("w:commentRangeEnd")
+        end.set(self._qn("w:id"), str(cid))
+        ref_r = self._mk("w:r")
+        ref = self._mk("w:commentReference")
+        ref.set(self._qn("w:id"), str(cid))
+        ref_r.append(ref)
+        if last_el is not None:
+            last_el.addnext(ref_r)
+            last_el.addnext(end)
         else:
-            p_el.append(ins_el)
-        if anchor is not None:
-            self._anchor_end_ref(cid, anchor)
-        else:
-            end = self._mk("w:commentRangeEnd")
-            end.set(self._qn("w:id"), str(cid))
             p_el.append(end)
-            ref_r = self._mk("w:r")
-            ref = self._mk("w:commentReference")
-            ref.set(self._qn("w:id"), str(cid))
-            ref_r.append(ref)
             p_el.append(ref_r)
-        for t in t_nodes:
-            t.text = ""
 
     def track_insert_run(self, run) -> None:
         """把已创建的 run 包进 w:ins（新增内容整体标记为插入）。"""
@@ -355,6 +411,16 @@ class _FillSession:
         out = out.replace("【招标人名称】", buyer or "【待补充：招标人名称】")
         out = out.replace("【供应商名称】", supplier or "【待补充：供应商名称】")
         out = out.replace("【项目名称】", project_name or "【待补充：项目名称】")
+        # 通用词表：标签+下划线空位直接回填值（"单位地址：____" → "单位地址：值"）——
+        # 此前该形态 values 打不到（LABEL 正则不匹配下划线），空位被标待补充、批注却声称已回填
+        for tok in sorted(self.values.keys(), key=len, reverse=True):
+            val = str((self.values.get(tok) or {}).get("value") or "")
+            if val:
+                out = _re.sub(
+                    rf"{_re.escape(tok)}[：:]\s*_{{2,}}",
+                    lambda m, t=tok, v=val: f"{t}：{v}",
+                    out,
+                )
         # 裸下划线空位：前文有"标签："时自动带标签（如"不含税单价：____" → 【待补充：不含税单价】），
         # 无标签上下文才用裸【待补充】——裸待补充让客户不知道补什么，属于质量缺陷
         _orig = out
@@ -469,8 +535,20 @@ class _FillSession:
 
         for p_el in self.doc.element.body.iter(qn("w:p")):
             _fill_paragraph_el(p_el)
-        # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）
+        # 兜底：段落容器之外的裸 w:t 文本节点（如控件内未包段落的 run）。
+        # 段落内的 w:t 已由 _fill_paragraph_el 处理——此处必须跳过，否则会把
+        # 段落内已填好的前缀文本再填一遍（"单位地址：北京市…北京市…"重复，385 教训）。
+        def _in_para(el) -> bool:
+            a = el.getparent()
+            while a is not None and a.tag != qn("w:body"):
+                if a.tag == qn("w:p"):
+                    return True
+                a = a.getparent()
+            return False
+
         for t_el in self.doc.element.body.iter(qn("w:t")):
+            if _in_para(t_el):
+                continue
             text = t_el.text or ""
             if (
                 any(k in text for k in keys)
