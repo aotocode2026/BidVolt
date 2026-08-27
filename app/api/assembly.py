@@ -6,7 +6,7 @@ MCP 调用带 X-Bidvolt-Cap 能力令牌，逐工具校验白名单/租户/任�
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -173,6 +173,34 @@ async def build_quote_xlsx(
             project_id,
             _cap_task(request),
             body.get("sheets"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/assembly/upload-file", status_code=status.HTTP_201_CREATED)
+async def upload_deliverable_file(
+    project_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("upload_deliverable_file")),
+) -> dict:
+    """整文件交付通道：Hermes 直接写好的完整交付文件（docx/xlsx/pdf）落库为封存产物。
+
+    与切片修订路径并列可选——Hermes 可自产整文件（python-docx 配图等），
+    服务端不介入内容生成；打包/清单/审计与切片产物同一套机制。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    data = await file.read(60 * 1024 * 1024 + 1)
+    try:
+        return await assembly_service.upload_artifact_file(
+            session,
+            user.enterprise_id,
+            project_id,
+            _cap_task(request),
+            name,
+            data,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

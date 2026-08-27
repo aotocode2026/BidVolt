@@ -1698,6 +1698,88 @@
       }
     },
     {
+      "name": "download_project_material",
+      "summary": "成文工具（整文件交付通道）：把项目材料的原件复制到服务器本地路径（/data/hermes/... 或 /tmp/...），供 Hermes 用 python-docx/openpyxl 直接编辑。典型用法：resolve_template_draft 得到模板底稿 file_id→ 本工具复制原件 → 本地编辑（填空/补全/插图）→ upload_deliverable_file 整文件封存。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "file_id": {
+                "type": "integer"
+              },
+              "save_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file_id",
+              "save_path"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "upload_deliverable_file",
+      "summary": "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存。推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片修订路径并列可选，服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；name 为包内路径名（如 技术文件/（二）专项响应文件.docx）。上传后与切片产物同样参与打包与审计。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "local_path": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "local_path",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "package_response_zip",
       "summary": "成文工具（机制）：把已封存产物（item_docx/xlsx 的 artifact_ids）打包为响应文件包 zip，自动附 会话记录/主会话记录.md 与 manifest.json，返回 zip 的 artifact_id（客户下载端点 /response-package 将直接取它）。",
       "params": [

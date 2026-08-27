@@ -464,6 +464,67 @@ async def quote_xlsx(
     return {"artifact_id": art.id, "name": art.name, "bytes": len(data)}
 
 
+async def upload_artifact_file(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    task_id: int,
+    name: str,
+    data: bytes,
+) -> dict:
+    """整文件交付通道：Hermes 直接写好的完整交付文件（docx/xlsx/pdf）落库为封存产物。
+
+    与切片修订路径并列可选——Hermes 可自产整文件（python-docx/openpyxl/matplotlib 配图），
+    服务端不再介入文档内容生成；打包/清单/审计与切片产物同一套机制。"""
+    import io as _io
+    import zipfile as _zip
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("缺少文件路径名（如 技术文件/（二）专项响应文件.docx）")
+    if len(data) > 60 * 1024 * 1024:
+        raise ValueError("文件超过 60MB 上限")
+    stem = name.rsplit("/", 1)[-1]
+    ext = stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
+    if ext == "docx":
+        try:
+            with _zip.ZipFile(_io.BytesIO(data)) as zf:
+                if "word/document.xml" not in zf.namelist():
+                    raise ValueError
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("docx 结构无效（不是有效的 Word 文件）") from exc
+        kind = "item_docx"
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif ext == "xlsx":
+        kind = "xlsx"
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif ext == "pdf":
+        if not data.startswith(b"%PDF-"):
+            raise ValueError("pdf 文件头无效")
+        kind = "pdf"
+        mime = "application/pdf"
+    else:
+        raise ValueError("仅支持 docx/xlsx/pdf；其他格式请转档后上传")
+
+    await _set_rls_context(session, enterprise_id)
+    art = AgentArtifact(
+        enterprise_id=enterprise_id,
+        project_id=int(project_id),
+        task_id=int(task_id),
+        kind=kind,
+        name=name,
+        mime=mime,
+        content=data,
+    )
+    session.add(art)
+    await session.commit()
+    await _set_rls_context(session, enterprise_id)
+    return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "kind": kind}
+
+
 async def package_zip(
     session: AsyncSession,
     enterprise_id: int,
@@ -494,7 +555,7 @@ async def package_zip(
                 AgentArtifact.enterprise_id == enterprise_id,
                 AgentArtifact.project_id == int(project_id),
                 AgentArtifact.task_id == int(task_id),
-                AgentArtifact.kind.in_(["item_docx", "xlsx"]),
+                AgentArtifact.kind.in_(["item_docx", "xlsx", "pdf"]),
             )
         )
     ).all()
