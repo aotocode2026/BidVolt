@@ -96,6 +96,8 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "verify_template_slice",
         "seal_template_item",
         "build_quote_xlsx",
+        "download_project_material",
+        "upload_deliverable_file",
         "package_response_zip",
         # 产物自检（验收子 agent 直接核对导出产物，补模型↔产物之间的验证盲区）
         "list_agent_artifacts",

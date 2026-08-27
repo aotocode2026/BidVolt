@@ -71,6 +71,52 @@ def _package_response_zip(args: dict) -> dict:
     )
 
 
+def _download_project_material(args: dict) -> dict:
+    """把项目材料的原件复制到服务器本地路径（Hermes 工作区），供直接编辑。
+
+    Hermes 拿模板底稿原件（resolve_template_draft 返回的 file_id 对应的采购文件/模板 docx），
+    复制到工作区后用 python-docx 直接编辑，再经 upload_deliverable_file 整文件上传。"""
+    file_id = args["file_id"]
+    save_path = str(args.get("save_path") or "")
+    if not save_path.startswith(("/data/hermes/", "/tmp/")):
+        raise ValueError("save_path 仅允许 /data/hermes/ 或 /tmp/ 下的路径")
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=300, follow_redirects=True) as client:
+        resp = client.get(f"/api/v1/files/{file_id}/download", headers=_headers())
+        resp.raise_for_status()
+        data = resp.content
+    with open(save_path, "wb") as f:
+        f.write(data)
+    return {"saved_to": save_path, "bytes": len(data)}
+
+
+def _upload_deliverable_file(args: dict) -> dict:
+    """整文件交付：读取本地写好的完整交付文件并上传封存。
+
+    Hermes 用 python-docx/openpyxl（可含 matplotlib/mermaid 生成的图片）直接写完整文件，
+    再经本工具上传——服务端不介入内容生成。local_path 须为服务器本地绝对路径
+    （/data/hermes/... 或 /tmp/...，与 Hermes 工作区同机）。"""
+    local_path = str(args.get("local_path") or "")
+    name = str(args.get("name") or "")
+    if not local_path.startswith(("/data/hermes/", "/tmp/")):
+        raise ValueError("local_path 仅允许 /data/hermes/ 或 /tmp/ 下的文件")
+    try:
+        with open(local_path, "rb") as f:
+            content = f.read()
+    except OSError as exc:
+        raise ValueError(f"无法读取 local_path：{exc}") from exc
+    if not name:
+        name = local_path.rsplit("/", 1)[-1]
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=300) as client:
+        resp = client.post(
+            f"/api/v1/projects/{args['project_id']}/assembly/upload-file",
+            data={"name": name},
+            files={"file": (name.rsplit("/", 1)[-1], content, "application/octet-stream")},
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _list_agent_artifacts(args: dict) -> dict:
     return _get(f"/api/v1/projects/{args['project_id']}/assembly/artifacts")
 
@@ -312,6 +358,45 @@ ASSEMBLY_TOOL_DEFS = [
             "additionalProperties": False,
         },
         "handler": _inspect_agent_artifact,
+    },
+    {
+        "name": "download_project_material",
+        "description": (
+            "成文工具（整文件交付通道）：把项目材料的原件复制到服务器本地路径（/data/hermes/... 或 /tmp/...），"
+            "供 Hermes 用 python-docx/openpyxl 直接编辑。典型用法：resolve_template_draft 得到模板底稿 file_id"
+            "→ 本工具复制原件 → 本地编辑（填空/补全/插图）→ upload_deliverable_file 整文件封存。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "integer"},
+                "save_path": {"type": "string"},
+            },
+            "required": ["file_id", "save_path"],
+            "additionalProperties": False,
+        },
+        "handler": _download_project_material,
+    },
+    {
+        "name": "upload_deliverable_file",
+        "description": (
+            "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存。"
+            "推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、"
+            "数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片修订路径并列可选，"
+            "服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；"
+            "name 为包内路径名（如 技术文件/（二）专项响应文件.docx）。上传后与切片产物同样参与打包与审计。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "local_path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["project_id", "local_path", "name"],
+            "additionalProperties": False,
+        },
+        "handler": _upload_deliverable_file,
     },
     {
         "name": "package_response_zip",
