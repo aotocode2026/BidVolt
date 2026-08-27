@@ -377,6 +377,19 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             while True:
                 await asyncio.sleep(EVENT_FLUSH_SECONDS)
                 await _flush()
+                # 客户中途对话：复用现有泵循环——取出任务字段里的排队消息，
+                # 经与催办/复核提示相同的 PTY 通道注入（hermes CLI 的 /queue 在忙时排队，
+                # 主会话当前轮结束后处理）。失败下轮再试，不打断主流程。
+                try:
+                    await session.refresh(task)
+                    pending_chat = list((task.payload or {}).get("pending_chat") or [])
+                    if pending_chat:
+                        task.payload = {**(task.payload or {}), "pending_chat": []}
+                        await session.commit()
+                        for msg in pending_chat:
+                            _submit("/queue " + " ".join(str(msg).split()))
+                except Exception:  # noqa: BLE001 瞬时失败（事务/锁）下轮再取
+                    logger.warning("中途对话注入暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
                 # 不解析终端回显，避免我方提示里的标记文本误判）；
                 # 同一份导出顺便看消息总数增长 → 有增长即算有进展（防误催办）
@@ -648,6 +661,21 @@ async def _event_tail(session: AsyncSession, task: Task, limit: int) -> str:
         )
     ).all()
     return "\n".join(r.content or "" for r in reversed(rows))[-limit:]
+
+
+async def queue_chat_message(session: AsyncSession, task: Task, message: str) -> None:
+    """运行中的任务：把客户消息写入任务字段 + 事件流（runner 泵循环取出后经 PTY 注入）。"""
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, task.enterprise_id)
+    payload = dict(task.payload or {})
+    pending = list(payload.get("pending_chat") or [])
+    pending.append(message)
+    payload["pending_chat"] = pending
+    task.payload = payload
+    seq = [await _next_seq(session, task)]
+    await _append_events(session, task, seq, [("user", message)])
+    await session.commit()
 
 
 async def chat_with_session(session: AsyncSession, task: Task, message: str) -> dict:
