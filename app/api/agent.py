@@ -211,8 +211,19 @@ async def agent_run_chat(
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message 不能为空")
-    from app.services.agent_pipeline import chat_with_session
+    from app.services.agent_pipeline import chat_with_session, queue_chat_message
 
+    if task.status in (1, 2) and not (task.result or {}).get("session_id"):
+        # 运行中：主会话尚未产出 session_id，但 runner 持有 PTY——把消息写入任务字段，
+        # 由 runner 现有泵循环取出并经同一条 PTY 通道注入（与催办/复核提示同一机制）。
+        # 客户中途发消息不再 409，而是排队待主会话当前轮结束后处理。
+        await queue_chat_message(session, task, message)
+        return {
+            "queued": True,
+            "reply": None,
+            "session_id": None,
+            "message": "已送达主会话队列：当前轮结束后主会话会读取并回复（回复见会话控制台）。",
+        }
     try:
         return await chat_with_session(session, task, message)
     except ValueError as exc:

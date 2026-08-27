@@ -254,6 +254,11 @@ async function chatSend(){
   consoleAppend(++consoleSeq, "user", msg);
   try{
     const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/chat`, {message: msg});
+    if(d.queued){
+      log("已送达主会话队列（当前轮结束后处理，回复会出现在控制台）");
+      document.getElementById("c-msg").value = "";
+      return;
+    }
     consoleAppend(++consoleSeq, "hermes", d.reply || "(空回复)");
     log("主会话已回复（session_id=" + d.session_id + "）");
     document.getElementById("c-msg").value = "";
