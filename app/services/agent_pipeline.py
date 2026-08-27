@@ -379,12 +379,19 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 await _flush()
                 # 客户中途对话：复用现有泵循环——取出任务字段里的排队消息，
                 # 经与催办/复核提示相同的 PTY 通道注入（hermes CLI 的 /queue 在忙时排队，
-                # 主会话当前轮结束后处理）。失败下轮再试，不打断主流程。
+                # 主会话当前轮结束后按到达顺序逐条处理）。行锁防 app/worker 双进程丢失更新；
+                # 失败下轮再试，不打断主流程。
                 try:
-                    await session.refresh(task)
-                    pending_chat = list((task.payload or {}).get("pending_chat") or [])
+                    from sqlalchemy import select as sa_select
+
+                    row = (
+                        await session.execute(
+                            sa_select(Task).where(Task.id == task.id).with_for_update()
+                        )
+                    ).scalar_one()
+                    pending_chat = list((row.payload or {}).get("pending_chat") or [])
                     if pending_chat:
-                        task.payload = {**(task.payload or {}), "pending_chat": []}
+                        row.payload = {**(row.payload or {}), "pending_chat": []}
                         await session.commit()
                         for msg in pending_chat:
                             _submit("/queue " + " ".join(str(msg).split()))
@@ -664,15 +671,25 @@ async def _event_tail(session: AsyncSession, task: Task, limit: int) -> str:
 
 
 async def queue_chat_message(session: AsyncSession, task: Task, message: str) -> None:
-    """运行中的任务：把客户消息写入任务字段 + 事件流（runner 泵循环取出后经 PTY 注入）。"""
+    """运行中的任务：把客户消息追加进任务字段 + 事件流（runner 泵循环取出后经 PTY 注入）。
+
+    行锁串行化：app 与 worker 是两个进程，同写 task.payload.pending_chat 必须
+    FOR UPDATE 防丢失更新（多条插话按到达顺序排队，逐条注入）。"""
+    from sqlalchemy import select as sa_select
+
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     await _set_rls_context(session, task.enterprise_id)
-    payload = dict(task.payload or {})
+    row = (
+        await session.execute(
+            sa_select(Task).where(Task.id == task.id).with_for_update()
+        )
+    ).scalar_one()
+    payload = dict(row.payload or {})
     pending = list(payload.get("pending_chat") or [])
     pending.append(message)
     payload["pending_chat"] = pending
-    task.payload = payload
+    row.payload = payload
     seq = [await _next_seq(session, task)]
     await _append_events(session, task, seq, [("user", message)])
     await session.commit()
