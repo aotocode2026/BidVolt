@@ -232,6 +232,29 @@ async def replace_deliverable_file(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.post("/{project_id}/assembly/artifacts/{artifact_id}/render-qa")
+async def render_qa_artifact(
+    project_id: int,
+    artifact_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("render_qa_docx")),
+) -> dict:
+    """渲染质检：docx 产物 → LibreOffice headless 转 PDF → 逐页 PNG + 空白页/页数统计。
+    Hermes 用返回的 PNG 路径配 vision 抽查版面（表格跨页/图片方向/断页）。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    try:
+        return await assembly_service.render_qa_artifact(
+            session,
+            user.enterprise_id,
+            project_id,
+            artifact_id,
+            _cap_task(request),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("/{project_id}/assembly/package", status_code=status.HTTP_201_CREATED)
 async def package_response_zip(
     project_id: int,

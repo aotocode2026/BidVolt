@@ -587,6 +587,93 @@ async def replace_artifact_file(
     return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "replaced": True}
 
 
+async def render_qa_artifact(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    artifact_id: int,
+    task_id: int,
+) -> dict:
+    """渲染质检（等价 Codex 的 Word 逐页渲染）：docx 产物 → LibreOffice headless 转 PDF →
+    PyMuPDF 逐页渲染 PNG + 空白页/页数/字符量统计。PNG 供 Hermes 用 vision 抽查版面问题
+    （表格跨页/图片方向/断页）。返回 {pdf_path, page_count, blank_pages, png_dir, png_paths, per_page}。"""
+    import os as _os
+    import subprocess as _sp
+    import time as _time
+
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, enterprise_id)
+    art = await session.scalar(
+        _sa_select(AgentArtifact).where(
+            AgentArtifact.id == int(artifact_id),
+            AgentArtifact.enterprise_id == enterprise_id,
+            AgentArtifact.project_id == int(project_id),
+        )
+    )
+    if art is None:
+        raise ValueError("产物不存在或不属于本项目")
+    stem = (art.name or "").rsplit("/", 1)[-1]
+    if not stem.lower().endswith(".docx"):
+        raise ValueError("渲染质检仅支持 docx 产物")
+    work = f"/tmp/bidvolt_qa_{int(task_id)}_{int(_time.time())}"
+    _os.makedirs(work + "/pages", exist_ok=True)
+    src = work + "/" + stem
+    with open(src, "wb") as f:
+        f.write(art.content)
+    env = dict(_os.environ)
+    env["HOME"] = "/tmp"
+    try:
+        proc = _sp.run(
+            ["soffice", "--headless", "--convert-to", "pdf", "--outdir", work, src,
+             "-env:UserInstallation=file:///tmp/lo_profile_render"],
+            capture_output=True, timeout=180, env=env,
+        )
+    except _sp.TimeoutExpired as exc:
+        raise ValueError("渲染超时（180s）：文件可能过大或损坏") from exc
+    pdf_path = work + "/" + stem.rsplit(".", 1)[0] + ".pdf"
+    if proc.returncode != 0 or not _os.path.exists(pdf_path):
+        raise ValueError(f"LibreOffice 渲染失败：{proc.stderr.decode('utf-8', 'replace')[-300:]}")
+    try:
+        import fitz  # PyMuPDF
+    except ImportError as exc:
+        raise ValueError("服务器缺少 PyMuPDF（pymupdf），无法渲染质检") from exc
+    doc = fitz.open(pdf_path)
+    per_page: list[dict] = []
+    blank_pages: list[int] = []
+    png_paths: list[str] = []
+    for i, page in enumerate(doc, 1):
+        text = page.get_text().strip()
+        # 低分辨率采样判空白页：整页近白且文字量为 0
+        pix = page.get_pixmap(dpi=50)
+        samples = pix.samples
+        n = len(samples)
+        mean = sum(samples) / max(n, 1)
+        var = sum((s - mean) ** 2 for s in samples[::7]) / max(len(samples[::7]), 1)
+        blank = (mean > 248 and var < 6 and not text)
+        png = work + f"/pages/page_{i:03d}.png"
+        page.get_pixmap(dpi=110).save(png)
+        png_paths.append(png)
+        per_page.append({"page": i, "chars": len(text), "blank": blank})
+        if blank:
+            blank_pages.append(i)
+    doc.close()
+    return {
+        "artifact_id": int(artifact_id),
+        "name": art.name,
+        "page_count": len(per_page),
+        "blank_pages": blank_pages,
+        "pdf_path": pdf_path,
+        "png_dir": work + "/pages",
+        "png_paths": png_paths,
+        "per_page": per_page,
+        "note": "PNG 供 vision 抽查版面（表格跨页/图片方向/断页）；空白页须回修重渲。",
+    }
+
+
 async def package_zip(
     session: AsyncSession,
     enterprise_id: int,

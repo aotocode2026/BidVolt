@@ -63,6 +63,7 @@ TOOL_PERMISSION: dict[str, str] = {
     # 客户交互（主会话↔客户：提问/动作清单；answer 端点走客户 JWT）
     "ask_customer": Permission.PROJECT_EDIT,
     "report_customer_actions": Permission.PROJECT_EDIT,
+    "render_qa_docx": Permission.DELIVERABLE_EXPORT,
 }
 
 

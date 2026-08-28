@@ -85,6 +85,13 @@ def _report_customer_actions(args: dict) -> dict:
     )
 
 
+def _render_qa_docx(args: dict) -> dict:
+    return _post(
+        f"/api/v1/projects/{args['project_id']}/assembly/artifacts/{args['artifact_id']}/render-qa",
+        {},
+    )
+
+
 def _download_project_material(args: dict) -> dict:
     """把项目材料的原件复制到服务器本地路径（Hermes 工作区），供直接编辑。
 
@@ -506,6 +513,24 @@ ASSEMBLY_TOOL_DEFS = [
             "additionalProperties": False,
         },
         "handler": _report_customer_actions,
+    },
+    {
+        "name": "render_qa_docx",
+        "description": (
+            "成文工具（渲染质检）：把 docx 产物转 PDF 并逐页渲染 PNG——返回页数、空白页清单、每页字符量与 PNG 路径。"
+            "封版前对正式上传的每份 docx 调用本工具：空白页必须回修重渲；表格跨页/图片方向/断页用 vision 抽查对应 PNG 页。"
+            "（等价 Word 逐页渲染检查：python-docx 层面看不到的排版问题在这里暴露。）"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "artifact_id": {"type": "integer", "description": "seal/上传回执里的产物 id（docx）"},
+            },
+            "required": ["project_id", "artifact_id"],
+            "additionalProperties": False,
+        },
+        "handler": _render_qa_docx,
     },
 ]
 

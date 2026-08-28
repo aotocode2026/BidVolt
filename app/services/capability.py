@@ -102,6 +102,8 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         # 客户交互（主会话↔客户：批量提问/提交前动作清单，页面问卡+回答闭环）
         "ask_customer",
         "report_customer_actions",
+        # 渲染质检（docx→PDF 逐页渲染：空白页/版面问题，vision 抽查 PNG）
+        "render_qa_docx",
         # 产物自检（验收子 agent 直接核对导出产物，补模型↔产物之间的验证盲区）
         "list_agent_artifacts",
         "inspect_agent_artifact",
