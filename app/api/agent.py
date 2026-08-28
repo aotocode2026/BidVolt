@@ -127,14 +127,44 @@ async def agent_run_status(
     user: UserContext = Depends(require_permission(Permission.FILE_READ)),
 ) -> dict:
     task = await _get_agent_task(session, user, project_id, task_id)
+    # 客户交互块（主会话提问 / 提交前动作清单）：实时从事件库扫描，前端直接呈现
+    customer: dict = {}
+    try:
+        from app.services.agent_pipeline import _scan_events_for_customer_blocks
+
+        customer = await _scan_events_for_customer_blocks(session, task_id)
+    except Exception:  # noqa: BLE001 扫描失败不影响状态查询
+        customer = {}
+    result = task.result or {}
+    result = dict(result)
+    if customer.get("action_list") and "action_list" not in result:
+        result["action_list"] = customer["action_list"]
+    if customer.get("last_ask") and "last_ask" not in result:
+        result["last_ask"] = customer["last_ask"]
     return {
         "task_id": task.id,
         "task_type": task.task_type,
         "status": task.status,
         "progress": task.progress,
-        "result": task.result,
+        "result": result,
         "error": task.error,
+        "customer": customer,
     }
+
+
+@router.get("/{project_id}/agent-run/{task_id}/questions")
+async def agent_run_questions(
+    project_id: int,
+    task_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """主会话向客户提的问题（【ASK】块）与提交前客户动作清单（【ACTION_LIST】块）。
+    前端轮询/流内解析后渲染问卡；客户答复走 POST /chat 回到主会话。"""
+    task = await _get_agent_task(session, user, project_id, task_id)
+    from app.services.agent_pipeline import _scan_events_for_customer_blocks
+
+    return await _scan_events_for_customer_blocks(session, task_id)
 
 
 @router.get("/{project_id}/agent-run/{task_id}/stream")
@@ -180,6 +210,7 @@ async def agent_run_stream(
                             "session_id": r.get("session_id"),
                             "outcome": r.get("outcome"),
                             "reason": r.get("reason"),
+                            "action_list": r.get("action_list") or [],
                             "error": task.error,
                         },
                         ensure_ascii=False,

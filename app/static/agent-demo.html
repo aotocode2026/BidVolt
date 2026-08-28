@@ -79,6 +79,12 @@ input{padding:6px;margin:4px;width:280px}
   <button onclick="consoleClose()">关闭控制台</button>
 </div>
 <div id="console" style="display:none;background:#10202f;color:#cfe6f8;padding:12px;border-radius:8px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;min-height:260px;max-height:520px;overflow:auto"></div>
+<div id="ask-panel" style="display:none;background:#fffbe8;border:2px solid #d98a00;border-radius:8px;padding:12px;margin:10px 0;font:13px/1.8 Microsoft YaHei,sans-serif">
+  <div style="font-weight:bold;color:#8a5a00">📩 主会话向你提问（它已自查企业资料库/采购文件/公开渠道，仅剩需要你确认的信息，回答后自动回传）：</div>
+  <ol id="ask-list" style="margin:6px 0;padding-left:22px"></ol>
+  <textarea id="ask-answer" rows="3" style="width:100%;box-sizing:border-box;padding:6px" placeholder="逐条回答（如：1. 被授权人：张三；2. 开户行：xx银行xx支行；3. 不需要的写『无』）"></textarea>
+  <button onclick="sendAskAnswer()">提交回答（回传给主会话）</button>
+</div>
 <hr>
 <div id="log">就绪。此页面只调用新接口 /agent-run（task_type=agent_pipeline），与旧流程接口隔离。</div>
 <script>
@@ -127,17 +133,21 @@ function tickerUpdate(kind, content){
 
 function bannerFromEnd(d){
   bannerState = "final";
+  let actions = "";
+  if(d.action_list && d.action_list.length){
+    actions = "\n\n📋 提交前客户动作清单：\n" + d.action_list.map(x=>"• " + x).join("\n");
+  }
   if(d.error){
     const msg = (d.error && d.error.message) ? d.error.message : JSON.stringify(d.error);
     showBanner("failed", "❌ 任务执行失败：" + msg);
   } else if(d.outcome === "complete"){
-    showBanner("complete", "✅ 主会话完成：全部验收门通过，交付件已落库。会话记录随响应文件包交付。");
+    showBanner("complete", "✅ 主会话完成：全部验收门通过，交付件已落库。会话记录随响应文件包交付。" + actions);
   } else if(d.outcome === "incomplete"){
-    showBanner("incomplete", "⚠ 主会话如实判定【未闭环】：\n" + (d.reason || "详见会话记录") + "\n补齐硬约束后可重新发起 agent-run。");
+    showBanner("incomplete", "⚠ 主会话如实判定【未闭环】：\n" + (d.reason || "详见会话记录") + "\n补齐硬约束后可重新发起 agent-run。" + actions);
   } else if(d.status === 3){
-    showBanner("complete", "✅ 任务结束（status=3）。");
+    showBanner("complete", "✅ 任务结束（status=3）。" + actions);
   } else {
-    showBanner("info", "任务终态：status=" + d.status);
+    showBanner("info", "任务终态：status=" + d.status + actions);
   }
 }
 
@@ -198,6 +208,38 @@ function consoleAppend(seq, kind, content){
   renderConsole();
 }
 
+/* 【ASK】提问块：主会话向客户提问（协议见后端 SKILL），渲染问卡 + 回答回传 */
+let lastAskSeq = 0;
+function extractAsk(content){
+  const m = String(content || "").match(/【ASK】([\s\S]*?)【ASK_END】/);
+  return m ? m[1].trim() : null;
+}
+function showAskPanel(seq, text){
+  if(seq <= lastAskSeq) return;
+  lastAskSeq = seq;
+  const lines = text.split("\n").map(s=>s.trim()).filter(Boolean);
+  if(!lines.length) return;
+  const panel = document.getElementById("ask-panel");
+  const list = document.getElementById("ask-list");
+  list.innerHTML = "";
+  lines.forEach(l => {
+    const li = document.createElement("li");
+    li.textContent = l;
+    list.appendChild(li);
+  });
+  document.getElementById("ask-answer").value = "";
+  panel.style.display = "block";
+  panel.scrollIntoView({behavior:"smooth", block:"center"});
+}
+async function sendAskAnswer(){
+  const msg = document.getElementById("ask-answer").value.trim();
+  if(!msg){log("先填写回答");return;}
+  if(!taskId){log("还没有任务");return;}
+  document.getElementById("ask-panel").style.display = "none";
+  document.getElementById("c-msg").value = msg;
+  await chatSend();
+}
+
 async function openConsole(){
   const el = document.getElementById("console");
   el.style.display = "block";
@@ -233,6 +275,10 @@ async function openConsole(){
           const d = JSON.parse(m[2]);
           consoleAppend(d.seq, d.kind, d.content);
           tickerUpdate(d.kind, d.content);
+          if(d.kind === "hermes"){
+            const ask = extractAsk(d.content);
+            if(ask) showAskPanel(d.seq, ask);
+          }
         }
       }
     }

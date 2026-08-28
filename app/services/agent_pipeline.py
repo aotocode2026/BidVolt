@@ -51,6 +51,81 @@ MARKER_POLL_SECONDS = 30
 # 完成协议标记（skill 与提示词同步约定）
 MARK_COMPLETE = "【PIPELINE_COMPLETE】"
 MARK_INCOMPLETE = "【PIPELINE_INCOMPLETE】"
+# 客户交互协议标记（主会话回复里用结构化块提问/列动作清单，服务端提取后呈现给客户）
+ASK_START, ASK_END = "【ASK】", "【ASK_END】"
+ACTION_START, ACTION_END = "【ACTION_LIST】", "【ACTION_LIST_END】"
+_ASK_RE = re.compile(r"【ASK】(.*?)【ASK_END】", re.S)
+_ACTION_RE = re.compile(r"【ACTION_LIST】(.*?)【ACTION_LIST_END】", re.S)
+
+
+def extract_ask_blocks(text: str) -> list[str]:
+    """从会话文本提取【ASK】…【ASK_END】提问块正文（可能多块）。"""
+    return [m.group(1).strip() for m in _ASK_RE.finditer(text or "")]
+
+
+def extract_action_list(text: str) -> list[str]:
+    """从会话文本提取【ACTION_LIST】…【ACTION_LIST_END】动作清单（逐行；「无」→[]）。"""
+    blocks = [m.group(1).strip() for m in _ACTION_RE.finditer(text or "")]
+    if not blocks:
+        return []
+    lines: list[str] = []
+    for b in blocks:
+        for ln in b.splitlines():
+            ln = ln.strip().lstrip("-•· ").strip()
+            if ln and ln not in ("无", "无。", "无；"):
+                lines.append(ln)
+    return lines
+
+
+async def _scan_events_for_customer_blocks(session, task_id: int, limit: int = 400) -> dict:
+    """扫描会话事件，返回 {last_ask: {seq, lines:[…], answered: bool}, action_list: […]}。
+    只扫主会话/服务类事件正文；answered=最新提问块之后出现过用户消息。"""
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentSessionEvent
+
+    rows = (
+        await session.scalars(
+            _sa_select(AgentSessionEvent)
+            .where(AgentSessionEvent.task_id == int(task_id))
+            .order_by(AgentSessionEvent.seq.desc())
+            .limit(limit)
+        )
+    ).all()
+    rows = list(rows)
+    last_ask: dict | None = None
+    action_list: list[str] = []
+    ask_seq = -1
+    for r in rows:  # 倒序扫描：先找到最新提问块与动作清单
+        if ask_seq < 0 and r.kind in ("hermes", "service"):
+            asks = extract_ask_blocks(r.content or "")
+            if asks:
+                ask_seq = r.seq
+                last_ask = {
+                    "seq": r.seq,
+                    "lines": [ln for ln in asks[-1].splitlines() if ln.strip()],
+                    "answered": False,
+                }
+        if not action_list:
+            al = extract_action_list(r.content or "")
+            if al:
+                action_list = al
+    if last_ask is not None:
+        # 提问块之后是否已有客户回复（更高 seq 的 user 事件）
+        newer = (
+            await session.scalars(
+                _sa_select(AgentSessionEvent.seq)
+                .where(
+                    AgentSessionEvent.task_id == int(task_id),
+                    AgentSessionEvent.seq > ask_seq,
+                    AgentSessionEvent.kind == "user",
+                )
+                .order_by(AgentSessionEvent.seq)
+                .limit(1)
+            )
+        ).first()
+        last_ask["answered"] = newer is not None
+    return {"last_ask": last_ask, "action_list": action_list}
 
 # 主会话工具集：全能力开放（产品决定）。bidvolt=全部 39 个业务 MCP 工具（白名单已全放行）；
 # 其余为 Hermes 内置工具集（web/browser/terminal/code_execution/file/vision/
@@ -190,7 +265,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             f"这是对上一轮主会话任务（id={resume_from_task or '上一单'}）的【续跑】，沿用同一会话上下文。"
             "项目数据可能已更新（如新增/更换材料、补录企业资料）：请先用 MCP 工具重新核实项目现状"
             "（list_requirements / list_project_materials / get_deliverable_content / search_assets），"
-            "对照上一轮的总结与「提交前客户动作清单」，从断点继续推进解析→撰写→校验→评审→成文→打包。"
+            "对照上一轮的总结与【ACTION_LIST】动作清单，从断点继续推进解析→撰写→校验→评审→成文→打包。"
             "流程与守则见预载 skill（bidvolt-agent-pipeline）。"
             "写作要求：技术方案/专项响应等方案性条目必须写出完整专业正文（方案性内容大胆写、"
             "事实性数据守据——企业事实用 search_assets，缺数按成品纪律三级处置（填实/无·不适用/客户动作清单）不编造）。"
@@ -205,19 +280,28 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "推断值写中性事实）；②按采购文件口径本就不需要的填「无（…）/不适用」（如「无：自成立以来未发生名称变更」、"
             "「本项目免收响应保证金，本表不适用」），空表在标题旁注「本表空白=无偏差/不适用」；"
             "③确需客户实体动作的（签字/盖章/签署日期/提交证照原件）成文处按模板留白（不写标签），"
-            "收尾总结列「提交前客户动作清单」逐条说明。fill/verify 回执 remaining_blanks 里的【待补充】是"
+            "收尾总结以【ACTION_LIST】块输出动作清单（服务端提取后直接呈现给客户）。fill/verify 回执 remaining_blanks 里的【待补充】是"
             "「还没填完」的信号，逐项清零（填实或写无/不适用），裸【待补充】与「具体标签」字样=判不过。"
-            "**深度展开方法（突破单轮产出上限）**：方案性正文按章节/评分点分解委派——把一个技术卷拆成多个写作子 agent"
-            "（项目理解/总体架构/分项方案/实施组织/保障措施/售后培训等各派一个或几个），每份写深写实后"
-            "经 append/整文件直写通道拼接组装成完整技术卷；单轮写不深就拆细再写。深度由技术规范书逐条要求驱动："
-            "每条技术要求都要有实质性响应正文；图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
+            "**深度展开方法**：方案性正文的产出载体是**文件**，不是对话回复——写作子 agent 用 write_file 分段/"
+            "terminal 追加/python-docx 直写交付文件，一次写不完就继续写，写到深度达标为止（子 agent 也持整文件直写通道）。"
+            "「写到什么程度」由技术规范书逐条要求+评分标准定：每条技术要求都要有实质性响应正文，"
+            "禁止以「太长/一次写不下」为由只写目录或截断。图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
             "公开语料没有金标准全文不是障碍：深度来源=技术规范书逐条要求+行业标准/白皮书/论文/同类项目公开资料+企业自身资料，"
             "搜索只作补充参考，以本项目文件为主为准。"
-            "**报价依据全文入交付件（缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据全文写进交付件本身——"
-            "报价单「备注/说明」格写完整三路依据：①成本法明细（人力×人天×单价＋差旅＋工具＋成果＋管理税费，逐项数字）；"
-            "②行情区间样本（get_history_price 行情库或 search_web 公开中标价，逐条列项目名+金额+日期+公示来源）；"
-            "③规则面（限价关系/税率/付款口径/含代理费）。写不下时在价格文件加「报价测算说明」页承载全文，"
-            "来源 save_source 入库 + link_citation 绑定；只写一句「处于行情区间内」没有明细=判不过。"
+            "**向客户提问（【ASK】协议）**：你可以向客户提问，但**先尽己力**——提问前必须完成三查"
+            "（①企业资料库 search_assets+vision 读图取证 ②采购文件与技术规范书原件 ③公开搜索+按采购文件口径合理推断），"
+            "三查都拿不到、且属「只有客户本人能提供/只能客户实体动作」的信息（如银行账户、真实签署人身份、证照原件）才允许问。"
+            "禁止问：资料库里有的、公开可查的、可推断的、可写「无/不适用」的、不影响直接投标的。"
+            "提问用结构化块**批量**发（一次列完所有问题），每条带「为什么需要+已自查说明」："
+            "【ASK】换行 1. 问题一句话（为什么需要：…；已自查：企业资料库/采购文件/公开搜索均无）换行 2. …换行【ASK_END】。"
+            "提问后不干等：继续推进不依赖答案的工作，答案回来（客户在页面回复，服务端自动注入会话）再回填；"
+            "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/列进【ACTION_LIST】）。"
+            "**报价依据必附（依据随项目而定，缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据写进交付件本身"
+            "（报价单「备注/说明」格或价格文件「报价测算说明」页）。依据的**具体构成随本项目而定，由你按实际确定，不照清单硬套**："
+            "成本法按本项目真实成本科目（人力/设备/差旅/管理/税费——有什么算什么，没有的不硬凑）；"
+            "行情样本列真实找到的同类成交/报价（项目名+金额+日期+公示来源，get_history_price 行情库或 search_web 公开中标价）；"
+            "规则面只写本项目真实存在的（限价有无、税率、付款口径、含代理费——无最高限价就写「本项目无最高限价」）。"
+            "原则=依据真实、可复核、随件走；只写一句「处于行情区间内」没有任何明细=判不过。"
             "报价即最终报价：不写「建议报价/请客户确认调整」元语言。"
             "**写作前范式内化（以本项目为主、为准）**：真实中标标书全文一般不公开（公开的多为成交结果公示与写作规范/模板/教程）。"
             "写作子 agent 动笔前：①先吃透本项目评分标准+技术规范书+《响应文件格式》模板，以此为纲；"
@@ -252,6 +336,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "was_verified、package 回执的 audit 清单、inspect_agent_artifact 打开每份文件看实际内容），"
             "发现任何妨碍直接投标的问题就回修、重新封存打包，直到验收子 agent 确认达标。"
             "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录与风险提示，不作验收门。"
+            "收尾总结末尾附【ACTION_LIST】块（提交前客户动作清单，服务端会提取并在页面直接呈现给客户，每行一条、"
+            "写明动作+位置，客户照着做即可）："
+            "【ACTION_LIST】换行1. 盖章：授权委托书第X页加盖公章换行2. …换行【ACTION_LIST_END】；"
+            "没有任何客户动作时输出【ACTION_LIST】无【ACTION_LIST_END】。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
@@ -277,19 +365,28 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "推断值写中性事实）；②按采购文件口径本就不需要的填「无（…）/不适用」（如「无：自成立以来未发生名称变更」、"
             "「本项目免收响应保证金，本表不适用」），空表在标题旁注「本表空白=无偏差/不适用」；"
             "③确需客户实体动作的（签字/盖章/签署日期/提交证照原件）成文处按模板留白（不写标签），"
-            "收尾总结列「提交前客户动作清单」逐条说明。fill/verify 回执 remaining_blanks 里的【待补充】是"
+            "收尾总结以【ACTION_LIST】块输出动作清单（服务端提取后直接呈现给客户）。fill/verify 回执 remaining_blanks 里的【待补充】是"
             "「还没填完」的信号，逐项清零（填实或写无/不适用），裸【待补充】与「具体标签」字样=判不过。"
-            "**深度展开方法（突破单轮产出上限）**：方案性正文按章节/评分点分解委派——把一个技术卷拆成多个写作子 agent"
-            "（项目理解/总体架构/分项方案/实施组织/保障措施/售后培训等各派一个或几个），每份写深写实后"
-            "经 append/整文件直写通道拼接组装成完整技术卷；单轮写不深就拆细再写。深度由技术规范书逐条要求驱动："
-            "每条技术要求都要有实质性响应正文；图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
+            "**深度展开方法**：方案性正文的产出载体是**文件**，不是对话回复——写作子 agent 用 write_file 分段/"
+            "terminal 追加/python-docx 直写交付文件，一次写不完就继续写，写到深度达标为止（子 agent 也持整文件直写通道）。"
+            "「写到什么程度」由技术规范书逐条要求+评分标准定：每条技术要求都要有实质性响应正文，"
+            "禁止以「太长/一次写不下」为由只写目录或截断。图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
             "公开语料没有金标准全文不是障碍：深度来源=技术规范书逐条要求+行业标准/白皮书/论文/同类项目公开资料+企业自身资料，"
             "搜索只作补充参考，以本项目文件为主为准。"
-            "**报价依据全文入交付件（缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据全文写进交付件本身——"
-            "报价单「备注/说明」格写完整三路依据：①成本法明细（人力×人天×单价＋差旅＋工具＋成果＋管理税费，逐项数字）；"
-            "②行情区间样本（get_history_price 行情库或 search_web 公开中标价，逐条列项目名+金额+日期+公示来源）；"
-            "③规则面（限价关系/税率/付款口径/含代理费）。写不下时在价格文件加「报价测算说明」页承载全文，"
-            "来源 save_source 入库 + link_citation 绑定；只写一句「处于行情区间内」没有明细=判不过。"
+            "**向客户提问（【ASK】协议）**：你可以向客户提问，但**先尽己力**——提问前必须完成三查"
+            "（①企业资料库 search_assets+vision 读图取证 ②采购文件与技术规范书原件 ③公开搜索+按采购文件口径合理推断），"
+            "三查都拿不到、且属「只有客户本人能提供/只能客户实体动作」的信息（如银行账户、真实签署人身份、证照原件）才允许问。"
+            "禁止问：资料库里有的、公开可查的、可推断的、可写「无/不适用」的、不影响直接投标的。"
+            "提问用结构化块**批量**发（一次列完所有问题），每条带「为什么需要+已自查说明」："
+            "【ASK】换行 1. 问题一句话（为什么需要：…；已自查：企业资料库/采购文件/公开搜索均无）换行 2. …换行【ASK_END】。"
+            "提问后不干等：继续推进不依赖答案的工作，答案回来（客户在页面回复，服务端自动注入会话）再回填；"
+            "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/列进【ACTION_LIST】）。"
+            "**报价依据必附（依据随项目而定，缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据写进交付件本身"
+            "（报价单「备注/说明」格或价格文件「报价测算说明」页）。依据的**具体构成随本项目而定，由你按实际确定，不照清单硬套**："
+            "成本法按本项目真实成本科目（人力/设备/差旅/管理/税费——有什么算什么，没有的不硬凑）；"
+            "行情样本列真实找到的同类成交/报价（项目名+金额+日期+公示来源，get_history_price 行情库或 search_web 公开中标价）；"
+            "规则面只写本项目真实存在的（限价有无、税率、付款口径、含代理费——无最高限价就写「本项目无最高限价」）。"
+            "原则=依据真实、可复核、随件走；只写一句「处于行情区间内」没有任何明细=判不过。"
             "报价即最终报价：不写「建议报价/请客户确认调整」元语言。"
             "**写作前范式内化（以本项目为主、为准）**：真实中标标书全文一般不公开（公开的多为成交结果公示与写作规范/模板/教程）。"
             "写作子 agent 动笔前：①先吃透本项目评分标准+技术规范书+《响应文件格式》模板，以此为纲；"
@@ -311,6 +408,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "was_verified、package 回执的 audit 清单、inspect_agent_artifact 打开每份文件看实际内容），"
             "发现任何妨碍直接投标的问题就回修、重新封存打包，直到验收子 agent 确认达标。"
             "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录不作验收门。"
+            "收尾总结末尾附【ACTION_LIST】块（提交前客户动作清单，服务端会提取并在页面直接呈现给客户，每行一条、"
+            "写明动作+位置，客户照着做即可）："
+            "【ACTION_LIST】换行1. 盖章：授权委托书第X页加盖公章换行2. …换行【ACTION_LIST_END】；"
+            "没有任何客户动作时输出【ACTION_LIST】无【ACTION_LIST_END】。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
@@ -569,7 +670,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "不能填的写「无/不适用」，确需客户实体动作的成文处留白并在总结列动作清单；"
             "**裸【待补充】（pending_items 里 kind=bare，或 package 回执 audit.bare_pending 非空）必须清零**——"
             "逐处填实或写「无/不适用」，不留待补标签。"
-            "同时核对报价单备注/说明格已写入完整测算依据全文（成本法明细+行情样本+规则面），缺明细必须补写。"
+            "同时核对：报价单已随件附测算依据（依据构成随项目而定——真实成本科目+真实找到的行情样本+本项目真实存在的规则面，"
+            "缺依据必须补写）；收尾总结末尾已附【ACTION_LIST】块（无客户动作时写【ACTION_LIST】无【ACTION_LIST_END】）。"
             "发现问题立即修复（重新 fill/seal/package）后再输出结束标记；"
             "确认无误最后一行输出 " + MARK_COMPLETE + "；确有无法修复项输出 " + MARK_INCOMPLETE + " 原因…。"
         )
@@ -640,6 +742,17 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "Agent 主会话提前退出且未输出完成标记"
             f"（session_id={sid}，可恢复后续跑）"
         )
+
+    # 收尾：把客户交互块（提问/动作清单）提取进 result，供前端直接呈现
+    try:
+        blocks = await _scan_events_for_customer_blocks(session, task.id)
+        if blocks.get("action_list"):
+            task.result["action_list"] = blocks["action_list"]
+        if blocks.get("last_ask"):
+            task.result["last_ask"] = blocks["last_ask"]
+        await session.commit()
+    except Exception:  # noqa: BLE001 提取失败不影响任务结论
+        logger.warning("提取客户交互块失败（task=%s）", task.id, exc_info=True)
 
     # 收尾：把最终 zip 附带的会话记录刷新为完整版（含最终回执）+ 附精简版。
     # 打包时的快照早于最终回执，不刷新交付包里的会话记录会戛然而止。
