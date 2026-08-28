@@ -16,13 +16,13 @@ _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _AUTO_TAG_RE = re.compile(r"【待补充[^】]*】")
 
 
-class _TrackedEditor:
-    """在 docx 上以 Word 修订模式记录全部改动（产品要求：验收可见、可追溯）。
+class _PlainEditor:
+    """在 docx 上直接干净成文（产品决定：全面取消 Word 修订与批注，输出即终稿）。
 
-    - 每处改动：原文字标为删除（w:del + w:delText，Word 显示删除线），
-      新文字标为插入（w:ins + w:t）；
-    - 每处改动挂一条批注（w:comment），说明改了什么、依据来源；
-    - 文末补充节整体标记为插入，并批注"系统新增内容"。"""
+    - 所有改动直接写入正文：不产 w:ins/w:del（取消修订审批模式）、不产 w:comment（取消批注）；
+    - 同时逐段落记录 (旧文本→新文本) 替换对（含表格单元格），供忠实性校验
+      按「原文+替换链」复算模板原文是否被保留/未被改写；
+    - 文末补充节直接追加为正文。"""
 
     def __init__(self, doc):
         from docx.oxml import OxmlElement
@@ -31,127 +31,29 @@ class _TrackedEditor:
         self._doc = doc
         self._mk = OxmlElement
         self._qn = qn
-        self._seq = {"ins": 100, "del": 200, "comment": 300}
-        self._now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.comments: list[tuple[int, str]] = []
+        # 段落级替换记录：w:p 元素 → {"orig": 首次触碰时全文, "edits": [(old,new), ...]}
+        self.para_records: dict = {}
 
-    def _mark(self, tag: str):
-        kind = "ins" if tag == "w:ins" else "del"
-        self._seq[kind] += 1
-        el = self._mk(tag)
-        el.set(self._qn("w:id"), str(self._seq[kind]))
-        el.set(self._qn("w:author"), "BidVolt")
-        el.set(self._qn("w:date"), self._now)
-        return el
-
-    def _run(self, tag: str, text: str, rpr_source=None):
-        r = self._mk("w:r")
-        if rpr_source is not None:
-            import copy as _copy
-
-            rpr = rpr_source.find(self._qn("w:rPr"))
-            if rpr is not None:
-                r.append(_copy.deepcopy(rpr))
-        t = self._mk(tag)
-        t.set(self._qn("xml:space"), "preserve")
-        t.text = text
-        r.append(t)
-        return r
-
-    def _anchor(self, cid: int, before_el):
-        """在 before_el 之前插入 commentRangeStart（End 与 Reference 由调用方按序追加）。"""
-        start = self._mk("w:commentRangeStart")
-        start.set(self._qn("w:id"), str(cid))
-        before_el.addprevious(start)
-        return start
-
-    def _anchor_end_ref(self, cid: int, before_el) -> None:
-        """在 before_el 之前追加 commentRangeEnd 与 commentReference（须在改动内容之后）。"""
-        end = self._mk("w:commentRangeEnd")
-        end.set(self._qn("w:id"), str(cid))
-        before_el.addprevious(end)
-        ref_r = self._mk("w:r")
-        rpr = self._mk("w:rPr")
-        rstyle = self._mk("w:rStyle")
-        rstyle.set(self._qn("w:val"), "CommentReference")
-        rpr.append(rstyle)
-        ref_r.append(rpr)
-        ref = self._mk("w:commentReference")
-        ref.set(self._qn("w:id"), str(cid))
-        ref_r.append(ref)
-        before_el.addprevious(ref_r)
-
-    def add_comment(self, text: str) -> int:
-        self._seq["comment"] += 1
-        cid = self._seq["comment"]
-        self.comments.append((cid, text))
-        return cid
-
-    def track_replace(self, t_el, old_text: str, new_text: str, comment: str) -> None:
-        """单节点文本替换：最小差异（共同前缀保持原位，只删除/插入差异段），
-        如「单位地址：____」→「单位地址：值」只删空位、插值，标签不重复划线。"""
-        r_el = t_el.getparent()
-        prefix = 0
-        while prefix < len(old_text) and prefix < len(new_text) and old_text[prefix] == new_text[prefix]:
-            prefix += 1
-        del_span = old_text[prefix:]
-        ins_span = new_text[prefix:]
-        t_el.text = old_text[:prefix]  # 前缀原位保留
-        if not del_span and not ins_span:
+    def _record(self, p_el, old: str, new: str) -> None:
+        if old == new:
             return
-        cid = self.add_comment(comment)
-        self._anchor(cid, r_el)
-        if ins_span:
-            ins_el = self._mark("w:ins")
-            ins_el.append(self._run("w:t", ins_span, r_el))
-            r_el.addnext(ins_el)
-        if del_span:
-            del_el = self._mark("w:del")
-            del_el.append(self._run("w:delText", del_span, r_el))
-            r_el.addnext(del_el)
-        last = ins_el if ins_span else del_el
-        end = self._mk("w:commentRangeEnd")
-        end.set(self._qn("w:id"), str(cid))
-        ref_r = self._mk("w:r")
-        ref = self._mk("w:commentReference")
-        ref.set(self._qn("w:id"), str(cid))
-        ref_r.append(ref)
-        last.addnext(ref_r)
-        last.addnext(end)
+        rec = self.para_records.get(p_el)
+        if rec is None:
+            rec = {"orig": old, "edits": []}
+            self.para_records[p_el] = rec
+        rec["edits"].append((old, new))
 
-    def track_paragraph_replace(self, t_nodes, old_full: str, new_full: str, comment: str) -> None:
-        """整段替换（占位符跨 run 拆分 / 显式定向替换）：最小差异删除线 + 差异插入 + 批注。
-        段落级替换取代本段全部既有修订：删除层收敛为「本段模板原文」（既有 delText ∪ 非插入 w:t），
-        旧 w:ins 运行与旧批注锚点移除——消费自动标注标签时不污染原文流、不留自相矛盾的陈旧批注；
-        共同前缀保持不变（如「单位地址：」标签不重复划线，只对差异段做删除/插入）。"""
+    def _para_of(self, el):
         qn = self._qn
-        first_r = t_nodes[0].getparent() if t_nodes else None
-        p_el = first_r
-        while p_el is not None and p_el.tag != qn("w:p"):
-            p_el = p_el.getparent()
-        if p_el is None:
-            return
+        p = el.getparent()
+        while p is not None and p.tag != qn("w:p"):
+            p = p.getparent()
+        return p
 
-        def _in_ins(el) -> bool:
-            a = el.getparent()
-            while a is not None:
-                if a.tag == qn("w:ins"):
-                    return True
-                if a.tag == qn("w:p"):
-                    return False
-                a = a.getparent()
-            return False
-
-        # 模板原文（含既有删除线）= 段落内 非插入 w:t + 全部 w:delText（文档序）
-        clean_old_parts: list[str] = []
-        for el in p_el.iter():
-            if el.tag == qn("w:t") and not _in_ins(el):
-                clean_old_parts.append(el.text or "")
-            elif el.tag == qn("w:delText") and not _in_ins(el):
-                clean_old_parts.append(el.text or "")
-        clean_old = "".join(clean_old_parts)
-
-        # 移除本段既有修订运行与旧批注锚点（插入层/删除层/批注区间一并重置，由本次替换接管）
+    def _strip_marks(self, p_el) -> None:
+        """移除历史版本可能残留的修订/批注元素（干净成文后不再产生，防御性清理）。"""
+        qn = self._qn
         for child in list(p_el):
             if child.tag in (
                 qn("w:del"),
@@ -164,112 +66,55 @@ class _TrackedEditor:
                 if child.find(qn("w:commentReference")) is not None:
                     p_el.remove(child)
 
-        # 最小差异：共同前缀保持原位（只删除/插入真正的差异段）
-        prefix = 0
-        while prefix < len(clean_old) and prefix < len(new_full) and clean_old[prefix] == new_full[prefix]:
-            prefix += 1
-        del_span = clean_old[prefix:]
-        ins_span = new_full[prefix:]
-
-        # 原非插入 w:t 全部清空；前缀回填到第一个原 run（保持格式、标签不重复划线）
-        orig_nodes = [el for el in p_el.iter() if el.tag == qn("w:t") and not _in_ins(el)]
-        for el in orig_nodes:
-            el.text = ""
-        anchor = None
-        if prefix:
-            if orig_nodes:
-                orig_nodes[0].text = clean_old[:prefix]
-                anchor = orig_nodes[0].getparent()
-            else:
-                # 原文全在已移除的删除层里：新建 run 承载前缀
-                new_r = self._mk("w:r")
-                new_t = self._mk("w:t")
-                new_t.set(self._qn("xml:space"), "preserve")
-                new_t.text = clean_old[:prefix]
-                new_r.append(new_t)
-                p_el.append(new_r)
-                anchor = new_r
-        if anchor is None:
-            anchor = next((c for c in p_el.iterchildren() if c.tag == qn("w:r")), None)
-
-        cid = self.add_comment(comment)
-        if anchor is not None:
-            self._anchor(cid, anchor)
-        last_el = anchor
-        if ins_span:
-            ins_el = self._mark("w:ins")
-            ins_el.append(self._run("w:t", ins_span, anchor))
-            if anchor is not None:
-                anchor.addnext(ins_el)
-            else:
-                p_el.append(ins_el)
-            last_el = ins_el
-        if del_span:
-            del_el = self._mark("w:del")
-            del_el.append(self._run("w:delText", del_span, anchor))
-            if anchor is not None:
-                anchor.addnext(del_el)  # addnext(ins) 之后插入 → anchor, del, ins 顺序
-            else:
-                p_el.append(del_el)
-            if not ins_span:
-                last_el = del_el
-        end = self._mk("w:commentRangeEnd")
-        end.set(self._qn("w:id"), str(cid))
-        ref_r = self._mk("w:r")
-        ref = self._mk("w:commentReference")
-        ref.set(self._qn("w:id"), str(cid))
-        ref_r.append(ref)
-        if last_el is not None:
-            last_el.addnext(ref_r)
-            last_el.addnext(end)
-        else:
-            p_el.append(end)
-            p_el.append(ref_r)
-
-    def track_insert_run(self, run) -> None:
-        """把已创建的 run 包进 w:ins（新增内容整体标记为插入）。"""
-        ins_el = self._mark("w:ins")
-        r_el = run._r
-        r_el.addprevious(ins_el)
-        ins_el.append(r_el)
+    def add_comment(self, text: str) -> int:
+        """取消批注（产品决定）：不再写入任何批注，返回 0。"""
+        return 0
 
     def write_comments_part(self) -> None:
-        """把批注写入 word/comments.xml 部件并建立关系。"""
-        import html as _html
+        """取消批注（产品决定）：不写 comments.xml。"""
+        return
 
-        if not self.comments:
+    def track_replace(self, t_el, old_text: str, new_text: str, comment: str) -> None:
+        """单节点文本替换：直接写入正文（无删除线、无插入标记、无批注）。"""
+        p_el = self._para_of(t_el)
+        if p_el is not None:
+            full = "".join(t.text or "" for t in p_el.iter(self._qn("w:t")))
+            self._record(p_el, full, full.replace(old_text, new_text))
+        t_el.text = new_text
+
+    def track_paragraph_replace(self, t_nodes, old_full: str, new_full: str, comment: str) -> None:
+        """整段替换（占位符跨 run 拆分 / 显式定向替换）：直接干净重写本段正文，
+        并记录本段替换对（orig→new）供忠实性校验。"""
+        qn = self._qn
+        first_r = t_nodes[0].getparent() if t_nodes else None
+        p_el = first_r
+        while p_el is not None and p_el.tag != qn("w:p"):
+            p_el = p_el.getparent()
+        if p_el is None:
             return
-        from docx.opc.constants import RELATIONSHIP_TYPE as _RT
-        from docx.opc.packuri import PackURI
-        from docx.opc.part import Part
+        self._record(p_el, old_full, new_full)
+        self._strip_marks(p_el)
+        # 全段新文写入第一个 run（保留原格式），其余 run 清空——干净成文，无差异标记
+        orig_nodes = [el for el in p_el.iter() if el.tag == qn("w:t")]
+        if orig_nodes:
+            orig_nodes[0].text = new_full
+            for el in orig_nodes[1:]:
+                el.text = ""
+        else:
+            new_r = self._mk("w:r")
+            new_t = self._mk("w:t")
+            new_t.set(self._qn("xml:space"), "preserve")
+            new_t.text = new_full
+            new_r.append(new_t)
+            p_el.append(new_r)
 
-        rows = [
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-            '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
-        ]
-        for cid, text in self.comments:
-            rows.append(
-                f'<w:comment w:id="{cid}" w:author="BidVolt" w:date="{self._now}" w:initials="BV">'
-                f'<w:p><w:r><w:t xml:space="preserve">{_html.escape(text, quote=False)}</w:t></w:r></w:p>'
-                "</w:comment>"
-            )
-        rows.append("</w:comments>")
-        blob = "".join(rows).encode("utf-8")
-        part = Part(
-            PackURI("/word/comments.xml"),
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml",
-            blob,
-            self._doc.part.package,
-        )
-        rt_comments = getattr(
-            _RT, "COMMENTS",
-            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
-        )
-        self._doc.part.relate_to(part, rt_comments)
+    def track_insert_run(self, run) -> None:
+        """追加内容直接成文（不再包 w:ins 标记）。"""
+        return
 
 
 class _FillSession:
-    """一次成文的填空会话：修订模式填空 + 批注来源 + 补充内容追加。
+    """一次成文的填空会话：直接干净写入正文（无修订、无批注，输出即终稿）+ 补充内容追加。
     整本成文（docx_from_template）与逐份成文（响应文件包）共用同一套规则。"""
 
     def __init__(
@@ -289,7 +134,7 @@ class _FillSession:
         from docx.shared import Pt
 
         self.doc = doc
-        self.editor = _TrackedEditor(doc)
+        self.editor = _PlainEditor(doc)
         self.buyer = buyer
         self.project_name = project_name
         self.supplier = supplier
@@ -338,16 +183,6 @@ class _FillSession:
             "邮政编码|电话|传真|日期"
         )
         self._compile_label_regexes()
-        # Word 显示修订标记的前提：settings.xml 须含 <w:trackChanges/>，
-        # 否则 w:ins/w:del 会被当作普通文本（插入可见、删除被吞）。
-        settings_el = doc.settings.element
-        if settings_el.find(qn("w:trackChanges")) is None:
-            tc = _OxmlElement("w:trackChanges")
-            default_tab = settings_el.find(qn("w:defaultTabStop"))
-            if default_tab is not None:
-                default_tab.addprevious(tc)
-            else:
-                settings_el.append(tc)
 
     def _compile_label_regexes(self) -> None:
         """标签词表 = 常见标签 ∪ agent 传入的任意词键（通用填值，不写死业务字段）。"""
@@ -454,8 +289,7 @@ class _FillSession:
         return out
 
     def comment(self, old: str, new: str) -> str:
-        """修订批注：说明改了什么、依据来源（产品要求：批注必须说明来自哪里）。
-        来源词表由 agent 提供（values），措辞保持专业投标口吻，不带系统痕迹。"""
+        """改动词说明（产品决定：不产 Word 批注，此串仅作内部日志语义；干净成文不回写）。"""
         added: list[str] = []
         filled: list[str] = []
         for tok in sorted(self.values.keys(), key=len, reverse=True):
@@ -482,7 +316,7 @@ class _FillSession:
         return "按采购文件内容补充填写（供参考），请复核确认。"
 
     def apply_to_doc(self) -> None:
-        """全文档（含表格、控件、文本框）逐段填空（修订模式+批注）。"""
+        """全文档（含表格、控件、文本框）逐段填空（直接干净写入，无修订无批注）。"""
         _re = self._re
         qn = self._qn
         editor = self.editor
@@ -618,7 +452,7 @@ class _FillSession:
         return _scan_remaining(self.doc.element, limit)
 
     def fill_table_cell(self, table_idx: int, row_idx: int, col_idx: int, value: str, comment: str | None = None) -> bool:
-        """定向填写模板表格单元格（修订插入+批注）：表格类条目应把内容填进模板自身的表格，
+        """定向填写模板表格单元格（直接干净写入）：表格类条目应把内容填进模板自身的表格，
         而不是空着表格把内容挂到文件末尾。越界返回 False（调用方如实记录）。"""
         tables = self.doc.tables
         if table_idx < 0 or table_idx >= len(tables):
@@ -627,14 +461,16 @@ class _FillSession:
         if row_idx < 0 or row_idx >= len(tb.rows) or col_idx < 0 or col_idx >= len(tb.rows[row_idx].cells):
             return False
         cell = tb.rows[row_idx].cells[col_idx]
+        old = "".join(t.text or "" for t in cell._tc.iter(f"{{{_W_NS}}}t"))
         cell.text = ""
         run = cell.paragraphs[0].add_run(self.fill(str(value)))
-        self.editor.track_insert_run(run)
-        self.editor.add_comment(comment or "按采购文件要求填写本单元格，请复核。")
+        # 记录单元格替换对（原文→新值），供忠实性校验复算模板原文
+        p_el = cell.paragraphs[0]._p
+        self.editor._record(p_el, old, self.fill(str(value)))
         return True
 
     def append_supplement(self, nodes, heading_text: str | None = None, comment: str | None = None, page_break: bool = True) -> None:
-        """把撰写内容追加为修订插入（w:ins）+ 批注；heading_text 为 None 时不加总标题。"""
+        """把撰写内容直接追加为正文（无修订无批注）；heading_text 为 None 时不加总标题。"""
         Pt = self._Pt
         qn = self._qn
         editor = self.editor
@@ -643,15 +479,11 @@ class _FillSession:
             self.doc.add_page_break()
         if heading_text:
             h = self.add_heading_safe(heading_text, 1)
-            editor.track_insert_run(h.runs[0])
-        if comment:
-            editor.add_comment(comment)
         for node in _norm_supplement_nodes(nodes):
             t = str(node.get("text") or "")
             ntype = node.get("type")
             if ntype == "heading":
-                h = self.add_heading_safe(fill(t), 2)
-                editor.track_insert_run(h.runs[0])
+                self.add_heading_safe(fill(t), 2)
             elif ntype == "table" and node.get("rows"):
                 rows = node["rows"]
                 tb = self.doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
@@ -663,11 +495,8 @@ class _FillSession:
                         run = cell.paragraphs[0].add_run(fill(str(row[ci])) if ci < len(row) else "")
                         run.font.size = Pt(10.5)
                         run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
-                        editor.track_insert_run(run)
             elif t.strip():
-                p = self.doc.add_paragraph(fill(t))
-                for run in p.runs:
-                    editor.track_insert_run(run)
+                self.doc.add_paragraph(fill(t))
 
     def finish(self) -> bytes:
         self.editor.write_comments_part()
@@ -742,7 +571,7 @@ def empty_table_rows(root) -> list[dict]:
 
 def docx_from_template(source_path, model: dict) -> bytes:
     """底稿式整本成文（保留能力）：复制采购文件原 docx，整本保留——
-    填空（修订模式+批注来源）+ 文末追加"补充响应内容"（修订插入+批注）。
+    填空（直接干净写入）+ 文末追加"补充响应内容"。
     页面规格/字体/表格样式/分页/页眉页脚/全部原文天然保留。"""
     from docx import Document
 
@@ -758,8 +587,6 @@ def docx_from_template(source_path, model: dict) -> bytes:
     sess.append_supplement(
         model.get("supplement_nodes") or [],
         heading_text="补充响应内容",
-        comment="本节为补充响应内容（依据采购文件要求与企业资料撰写，企业事实以资料为准，"
-                "未知处标【待补充】），请复核确认。",
     )
     return sess.finish()
 
@@ -1109,7 +936,7 @@ def _build_item_document(source_path, row, elements):
             else:
                 body.append(node)
     elif row is not None:
-        # 清单重建：底稿中未定位到该条目标题时，按解析清单内容成文并如实批注
+        # 清单重建：底稿中未定位到该条目标题时，按解析清单内容成文（slice 回执带 warn 信号）
         st = row.structured or {}
         if st.get("kind") == "table" and st.get("rows"):
             rows = st["rows"]
@@ -1174,9 +1001,9 @@ def locate_item_elements(source_path, row) -> list | None:
 
 def canonical_text(root) -> str:
     """原文归一收集器（忠实性校验两边必须同一算法）：
-    只收 w:t 与 w:delText 文本及元素的 tail，剔除 w:ins 子树（修订插入不算原文）。
-    绘图内部数字（wp:posOffset/extent 等）不是 w:t，天然不计入——否则锚定图（印模）
-    会让底稿侧文本里混入坐标数字，而条目侧没有，导致合法切片误报不忠实。"""
+    只收 w:t 与 w:delText 文本及元素的 tail，剔除 w:ins 子树（干净成文后不产生修订层，
+    此排除仅用于兼容历史产物）。绘图内部数字（wp:posOffset/extent 等）不是 w:t，天然不计入——
+    否则锚定图（印模）会让底稿侧文本里混入坐标数字，而条目侧没有，导致合法切片误报不忠实。"""
     W = f"{{{_W_NS}}}"
 
     def _inside(el, tag) -> bool:
@@ -1200,37 +1027,48 @@ def canonical_text(root) -> str:
     return _AUTO_TAG_RE.sub("", "".join(parts))
 
 
-def check_doc_fidelity(doc, source_text: str) -> dict:
-    """逐字忠实性校验：条目文件原文（含修订删除线，剔除 w:ins）必须逐字包含于底稿原文。
+def check_doc_fidelity(doc, source_text: str, editor=None, original_text: str | None = None) -> dict:
+    """逐字忠实性校验（干净成文口径）：
+    1) 模板完整性——每个被工具改动过的段落，其「原文+替换链」复算出的期望文本
+       必须等于该段落当前文本（模板原文未被直接改写/删除，改动只能来自记录的替换对）；
+    2) 切片完整性——切片时的模板原文必须逐字包含于底稿原文（排除自动待补充标签）。
+    追加内容（文末新增正文）不影响校验。
     返回 {ok, original_chars, inserted_chars, deleted_chars, issues:[…]}。"""
     W = f"{{{_W_NS}}}"
-    root = doc.element  # CT_Document
-
-    def _inside(el, tag) -> bool:
-        a = el.getparent()
-        while a is not None:
-            if a.tag == W + tag:
-                return True
-            a = a.getparent()
-        return False
 
     def _norm(s: str) -> str:
         return "".join(s.split())
 
-    ins_chars = 0
-    del_chars = 0
-    for el in root.iter():
-        if _inside(el, "ins"):
-            if el.tag == W + "t" and el.text:
-                ins_chars += len(el.text)
-            continue
-        if el.tag == W + "delText" and el.text:
-            del_chars += len(el.text)
-    original = canonical_text(root)
-    n_orig = _norm(original)
-    src_norm = _norm(source_text)
+    def _para_text(p_el) -> str:
+        return "".join(t.text or "" for t in p_el.iter(W + "t"))
+
+    current = canonical_text(doc.element)
     issues: list[str] = []
     ok = True
+
+    # 1) 模板完整性：逐段落复算
+    if editor is not None and original_text is not None:
+        for p_el, rec in editor.para_records.items():
+            expected = rec["orig"]
+            for old, new in rec["edits"]:
+                expected = expected.replace(old, new, 1)
+            actual = _AUTO_TAG_RE.sub("", _para_text(p_el))
+            exp_n = _AUTO_TAG_RE.sub("", expected)
+            if _norm(actual) != _norm(exp_n):
+                ok = False
+                issues.append(
+                    f"模板段落被直接改写（改动未走填空替换）：期望「{exp_n[max(0, len(exp_n) - 30):][:30]}…」"
+                    f"实际「{_norm(actual)[max(0, len(_norm(actual)) - 30):][:30]}…」"
+                )
+                if len(issues) >= 5:
+                    break
+    else:
+        # 未记录替换链（无编辑会话）：当前全文即模板原文，逐字核对
+        original = current
+
+    # 2) 切片完整性：模板原文 ⊂ 底稿原文
+    n_orig = _norm(original_text if original_text is not None else current)
+    src_norm = _norm(source_text)
     if n_orig and n_orig not in src_norm:
         ok = False
         for i in range(0, len(n_orig) - 9, 10):
@@ -1239,18 +1077,21 @@ def check_doc_fidelity(doc, source_text: str) -> dict:
                 break
         else:
             issues.append("原文与底稿不一致（空白/字符归一化差异）")
+
+    n_cur = _norm(current)
+    n_orig = _norm(original_text if original_text is not None else current)
     return {
         "ok": ok,
         "original_chars": len(n_orig),
-        "inserted_chars": ins_chars,
-        "deleted_chars": del_chars,
+        "inserted_chars": max(0, len(n_cur) - len(n_orig)),
+        "deleted_chars": 0,
         "issues": issues,
     }
 
 
 def replace_text_tracked(editor, find: str, value: str, comment: str | None) -> int:
-    """显式定向填空：把文档中出现的 find 原文替换为 value（修订模式+批注）。
-    支持跨 run 的整段匹配；复用调用方持久 editor（批注 id 全局连续）；返回替换处数。"""
+    """显式定向填空：把文档中出现的 find 原文直接替换为 value（干净成文，无修订无批注）。
+    支持跨 run 的整段匹配；复用调用方持久 editor（替换记录全局保留）；返回替换处数。"""
     if not find:
         return 0
     from docx.oxml.ns import qn as _qn
@@ -1271,8 +1112,8 @@ def replace_text_tracked(editor, find: str, value: str, comment: str | None) -> 
 
 
 def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supplier, extra_nodes, tender_no: str = "") -> bytes:
-    """组装一份条目文件：底稿中该条目区间原文整段复制（保留格式）+ 填空（修订批注）
-    + 对应撰写内容（修订插入+批注）。未定位到区间的条目用清单内容重建。"""
+    """组装一份条目文件：底稿中该条目区间原文整段复制（保留格式）+ 填空（直接干净写入）
+    + 对应撰写内容（直接追加正文）。未定位到区间的条目用清单内容重建。"""
     new, located = _build_item_document(source_path, row, elements)
     sess = _FillSession(new, buyer, project_name, supplier, tender_no)
     sess.apply_to_doc()
@@ -1280,12 +1121,7 @@ def _assemble_item_docx(source_path, row, elements, *, buyer, project_name, supp
         sess.append_supplement(
             extra_nodes,
             heading_text="响应内容",
-            comment="本节为针对本条目撰写的响应内容（依据招标文件要求与企业资料，未知处标【待补充】），"
-                    "修订插入留痕，请复核确认。",
         )
-    elif row is not None and not located:
-        sess.editor.add_comment("该条目在底稿中未定位到原文区间，本文件按解析清单内容重建（可能不完整），"
-                                "请对照采购文件原件核对。")
     return sess.finish()
 
 
@@ -1339,8 +1175,8 @@ async def _resolve_package_template_fobj(session, enterprise_id: int, project_id
 async def build_response_package(session, enterprise_id: int, project_id: int) -> bytes:
     """响应文件包（产品定版：按招标文件清单逐份成文）：
     价格文件/商务文件/技术文件 三个目录，每个清单条目一份 docx——
-    该条目模板原文（自底稿整段复制，保留格式）+ 填空（修订+批注来源）
-    + 对应撰写内容（修订插入+批注）。附 报价单.xlsx 与 manifest.json。"""
+    该条目模板原文（自底稿整段复制，保留格式）+ 填空（直接干净写入）
+    + 对应撰写内容（直接追加正文）。附 报价单.xlsx 与 manifest.json。"""
     import io as _io
     import json as _json
     import zipfile as _zip
@@ -1520,8 +1356,8 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
         manifest = {
             "project_id": int(project_id),
             "draft": fobj.original_name,
-            "note": "按招标文件《响应文件格式》清单逐份成文：每份=该条目模板原文+填空（修订模式+批注来源）+对应撰写内容；"
-                    "全部改动可在 Word【审阅→所有标记】中逐处查看。附 Hermes 主会话全程记录（会话记录/主会话记录.md）。",
+            "note": "按招标文件《响应文件格式》清单逐份成文：每份=该条目模板原文+填空+对应撰写内容，"
+                    "全部直接成文（无修订、无批注，输出即终稿）。附 Hermes 主会话全程记录（会话记录/主会话记录.md）。",
             "files": files_manifest,
         }
         # 主会话全程记录（新方案运行时带上；无 agent_pipeline 任务则跳过）
@@ -1613,7 +1449,7 @@ async def docx_bytes_with_source(
 ) -> bytes:
     """导出唯一路径（底稿式，Issue #8 验收铁律 + 产品要求）：复制采购文件原 docx 整本保留，
     只做两件事——填空（已知字段回填/未知空位【待补充】）与文末追加"补充响应内容"。
-    全部改动以 Word 修订模式（删除线/插入）+ 批注（来源说明）记录，验收直接可查。
+    全部改动直接干净写入正文（无修订、无批注，输出即终稿）。
 
     不存在节点式生成，也不存在回退：拿不到底稿源文件就明确报错，绝不从节点重新排版。"""
     from app.services.storage import StorageProvider

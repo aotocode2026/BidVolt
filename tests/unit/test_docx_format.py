@@ -1,4 +1,4 @@
-"""DOCX 导出回归（Issue #8 + 产品要求：唯一生成路径=底稿式；全部改动以修订模式+批注记录）。"""
+"""DOCX 导出回归（Issue #8 + 产品要求：唯一生成路径=底稿式；全部改动直接干净写入，无修订无批注）。"""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _comment_texts(data: bytes) -> str:
         return zf.read("word/comments.xml").decode("utf-8")
 
 
-def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
+def test_draft_export_keeps_whole_source_and_fills_clean(tmp_path):
     src = tmp_path / "source.docx"
     src.write_bytes(_make_source())
     model = {
@@ -84,7 +84,7 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     # 整本保留：原段落都在，表格保留
     assert "第一章 投标人须知" in joined
     assert len(doc.tables) == 1
-    # 已知字段回填（修订插入可见）——最终文本断言（最小差异：标签原位、只删空位插值）
+    # 已知字段回填（直接干净写入）——最终文本断言
     assert "本采购由测试招标人实施，项目为测试采购项目。" in final
     assert "供应商名称：测试供应商" in final
     assert "联系电话：【待补充：联系电话】" in final
@@ -96,30 +96,14 @@ def test_draft_export_keeps_whole_source_and_fills_tracked(tmp_path):
     # 补充节追加
     assert "补充响应内容" in joined
     assert "我方完全响应采购文件全部要求。" in joined
-    # 修订模式：删除（原文删除线）与插入标记、批注引用
-    assert _count_el(data, "ins") > 0
-    assert _count_el(data, "del") > 0
-    assert _count_el(data, "commentReference") > 0
-    # Word 显示修订的前提：settings.xml 含 trackChanges
+    # 干净成文（产品决定：全面取消修订与批注）：无插入/删除标记、无批注、无 trackChanges
+    assert _count_el(data, "ins") == 0
+    assert _count_el(data, "del") == 0
+    assert _count_el(data, "commentReference") == 0
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert "word/comments.xml" not in zf.namelist()
         settings = zf.read("word/settings.xml").decode("utf-8")
-    assert "<w:trackChanges" in settings
-    # 批注部件存在且说明来源
-    comments = _comment_texts(data)
-    assert "来源" in comments and "BidVolt" in comments
-    # 批注范围顺序：commentRangeStart → (原 run) → del → ins → commentRangeEnd
-    root = _doc_xml(data)
-    for p in root.iter():
-        if p.tag.split("}")[-1] != "p":
-            continue
-        tags = [ch.tag.split("}")[-1] for ch in p if isinstance(ch.tag, str)]
-        if "commentRangeStart" not in tags:
-            continue
-        i_start = tags.index("commentRangeStart")
-        i_del = tags.index("del")
-        i_ins = tags.index("ins")
-        i_end = tags.index("commentRangeEnd")
-        assert i_start < i_del < i_ins < i_end, tags
+    assert "<w:trackChanges" not in settings
 
 
 def test_draft_export_fills_unknown_with_placeholder(tmp_path):
@@ -151,8 +135,8 @@ def test_draft_export_supplement_headings_bold_without_style_dependency(tmp_path
     assert "【待补充：招标人名称】应对本项目负责。" in joined
     # 标题加粗（w:b 存在）
     assert _count_el(data, "b") > 0
-    # 补充节内容标记为插入
-    assert _count_el(data, "ins") > 0
+    # 补充节内容直接成文（无插入标记）
+    assert _count_el(data, "ins") == 0
 
 
 def test_split_supplement_tolerates_string_nodes():
@@ -173,7 +157,7 @@ def test_split_supplement_tolerates_string_nodes():
 
 
 def test_labeled_space_blank_fill():
-    """带标签空位（空格/零宽形态）：有资料回填、无资料原位【待补充】，全程修订模式。"""
+    """带标签空位（空格/零宽形态）：有资料回填、无资料原位【待补充】，直接干净写入。"""
     from docx import Document
 
     src = Document()
@@ -202,11 +186,10 @@ def test_labeled_space_blank_fill():
     assert "电话：【待补充：电话】" in final
     assert "法定地址：【待补充：法定地址】" in final
     assert "项目名称：项目乙，采购编号：412623-1，包号：【待补充：包号】，单位：万元人民币" in final
-    # 修订模式 + 批注（改什么都留痕）
-    assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
-    assert "采购编号=「412623-1」" in _comment_texts(data)
-    # 原文保留：修订删除线里仍有模板原句（空格位原文）——删除线数量>0 即可（空格删除也留痕）
-    assert _count_el(data, "delText") > 0
+    # 干净成文：无修订标记、无批注部件
+    assert _count_el(data, "ins") == 0 and _count_el(data, "del") == 0
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert "word/comments.xml" not in zf.namelist()
 
 
 def test_assembly_primitives_roundtrip(tmp_path):
@@ -233,18 +216,21 @@ def test_assembly_primitives_roundtrip(tmp_path):
 
     # 填空（标准字段 + 显式定向替换）
     sess = _FillSession(doc, "采购人甲", "项目乙", "供应商丙", "412623-1")
+    from app.services.export_service import canonical_text as _canonical_text
+
+    original_text = _canonical_text(doc.element)
     sess.apply_to_doc()
     n = replace_text_tracked(sess.editor, "包名称：【待补充：包名称】", "包名称：包A", "主会话指定应答分包")
     assert n == 1
 
-    # 校验：原文⊂底稿必须通过（删除线保留原文，插入不算改写）
+    # 校验：模板原文+替换链复算保真必须通过（改动全部来自记录的替换对，未直接改写模板）
     import zipfile as _z
 
     from lxml import etree as _e
 
     with _z.ZipFile(str(p)) as zf:
         src_text = "".join(_e.fromstring(zf.read("word/document.xml")).itertext())
-    r = check_doc_fidelity(doc, src_text)
+    r = check_doc_fidelity(doc, src_text, editor=sess.editor, original_text=original_text)
     assert r["ok"] is True, r["issues"]
 
     data = sess.finish()
@@ -252,7 +238,7 @@ def test_assembly_primitives_roundtrip(tmp_path):
     assert "采购编号：412623-1" in final
     assert "项目名称：项目乙" in final
     assert "包名称：包A" in final
-    assert _count_el(data, "ins") > 0 and _count_el(data, "del") > 0
+    assert _count_el(data, "ins") == 0 and _count_el(data, "del") == 0
 
 
 def test_locate_item_elements_matches_requested_item(tmp_path):
@@ -363,7 +349,7 @@ def test_fidelity_ignores_drawing_internals(tmp_path):
     assert r["ok"] is True, r["issues"]
     assert r["original_chars"] == len("响应供应商投标专用章")
 
-    # 修订插入（w:ins）同样不计原文（两侧一致）
+    # 历史修订插入（w:ins）同样不计原文（兼容历史产物，两侧一致）
     ins = etree.SubElement(p, w("ins"))
     ir = etree.SubElement(ins, w("r"))
     it = etree.SubElement(ir, w("t"))
@@ -373,11 +359,12 @@ def test_fidelity_ignores_drawing_internals(tmp_path):
     doc2.element.body.append(copy.deepcopy(p))
     r2 = check_doc_fidelity(doc2, src_text)
     assert r2["ok"] is True
-    assert r2["inserted_chars"] == len("北京北辰电力科技有限公司")
+    # 干净成文口径：新增内容不产修订层，inserted_chars 按「当前-模板原文」口径为 0
+    assert r2["inserted_chars"] == 0
 
 
 def test_table_fill_in_place():
-    """表格/表单类条目：内容填进模板自身表格单元格（修订插入+批注），而不是空表挂文末。"""
+    """表格/表单类条目：内容填进模板自身表格单元格（直接干净写入），而不是空表挂文末。"""
     from docx import Document
 
     from app.services.export_service import _FillSession
@@ -397,8 +384,7 @@ def test_table_fill_in_place():
     joined = _all_text(data)
     assert "虚拟电厂数据融合系统" in joined
     assert "覆盖浙江全境" in joined
-    assert _count_el(data, "ins") > 0
-    assert "业绩表第1行填写" in _comment_texts(data)
+    assert _count_el(data, "ins") == 0
 
 
 def test_append_supplement_heading_param():
@@ -613,8 +599,7 @@ def test_xlsx_bytes_auto_sum_formula():
 
 
 def test_consume_auto_tag_does_not_break_fidelity(tmp_path):
-    """回归：fills 消费自动标注标签（段落首 run 在插入层外、且此前有逐节点删除）时，
-    删除层只收敛为模板原文——标签文本不得进入原文流，忠实性校验不误报。
+    """回归：fills 消费自动标注标签后，模板原文+替换链复算保真——忠实性校验不误报。
     历史教训：授权委托书「特授权【待补充：被授权人姓名】【待补充】」消费标签导致 verify 误报不忠实。"""
     import zipfile as _z
 
@@ -626,6 +611,7 @@ def test_consume_auto_tag_does_not_break_fidelity(tmp_path):
         _build_item_document,
         _FillSession,
         check_doc_fidelity,
+        canonical_text,
         replace_text_tracked,
     )
 
@@ -639,18 +625,19 @@ def test_consume_auto_tag_does_not_break_fidelity(tmp_path):
     elems = [("p", el) for el in src2.element.body.iterchildren() if el.tag == qn("w:p")]
     doc, _ = _build_item_document(str(p), None, elems)
     sess = _FillSession(doc, "", "", "", "")
-    sess.apply_to_doc()  # "特授权____" → "特授权【待补充】…"（逐节点修订：del "____" + ins 标签）
+    original_text = canonical_text(doc.element)
+    sess.apply_to_doc()  # "特授权____" → "特授权【待补充】…"（直接干净写入）
     n = replace_text_tracked(sess.editor, "特授权【待补充】", "特授权张三", "指定被授权人")
     assert n == 1
 
     with _z.ZipFile(str(p)) as zf:
         src_text = "".join(_e.fromstring(zf.read("word/document.xml")).itertext())
-    r = check_doc_fidelity(doc, src_text)
+    r = check_doc_fidelity(doc, src_text, editor=sess.editor, original_text=original_text)
     assert r["ok"] is True, r["issues"]
 
 
-def test_consume_tag_in_ins_only_paragraph(tmp_path):
-    """消费整段只有插入文本的标签：无模板原文可删，直接移除旧插入+新插入，忠实性保持。"""
+def test_consume_tag_replaced_then_fidelity_holds(tmp_path):
+    """整段只有插入文本的标签消费（历史形态）：直接干净替换后，忠实性保持。"""
     import zipfile as _z
 
     from docx import Document
@@ -661,6 +648,7 @@ def test_consume_tag_in_ins_only_paragraph(tmp_path):
         _build_item_document,
         _FillSession,
         check_doc_fidelity,
+        canonical_text,
         replace_text_tracked,
     )
 
@@ -673,12 +661,13 @@ def test_consume_tag_in_ins_only_paragraph(tmp_path):
     elems = [("p", el) for el in src2.element.body.iterchildren() if el.tag == qn("w:p")]
     doc, _ = _build_item_document(str(p), None, elems)
     sess = _FillSession(doc, "招标人甲", "", "", "")
-    sess.apply_to_doc()  # 整段替换：del 原文 + ins "致：招标人甲"
+    original_text = canonical_text(doc.element)
+    sess.apply_to_doc()  # 整段替换："致：（采购人）" → "致：招标人甲"
     n = replace_text_tracked(sess.editor, "致：招标人甲", "致：招标人乙", "修正采购人")
     assert n == 1
     with _z.ZipFile(str(p)) as zf:
         src_text = "".join(_e.fromstring(zf.read("word/document.xml")).itertext())
-    r = check_doc_fidelity(doc, src_text)
+    r = check_doc_fidelity(doc, src_text, editor=sess.editor, original_text=original_text)
     assert r["ok"] is True, r["issues"]
 
 
@@ -754,8 +743,8 @@ def test_slice_region_includes_tech_after_score_markers():
 
 
 def test_fill_label_blank_minimal_diff_no_dup_label():
-    """回归：标签空位填值只删空位、插值——标签不重复划线、批注单一且正确。
-    （385 教训：单位地址出现「单位地址：单位地址：值」双标签 + 来源/待补充两矛盾批注。）"""
+    """回归：标签空位填值只改空位、标签不重复（干净成文，无批注）。
+    （385 教训：单位地址出现「单位地址：单位地址：值」双标签。）"""
     from docx import Document
 
     from app.services.export_service import _FillSession
@@ -768,13 +757,13 @@ def test_fill_label_blank_minimal_diff_no_dup_label():
     final = _final_text(data)
     assert final.count("单位地址：") == 1
     assert "单位地址：北京市海淀区中关村南大街5号院2号楼" in final
-    comments = _comment_texts(data)
-    assert "已按来源资料回填" in comments
-    assert "模板空位未取得对应资料" not in comments
+    # 干净成文：无批注部件
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert "word/comments.xml" not in zf.namelist()
 
 
-def test_consume_tag_drops_stale_comment_anchor():
-    """回归：先标待补充、后 fills 消费——旧批注锚点随段落重置移除，不剩矛盾批注。"""
+def test_consume_tag_leaves_no_comment_residue():
+    """回归：先标待补充、后 fills 消费——最终文档无批注残留（产品决定：全面取消批注）。"""
     from docx import Document
 
     from app.services.export_service import _FillSession, replace_text_tracked
@@ -790,12 +779,10 @@ def test_consume_tag_drops_stale_comment_anchor():
     final = _final_text(data)
     assert "传真：无（以电话/邮箱联系）" in final
     root = _doc_xml(data)
-    for p in root.iter(W + "p"):
-        t = "".join(x.text or "" for x in p.iter(W + "t"))
-        if "传真" in t:
-            refs = [c for c in p.iter(W + "commentReference")]
-            assert len(refs) == 1, [r.get(W + "id") for r in refs]
-            break
+    assert _count_el(data, "commentReference") == 0
+    assert _count_el(data, "commentRangeStart") == 0
+    assert _count_el(data, "ins") == 0
+    assert _count_el(data, "del") == 0
 
 
 def test_draft_download_filename_marks_source(client):

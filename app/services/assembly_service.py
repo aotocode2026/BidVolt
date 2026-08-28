@@ -2,7 +2,7 @@
 
 主会话经 MCP 调用本模块的机制原语，自主完成
 "选底稿 → 列清单 → 切片 → 填空 → 追加 → 校验 → 封存 → 打包"：
-- 机制保真：切片=底稿条目区间字节级复制；填空/追加=修订模式+批注；校验=原文逐字⊂底稿；
+- 机制保真：切片=底稿条目区间字节级复制；填空/追加=直接干净写入（无修订、无批注，输出即终稿）；校验=模板原文+替换链复算保真；
 - 决策在主会话：填什么值、加什么内容、按什么顺序、何时封存打包，全部由主会话决定。
 
 旧方案路径（build_response_package 整段服务端成文）不受影响。
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-# 内存切片仓：一个切片持有 (Document + 持久 _FillSession/editor)，保证批注 id 全局连续。
+# 内存切片仓：一个切片持有 (Document + 持久 _FillSession/editor)，保证替换记录全局连续。
 # 容量上限 + TTL 防止无界增长（app 进程单 worker；MCP 会话串行调用）。
 _SLICES: dict[str, dict[str, Any]] = {}
 _SLICE_CAP = 40
@@ -196,6 +196,9 @@ async def create_slice(
     with _zip.ZipFile(source_path) as zf:
         src_xml = _etree.fromstring(zf.read("word/document.xml"))
     source_text = export_service.canonical_text(src_xml)
+    # 切片模板原文（忠实性校验基准之一：干净成文后无法靠修订层区分原文与新增，
+    # 改由「原文+替换链」复算保真，此值即替换链起点）
+    original_text = export_service.canonical_text(doc.element)
 
     _prune_slices()
     slice_id = "s" + secrets.token_hex(6)
@@ -204,6 +207,7 @@ async def create_slice(
         "doc": doc,
         "sess": None,
         "source_text": source_text,
+        "original_text": original_text,
         "file_id": int(file_id),
         "req_id": int(req_id),
         "title": req_title,
@@ -275,7 +279,7 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
     """填空：标准字段（buyer/project_name/supplier/tender_no）→ 带标签空位规则（无资料原位【待补充】），
     再按主会话给出的显式 fills=[{find,value,comment}] 定向替换；
     table_fills=[{table,row,col,value,comment}] 按 agent 决定的坐标填单元格（工具只给表格清册，
-    填哪行哪列由 agent 决定）。全部修订模式+批注。"""
+    填哪行哪列由 agent 决定）。全部直接干净写入正文（无修订、无批注）。"""
     s = _slice(slice_id, task_id)
     sess = _ensure_sess(s, fields or {})
     sess.apply_to_doc()
@@ -349,27 +353,33 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
 
 
 def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment: str | None, heading: str | None = None) -> dict:
-    """追加撰写内容：修订插入 + 批注（节点形状兼容段落/标题/表格/裸字符串）。
+    """追加撰写内容：直接追加为正文（无修订无批注；节点形状兼容段落/标题/表格/裸字符串）。
     heading 由主会话按投标文体自定（方案类条目的正文追加用）；不传时用中性默认"响应内容"。"""
     s = _slice(slice_id, task_id)
     sess = _ensure_sess(s, {})
     sess.append_supplement(
         nodes or [],
         heading_text=(str(heading).strip() if heading else "响应内容"),
-        comment=comment or "本节为针对本条目撰写的响应内容（依据采购文件要求与企业资料，修订插入留痕），请复核。",
     )
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
     return {"slice_id": slice_id, "appended_nodes": len(nodes or []), "heading": heading or "响应内容"}
 
 
 def verify_slice(slice_id: str, task_id: int) -> dict:
-    """忠实性校验：条目文件原文（含删除线、剔除插入）逐字⊂底稿。不过时返回差异片段。
+    """忠实性校验（干净成文口径）：模板段落「原文+替换链」复算保真（不被直接改写/删除）
+    + 切片模板原文逐字⊂底稿。不过时返回差异片段。
     附带身份信息（req_title=请求条目、matched_title=实际绑定条目）供主会话比对；
     通过后置 verified 标记（seal 回执的 was_verified 信号，供验收子 agent 核对）。"""
     s = _slice(slice_id, task_id)
     from app.services import export_service
 
-    r = export_service.check_doc_fidelity(s["doc"], s["source_text"])
+    sess = s.get("sess")
+    r = export_service.check_doc_fidelity(
+        s["doc"],
+        s["source_text"],
+        editor=(sess.editor if sess is not None else None),
+        original_text=s.get("original_text"),
+    )
     r["slice_id"] = slice_id
     r["req_title"] = s.get("title") or ""
     r["matched_title"] = s.get("matched_title") or ""
@@ -474,7 +484,7 @@ async def upload_artifact_file(
 ) -> dict:
     """整文件交付通道：Hermes 直接写好的完整交付文件（docx/xlsx/pdf）落库为封存产物。
 
-    与切片修订路径并列可选——Hermes 可自产整文件（python-docx/openpyxl/matplotlib 配图），
+    与切片填空路径并列可选——Hermes 可自产整文件（python-docx/openpyxl/matplotlib 配图），
     服务端不再介入文档内容生成；打包/清单/审计与切片产物同一套机制。"""
     import io as _io
     import zipfile as _zip
@@ -771,7 +781,7 @@ async def inspect_artifact(
     task_id: int,
     artifact_id: int,
 ) -> dict:
-    """产物自检：预览已封存产物的内容（docx 文本/修订计数/待补充计数；xlsx 表格预览；zip 文件清单），
+    """产物自检：预览已封存产物的内容（docx 文本/修订残留计数/待补充计数；xlsx 表格预览；zip 文件清单），
     供主会话/验收子 agent 核对"导出产物"与"成果模型"是否一致——补上模型与产物之间的验证盲区。"""
     import io as _io
     import zipfile as _zip
