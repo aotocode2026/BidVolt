@@ -1,8 +1,8 @@
-"""Agent 主会话事件/成文产物模型（新方案）：会话控制台事件 + 成文工具链产物。"""
+"""Agent 主会话事件/成文产物模型（新方案）：会话控制台事件 + 成文工具链产物 + 客户交互。"""
 
 from __future__ import annotations
 
-from sqlalchemy import LargeBinary, String, Text
+from sqlalchemy import JSON, LargeBinary, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, BigInt, TimestampMixin
@@ -36,3 +36,22 @@ class AgentArtifact(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     mime: Mapped[str] = mapped_column(String(120), nullable=False, default="application/octet-stream")
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, default=b"")
+
+
+class AgentCustomerAsk(Base, TimestampMixin):
+    """主会话↔客户交互：ask_customer 工具的提问（question）与提交前动作清单（action）。"""
+
+    __tablename__ = "agent_customer_ask"
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    project_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    task_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    # question=向客户提问（客户可在页面回答）/ action=提交前客户动作清单（只读呈现）
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="question")
+    # question: [{q, need, checked}]；action: [str]
+    items: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # 0=待回答 1=已回答（action 恒为 1=已呈现）
+    answered: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    # 客户回答（question 用）：[str]（与 items 逐条对应；客户未逐条时整体一条）
+    answer: Mapped[list | None] = mapped_column(JSON, nullable=True)

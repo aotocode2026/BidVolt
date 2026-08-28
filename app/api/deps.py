@@ -60,6 +60,9 @@ TOOL_PERMISSION: dict[str, str] = {
     "package_response_zip": Permission.DELIVERABLE_EXPORT,
     "list_agent_artifacts": Permission.FILE_READ,
     "inspect_agent_artifact": Permission.FILE_READ,
+    # 客户交互（主会话↔客户：提问/动作清单；answer 端点走客户 JWT）
+    "ask_customer": Permission.PROJECT_EDIT,
+    "report_customer_actions": Permission.PROJECT_EDIT,
 }
 
 

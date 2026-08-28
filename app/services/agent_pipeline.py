@@ -77,14 +77,40 @@ def extract_action_list(text: str) -> list[str]:
     return lines
 
 
-async def _scan_events_for_customer_blocks(session, task_id: int, limit: int = 400) -> dict:
-    """扫描会话事件，返回 {last_ask: {seq, lines:[…], answered: bool}, action_list: […]}。
-    只扫主会话/服务类事件正文；answered=最新提问块之后出现过用户消息。"""
+async def _customer_state(session, task_id: int, limit: int = 400) -> dict:
+    """客户交互状态（工具口径为主，文本块兜底兼容旧会话）：
+    ask_customer/report_customer_actions 工具落库的 agent_customer_ask 行 +
+    旧版【ASK】/【ACTION_LIST】文本块扫描。
+    返回 {asks: [{ask_id, kind, items, answered, answer, created_at}], action_list: [str]}。"""
     from sqlalchemy import select as _sa_select
 
-    from app.models.agent import AgentSessionEvent
+    from app.models.agent import AgentCustomerAsk, AgentSessionEvent
 
     rows = (
+        await session.scalars(
+            _sa_select(AgentCustomerAsk)
+            .where(AgentCustomerAsk.task_id == int(task_id))
+            .order_by(AgentCustomerAsk.id.desc())
+            .limit(50)
+        )
+    ).all()
+    asks: list[dict] = []
+    action_list: list[str] = []
+    for r in rows:
+        entry = {
+            "ask_id": r.id,
+            "kind": r.kind,
+            "items": r.items or [],
+            "answered": bool(r.answered),
+            "answer": r.answer,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        if r.kind == "action":
+            action_list = [str(x) for x in (r.items or []) if str(x).strip()] + action_list
+        else:
+            asks.append(entry)
+    # 旧版文本块兜底：工具上线前会话里的【ASK】/【ACTION_LIST】块
+    ev_rows = (
         await session.scalars(
             _sa_select(AgentSessionEvent)
             .where(AgentSessionEvent.task_id == int(task_id))
@@ -92,40 +118,27 @@ async def _scan_events_for_customer_blocks(session, task_id: int, limit: int = 4
             .limit(limit)
         )
     ).all()
-    rows = list(rows)
-    last_ask: dict | None = None
-    action_list: list[str] = []
-    ask_seq = -1
-    for r in rows:  # 倒序扫描：先找到最新提问块与动作清单
-        if ask_seq < 0 and r.kind in ("hermes", "service"):
-            asks = extract_ask_blocks(r.content or "")
-            if asks:
-                ask_seq = r.seq
-                last_ask = {
-                    "seq": r.seq,
-                    "lines": [ln for ln in asks[-1].splitlines() if ln.strip()],
-                    "answered": False,
-                }
-        if not action_list:
-            al = extract_action_list(r.content or "")
-            if al:
-                action_list = al
-    if last_ask is not None:
-        # 提问块之后是否已有客户回复（更高 seq 的 user 事件）
-        newer = (
-            await session.scalars(
-                _sa_select(AgentSessionEvent.seq)
-                .where(
-                    AgentSessionEvent.task_id == int(task_id),
-                    AgentSessionEvent.seq > ask_seq,
-                    AgentSessionEvent.kind == "user",
+    legacy_asks: list[dict] = []
+    legacy_actions: list[str] = []
+    for r in ev_rows:
+        if r.kind in ("hermes", "service"):
+            for blk in extract_ask_blocks(r.content or ""):
+                legacy_asks.append(
+                    {
+                        "ask_id": None,
+                        "kind": "question",
+                        "items": [{"q": ln} for ln in blk.splitlines() if ln.strip()],
+                        "answered": False,
+                        "answer": None,
+                        "created_at": None,
+                        "legacy": True,
+                    }
                 )
-                .order_by(AgentSessionEvent.seq)
-                .limit(1)
-            )
-        ).first()
-        last_ask["answered"] = newer is not None
-    return {"last_ask": last_ask, "action_list": action_list}
+            for al in extract_action_list(r.content or ""):
+                legacy_actions = al + legacy_actions
+    asks = asks + legacy_asks
+    action_list = action_list + [a for a in legacy_actions if a not in action_list]
+    return {"asks": asks, "action_list": action_list}
 
 # 主会话工具集：全能力开放（产品决定）。bidvolt=全部 39 个业务 MCP 工具（白名单已全放行）；
 # 其余为 Hermes 内置工具集（web/browser/terminal/code_execution/file/vision/
@@ -265,7 +278,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             f"这是对上一轮主会话任务（id={resume_from_task or '上一单'}）的【续跑】，沿用同一会话上下文。"
             "项目数据可能已更新（如新增/更换材料、补录企业资料）：请先用 MCP 工具重新核实项目现状"
             "（list_requirements / list_project_materials / get_deliverable_content / search_assets），"
-            "对照上一轮的总结与【ACTION_LIST】动作清单，从断点继续推进解析→撰写→校验→评审→成文→打包。"
+            "对照上一轮的总结与提交前客户动作清单（report_customer_actions 记录），从断点继续推进解析→撰写→校验→评审→成文→打包。"
             "流程与守则见预载 skill（bidvolt-agent-pipeline）。"
             "写作要求：技术方案/专项响应等方案性条目必须写出完整专业正文（方案性内容大胆写、"
             "事实性数据守据——企业事实用 search_assets，缺数按成品纪律三级处置（填实/无·不适用/客户动作清单）不编造）。"
@@ -280,7 +293,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "推断值写中性事实）；②按采购文件口径本就不需要的填「无（…）/不适用」（如「无：自成立以来未发生名称变更」、"
             "「本项目免收响应保证金，本表不适用」），空表在标题旁注「本表空白=无偏差/不适用」；"
             "③确需客户实体动作的（签字/盖章/签署日期/提交证照原件）成文处按模板留白（不写标签），"
-            "收尾总结以【ACTION_LIST】块输出动作清单（服务端提取后直接呈现给客户）。fill/verify 回执 remaining_blanks 里的【待补充】是"
+            "收尾前用 report_customer_actions 工具上报提交前客户动作清单。fill/verify 回执 remaining_blanks 里的【待补充】是"
             "「还没填完」的信号，逐项清零（填实或写无/不适用），裸【待补充】与「具体标签」字样=判不过。"
             "**深度展开方法**：方案性正文的产出载体是**文件**，不是对话回复——写作子 agent 用 write_file 分段/"
             "terminal 追加/python-docx 直写交付文件，一次写不完就继续写，写到深度达标为止（子 agent 也持整文件直写通道）。"
@@ -288,14 +301,16 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "禁止以「太长/一次写不下」为由只写目录或截断。图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
             "公开语料没有金标准全文不是障碍：深度来源=技术规范书逐条要求+行业标准/白皮书/论文/同类项目公开资料+企业自身资料，"
             "搜索只作补充参考，以本项目文件为主为准。"
-            "**向客户提问（【ASK】协议）**：你可以向客户提问，但**先尽己力**——提问前必须完成三查"
+            "**向客户提问（ask_customer 工具，提问权+提问纪律）**：你可以向客户提问，但**先尽己力**——调用前必须完成三查"
             "（①企业资料库 search_assets+vision 读图取证 ②采购文件与技术规范书原件 ③公开搜索+按采购文件口径合理推断），"
             "三查都拿不到、且属「只有客户本人能提供/只能客户实体动作」的信息（如银行账户、真实签署人身份、证照原件）才允许问。"
             "禁止问：资料库里有的、公开可查的、可推断的、可写「无/不适用」的、不影响直接投标的。"
-            "提问用结构化块**批量**发（一次列完所有问题），每条带「为什么需要+已自查说明」："
-            "【ASK】换行 1. 问题一句话（为什么需要：…；已自查：企业资料库/采购文件/公开搜索均无）换行 2. …换行【ASK_END】。"
-            "提问后不干等：继续推进不依赖答案的工作，答案回来（客户在页面回复，服务端自动注入会话）再回填；"
-            "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/列进【ACTION_LIST】）。"
+            "用 ask_customer 工具**批量**问（一次列完所有问题，不一条一条问），每条带 q/need/checked"
+            "（问题/为什么需要/已自查说明——问得傻会被自己的 checked 暴露）；提问由主会话发起，"
+            "子 agent 发现客户独占信息在回执里列给主会话，主会话统一批量 ask_customer。"
+            "工具立即返回（ask_id），客户在页面回答后回答会自动回到本会话；提问后不干等："
+            "继续推进不依赖答案的工作；答案回来再回填相关字段并重验；"
+            "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/用 report_customer_actions 上报实体动作）。"
             "**报价依据必附（依据随项目而定，缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据写进交付件本身"
             "（报价单「备注/说明」格或价格文件「报价测算说明」页）。依据的**具体构成随本项目而定，由你按实际确定，不照清单硬套**："
             "成本法按本项目真实成本科目（人力/设备/差旅/管理/税费——有什么算什么，没有的不硬凑）；"
@@ -336,10 +351,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "was_verified、package 回执的 audit 清单、inspect_agent_artifact 打开每份文件看实际内容），"
             "发现任何妨碍直接投标的问题就回修、重新封存打包，直到验收子 agent 确认达标。"
             "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录与风险提示，不作验收门。"
-            "收尾总结末尾附【ACTION_LIST】块（提交前客户动作清单，服务端会提取并在页面直接呈现给客户，每行一条、"
-            "写明动作+位置，客户照着做即可）："
-            "【ACTION_LIST】换行1. 盖章：授权委托书第X页加盖公章换行2. …换行【ACTION_LIST_END】；"
-            "没有任何客户动作时输出【ACTION_LIST】无【ACTION_LIST_END】。"
+            "收尾前用 report_customer_actions 工具上报「提交前客户动作清单」（只能客户实体完成的事，"
+            "每行一条、写明动作+位置，如「盖章：授权委托书第X页加盖公章」；服务端记录并呈现给客户；"
+            "没有任何客户动作就不调用）。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
@@ -365,7 +379,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "推断值写中性事实）；②按采购文件口径本就不需要的填「无（…）/不适用」（如「无：自成立以来未发生名称变更」、"
             "「本项目免收响应保证金，本表不适用」），空表在标题旁注「本表空白=无偏差/不适用」；"
             "③确需客户实体动作的（签字/盖章/签署日期/提交证照原件）成文处按模板留白（不写标签），"
-            "收尾总结以【ACTION_LIST】块输出动作清单（服务端提取后直接呈现给客户）。fill/verify 回执 remaining_blanks 里的【待补充】是"
+            "收尾前用 report_customer_actions 工具上报提交前客户动作清单。fill/verify 回执 remaining_blanks 里的【待补充】是"
             "「还没填完」的信号，逐项清零（填实或写无/不适用），裸【待补充】与「具体标签」字样=判不过。"
             "**深度展开方法**：方案性正文的产出载体是**文件**，不是对话回复——写作子 agent 用 write_file 分段/"
             "terminal 追加/python-docx 直写交付文件，一次写不完就继续写，写到深度达标为止（子 agent 也持整文件直写通道）。"
@@ -373,14 +387,16 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "禁止以「太长/一次写不下」为由只写目录或截断。图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
             "公开语料没有金标准全文不是障碍：深度来源=技术规范书逐条要求+行业标准/白皮书/论文/同类项目公开资料+企业自身资料，"
             "搜索只作补充参考，以本项目文件为主为准。"
-            "**向客户提问（【ASK】协议）**：你可以向客户提问，但**先尽己力**——提问前必须完成三查"
+            "**向客户提问（ask_customer 工具，提问权+提问纪律）**：你可以向客户提问，但**先尽己力**——调用前必须完成三查"
             "（①企业资料库 search_assets+vision 读图取证 ②采购文件与技术规范书原件 ③公开搜索+按采购文件口径合理推断），"
             "三查都拿不到、且属「只有客户本人能提供/只能客户实体动作」的信息（如银行账户、真实签署人身份、证照原件）才允许问。"
             "禁止问：资料库里有的、公开可查的、可推断的、可写「无/不适用」的、不影响直接投标的。"
-            "提问用结构化块**批量**发（一次列完所有问题），每条带「为什么需要+已自查说明」："
-            "【ASK】换行 1. 问题一句话（为什么需要：…；已自查：企业资料库/采购文件/公开搜索均无）换行 2. …换行【ASK_END】。"
-            "提问后不干等：继续推进不依赖答案的工作，答案回来（客户在页面回复，服务端自动注入会话）再回填；"
-            "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/列进【ACTION_LIST】）。"
+            "用 ask_customer 工具**批量**问（一次列完所有问题，不一条一条问），每条带 q/need/checked"
+            "（问题/为什么需要/已自查说明——问得傻会被自己的 checked 暴露）；提问由主会话发起，"
+            "子 agent 发现客户独占信息在回执里列给主会话，主会话统一批量 ask_customer。"
+            "工具立即返回（ask_id），客户在页面回答后回答会自动回到本会话；提问后不干等："
+            "继续推进不依赖答案的工作；答案回来再回填相关字段并重验；"
+            "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/用 report_customer_actions 上报实体动作）。"
             "**报价依据必附（依据随项目而定，缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据写进交付件本身"
             "（报价单「备注/说明」格或价格文件「报价测算说明」页）。依据的**具体构成随本项目而定，由你按实际确定，不照清单硬套**："
             "成本法按本项目真实成本科目（人力/设备/差旅/管理/税费——有什么算什么，没有的不硬凑）；"
@@ -408,10 +424,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "was_verified、package 回执的 audit 清单、inspect_agent_artifact 打开每份文件看实际内容），"
             "发现任何妨碍直接投标的问题就回修、重新封存打包，直到验收子 agent 确认达标。"
             "评分步骤：submit_score_items 成功落分即算该步闭环，自动评分分数仅作记录不作验收门。"
-            "收尾总结末尾附【ACTION_LIST】块（提交前客户动作清单，服务端会提取并在页面直接呈现给客户，每行一条、"
-            "写明动作+位置，客户照着做即可）："
-            "【ACTION_LIST】换行1. 盖章：授权委托书第X页加盖公章换行2. …换行【ACTION_LIST_END】；"
-            "没有任何客户动作时输出【ACTION_LIST】无【ACTION_LIST_END】。"
+            "收尾前用 report_customer_actions 工具上报「提交前客户动作清单」（只能客户实体完成的事，"
+            "每行一条、写明动作+位置，如「盖章：授权委托书第X页加盖公章」；服务端记录并呈现给客户；"
+            "没有任何客户动作就不调用）。"
             f"任务 id={task.id}。全部完成后，最后一行单独输出 {MARK_COMPLETE}；"
             f"若确有无法闭环项，最后一行输出 {MARK_INCOMPLETE} 并说明原因。"
         )
@@ -671,7 +686,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "**裸【待补充】（pending_items 里 kind=bare，或 package 回执 audit.bare_pending 非空）必须清零**——"
             "逐处填实或写「无/不适用」，不留待补标签。"
             "同时核对：报价单已随件附测算依据（依据构成随项目而定——真实成本科目+真实找到的行情样本+本项目真实存在的规则面，"
-            "缺依据必须补写）；收尾总结末尾已附【ACTION_LIST】块（无客户动作时写【ACTION_LIST】无【ACTION_LIST_END】）。"
+            "缺依据必须补写）；收尾前已用 report_customer_actions 工具上报提交前客户动作清单（没有客户动作则说明未调用）。"
             "发现问题立即修复（重新 fill/seal/package）后再输出结束标记；"
             "确认无误最后一行输出 " + MARK_COMPLETE + "；确有无法修复项输出 " + MARK_INCOMPLETE + " 原因…。"
         )
@@ -743,13 +758,12 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             f"（session_id={sid}，可恢复后续跑）"
         )
 
-    # 收尾：把客户交互块（提问/动作清单）提取进 result，供前端直接呈现
+    # 收尾：把客户交互（提问/动作清单）提取进 result，供前端直接呈现
     try:
-        blocks = await _scan_events_for_customer_blocks(session, task.id)
-        if blocks.get("action_list"):
-            task.result["action_list"] = blocks["action_list"]
-        if blocks.get("last_ask"):
-            task.result["last_ask"] = blocks["last_ask"]
+        customer = await _customer_state(session, task.id)
+        if customer.get("action_list"):
+            task.result["action_list"] = customer["action_list"]
+        task.result["customer_asks"] = customer.get("asks") or []
         await session.commit()
     except Exception:  # noqa: BLE001 提取失败不影响任务结论
         logger.warning("提取客户交互块失败（task=%s）", task.id, exc_info=True)

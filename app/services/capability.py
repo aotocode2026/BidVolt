@@ -99,6 +99,9 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "download_project_material",
         "upload_deliverable_file",
         "package_response_zip",
+        # 客户交互（主会话↔客户：批量提问/提交前动作清单，页面问卡+回答闭环）
+        "ask_customer",
+        "report_customer_actions",
         # 产物自检（验收子 agent 直接核对导出产物，补模型↔产物之间的验证盲区）
         "list_agent_artifacts",
         "inspect_agent_artifact",

@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import UserContext, require_permission
+from app.api.deps import UserContext, require_capability, require_permission
 from app.config import settings
 from app.constants import Permission, TaskType
 from app.db import get_session
@@ -127,20 +127,20 @@ async def agent_run_status(
     user: UserContext = Depends(require_permission(Permission.FILE_READ)),
 ) -> dict:
     task = await _get_agent_task(session, user, project_id, task_id)
-    # 客户交互块（主会话提问 / 提交前动作清单）：实时从事件库扫描，前端直接呈现
+    # 客户交互状态（主会话提问 / 提交前动作清单）：工具落库为主、旧文本块兜底，前端直接呈现
     customer: dict = {}
     try:
-        from app.services.agent_pipeline import _scan_events_for_customer_blocks
+        from app.services.agent_pipeline import _customer_state
 
-        customer = await _scan_events_for_customer_blocks(session, task_id)
+        customer = await _customer_state(session, task_id)
     except Exception:  # noqa: BLE001 扫描失败不影响状态查询
         customer = {}
     result = task.result or {}
     result = dict(result)
     if customer.get("action_list") and "action_list" not in result:
         result["action_list"] = customer["action_list"]
-    if customer.get("last_ask") and "last_ask" not in result:
-        result["last_ask"] = customer["last_ask"]
+    if customer.get("asks") and "customer_asks" not in result:
+        result["customer_asks"] = customer["asks"]
     return {
         "task_id": task.id,
         "task_type": task.task_type,
@@ -159,12 +159,138 @@ async def agent_run_questions(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_permission(Permission.FILE_READ)),
 ) -> dict:
-    """主会话向客户提的问题（【ASK】块）与提交前客户动作清单（【ACTION_LIST】块）。
-    前端轮询/流内解析后渲染问卡；客户答复走 POST /chat 回到主会话。"""
+    """主会话向客户提的问题（ask_customer 工具）与提交前客户动作清单（report_customer_actions 工具）。
+    前端渲染问卡；客户答复走 POST /asks/{ask_id}/answer 回到主会话。"""
     task = await _get_agent_task(session, user, project_id, task_id)
-    from app.services.agent_pipeline import _scan_events_for_customer_blocks
+    from app.services.agent_pipeline import _customer_state
 
-    return await _scan_events_for_customer_blocks(session, task_id)
+    return await _customer_state(session, task_id)
+
+
+@router.post("/{project_id}/agent-run/{task_id}/asks", status_code=status.HTTP_201_CREATED)
+async def agent_run_ask(
+    project_id: int,
+    task_id: int,
+    body: dict,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("ask_customer")),
+) -> dict:
+    """ask_customer / report_customer_actions 工具：主会话向客户提问或上报提交前动作清单。
+    kind=question：items=[{q, need, checked}]（也兼容纯字符串）；kind=action：items=[str]。
+    MCP 调用 task_id 可传 0，服务端按 capability token 的 tid 解析。"""
+    if task_id == 0:
+        cap = getattr(request.state, "cap_payload", None)
+        if cap is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="task_id 必填")
+        task_id = int(cap["tid"])
+    task = await _get_agent_task(session, user, project_id, task_id)
+    kind = str(body.get("kind") or "question").strip()
+    raw_items = body.get("items") or body.get("questions") or []
+    if kind == "question":
+        items: list[dict] = []
+        for it in raw_items:
+            if isinstance(it, str) and it.strip():
+                items.append({"q": it.strip(), "need": "", "checked": ""})
+            elif isinstance(it, dict) and str(it.get("q") or "").strip():
+                items.append(
+                    {
+                        "q": str(it.get("q")).strip(),
+                        "need": str(it.get("need") or "").strip(),
+                        "checked": str(it.get("checked") or "").strip(),
+                    }
+                )
+        if not items:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="questions 不能为空")
+        answered = 0
+    elif kind == "action":
+        items = [str(x).strip() for x in raw_items if str(x).strip()]
+        if not items:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="actions 不能为空")
+        answered = 1
+    else:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="kind 只能是 question/action")
+    from app.models.agent import AgentCustomerAsk
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, task.enterprise_id)
+    row = AgentCustomerAsk(
+        enterprise_id=task.enterprise_id,
+        project_id=task.project_id,
+        task_id=task.id,
+        kind=kind,
+        items=items,
+        answered=answered,
+    )
+    session.add(row)
+    await session.commit()
+    return {
+        "ask_id": row.id,
+        "kind": kind,
+        "recorded": len(items),
+        "message": (
+            "提问已记录并在页面渲染问卡，客户回答后会自动回到本会话；"
+            "动作清单已记录并呈现给客户。继续推进不依赖答案的工作。"
+        ),
+    }
+
+
+@router.post("/{project_id}/agent-run/{task_id}/asks/{ask_id}/answer")
+async def agent_run_ask_answer(
+    project_id: int,
+    task_id: int,
+    ask_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.PROJECT_EDIT)),
+) -> dict:
+    """客户回答主会话提问：落库 + 注入主会话（运行中排队注入，完成后直接对话）。"""
+    task = await _get_agent_task(session, user, project_id, task_id)
+    from app.models.agent import AgentCustomerAsk
+    from app.services.agent_pipeline import chat_with_session, queue_chat_message
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, task.enterprise_id)
+    row = await session.scalar(
+        select(AgentCustomerAsk).where(
+            AgentCustomerAsk.id == ask_id,
+            AgentCustomerAsk.enterprise_id == task.enterprise_id,
+            AgentCustomerAsk.task_id == task_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="提问记录不存在")
+    if row.kind != "question":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="该记录是动作清单，不需要回答")
+    answer = body.get("answer")
+    if isinstance(answer, str):
+        answer = [answer]
+    if not isinstance(answer, list) or not any(str(x).strip() for x in answer):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="answer 不能为空")
+    row.answer = [str(x).strip() for x in answer]
+    row.answered = 1
+    lines = []
+    for i, it in enumerate(row.items or []):
+        a = row.answer[i] if i < len(row.answer) else ""
+        lines.append(f"{i + 1}. 问题：{it.get('q')} → 客户回答：{a}")
+    inject = (
+        "客户已回答主会话提问（ask_id=" + str(row.id) + "）：\n" + "\n".join(lines)
+        + "\n请据此回填相关字段并重新核验；其余仍缺的信息继续按三级处置。"
+    )
+    if task.status in (1, 2):
+        await queue_chat_message(session, task, inject)
+        reply = None
+    else:
+        try:
+            d = await chat_with_session(session, task, inject)
+            reply = d.get("reply")
+        except ValueError as exc:
+            await queue_chat_message(session, task, inject)
+            reply = None
+            logger_ = __import__("logging").getLogger(__name__)
+            logger_.warning("回答注入走排队通道（%s）", exc)
+    await session.commit()
+    return {"ask_id": row.id, "answered": True, "queued": reply is None, "reply": reply}
 
 
 @router.get("/{project_id}/agent-run/{task_id}/stream")

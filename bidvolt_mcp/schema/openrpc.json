@@ -1325,7 +1325,7 @@
     },
     {
       "name": "fill_template_slice",
-      "summary": "成文工具（机制）：对切片做修订模式填空+批注。先按 fields（buyer/project_name/supplier/tender_no）走标准填空规则（无资料的空位原位标注【待补充：标签】），再按 fills=[{find,value,comment}] 定向替换。所有改动均带修订标记与来源批注，模板原文保留为删除线。机制边界（必读）：values 只命中「标签：空位/下划线」形态（标签+冒号紧跟空位）；无标签下划线（如「特授权____」「____（盖章）」）values 打不到——回执 remaining_blanks 里label 为空的 underscore/裸【待补充】项就是没打到的，逐个用 fills 定向替换成带具体标签的【待补充：xxx】或直接填实值，不留裸【待补充】。",
+      "summary": "成文工具（机制）：对切片填空——直接干净写入正文（无修订、无批注）。先按 fields（buyer/project_name/supplier/tender_no）走标准填空规则（无资料的空位原位标注【待补充：标签】——这只是「还没填完」的信号，须随后清零：填实或写「无/不适用」），再按 fills=[{find,value,comment}] 定向替换。机制边界（必读）：values 只命中「标签：空位/下划线」形态（标签+冒号紧跟空位）；无标签下划线（如「特授权____」「____（盖章）」）values 打不到——回执 remaining_blanks 里label 为空的 underscore/裸【待补充】项就是没打到的，逐个用 fills 定向替换成实值或「无/不适用」，不留待补标签。",
       "params": [
         {
           "name": "args",
@@ -1340,7 +1340,7 @@
               },
               "fields": {
                 "type": "object",
-                "description": "buyer/project_name/supplier/tender_no 为四个便捷键；values={模板词: {value, source}} 是通用词表填值——模板里出现什么词就填什么（占位符如（采购人）、标签如电话/单位地址/分标名称、任意自定义词都可以），值从哪取由主会话决定：企业资料库 search_assets / 采购文件 / 网络搜索 / 推断均可，source 写来源（进批注）；label_values={词:值} 为不带来源的简写"
+                "description": "buyer/project_name/supplier/tender_no 为四个便捷键；values={模板词: {value, source}} 是通用词表填值——模板里出现什么词就填什么（占位符如（采购人）、标签如电话/单位地址/分标名称、任意自定义词都可以），值从哪取由主会话决定：企业资料库 search_assets / 采购文件 / 网络搜索 / 推断均可，source 仅作内部记录（不产 Word 批注，出处写文末「引用来源清单」）；label_values={词:值} 为不带来源的简写"
               },
               "fills": {
                 "type": "array",
@@ -1356,7 +1356,7 @@
                     },
                     "comment": {
                       "type": "string",
-                      "description": "批注：来源与依据"
+                      "description": "内部记录：来源与依据（不产 Word 批注）"
                     }
                   },
                   "required": [
@@ -1388,7 +1388,7 @@
                     },
                     "comment": {
                       "type": "string",
-                      "description": "批注：来源与依据"
+                      "description": "内部记录：来源与依据（不产 Word 批注）"
                     }
                   },
                   "required": [
@@ -1425,7 +1425,7 @@
     },
     {
       "name": "append_template_slice",
-      "summary": "成文工具（机制）：把撰写内容追加到切片（修订插入+批注）。nodes 支持 {type:heading|paragraph|table,text/rows} 或裸字符串；heading 为总标题，按投标文体自定（方案类条目正文追加用），不传用中性默认「响应内容」。",
+      "summary": "成文工具（机制）：把撰写内容直接追加为切片正文（无修订、无批注）。nodes 支持 {type:heading|paragraph|table,text/rows} 或裸字符串；heading 为总标题，按投标文体自定（方案类条目正文追加用），不传用中性默认「响应内容」。",
       "params": [
         {
           "name": "args",
@@ -1474,7 +1474,7 @@
     },
     {
       "name": "verify_template_slice",
-      "summary": "成文工具（机制）：切片忠实性校验——条目文件原文（含删除线、剔除插入）必须逐字包含于底稿原文，返回 {ok, issues, original_chars, inserted_chars, deleted_chars}。不通过时主会话应带报告回修（重新 fill/append 或重新 slice）后再 seal。",
+      "summary": "成文工具（机制）：切片忠实性校验（干净成文口径）——模板段落按「原文+替换链」复算保真（未被直接改写/删除）+ 切片模板原文逐字⊂底稿，返回 {ok, issues, original_chars, inserted_chars, deleted_chars}。不通过时主会话应带报告回修（重新 fill/append 或重新 slice）后再 seal。",
       "params": [
         {
           "name": "args",
@@ -1560,7 +1560,7 @@
     },
     {
       "name": "build_quote_xlsx",
-      "summary": "成文工具（机制）：按主会话给出的 sheets 生成报价单 xlsx 并落产物库，返回 artifact_id。rows 必须是【数组的数组】（每行是一个字符串/数字数组）。报价金额由主会话测算填写（参考公开中标价/市场行情搜索+成本测算，总价≤最高限价），客户后续自行确认修改。合计机制：把「响应总价（含税）」行的合价单元格写字面量 =SUM（不要手写坐标）——服务端自动替换为该列上方全部数值的求和公式；该列上方还无数值时置空，不编造合计。",
+      "summary": "成文工具（机制）：按主会话给出的 sheets 生成报价单 xlsx 并落产物库，返回 artifact_id。rows 必须是【数组的数组】（每行是一个字符串/数字数组）。报价金额由主会话测算填写（参考公开中标价/市场行情搜索+成本测算，总价≤最高限价；依据随项目而定，随件附在备注/说明格或「报价测算说明」页）。合计机制：表中有合计行时，其合价单元格写字面量 =SUM（不要手写坐标）——服务端自动替换为该列上方全部数值的求和公式；该列上方还无数值时置空，不编造合计。",
       "params": [
         {
           "name": "args",
@@ -1660,7 +1660,7 @@
     },
     {
       "name": "inspect_agent_artifact",
-      "summary": "成文工具（产物自检）：预览单个封存产物的内容——docx 返回文本头尾/字数/【待补充】计数/修订计数；xlsx 返回各表行列数与前几行；zip 返回文件清单。验收子 agent 用它核对导出产物与成果模型是否一致（例如报价单 xlsx 是否有完整表格而不是单格占位）。",
+      "summary": "成文工具（产物自检）：预览单个封存产物的内容——docx 返回文本头尾/字数/【待补充】计数/修订残留计数（应为 0）；xlsx 返回各表行列数与前几行；zip 返回文件清单。验收子 agent 用它核对导出产物与成果模型是否一致（例如报价单 xlsx 是否有完整表格而不是单格占位）。",
       "params": [
         {
           "name": "args",
@@ -1738,7 +1738,7 @@
     },
     {
       "name": "upload_deliverable_file",
-      "summary": "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存。推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片修订路径并列可选，服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；name 为包内路径名（如 技术文件/（二）专项响应文件.docx）。上传后与切片产物同样参与打包与审计。",
+      "summary": "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存。推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片填空路径并列可选，服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；name 为包内路径名（如 技术文件/（二）专项响应文件.docx）。上传后与切片产物同样参与打包与审计。",
       "params": [
         {
           "name": "args",
@@ -1803,6 +1803,117 @@
             },
             "required": [
               "project_id"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ask_customer",
+      "summary": "客户交互工具：向客户批量提问（question）。调用前必须先完成三查（①企业资料库 search_assets+vision 读图取证 ②采购文件/技术规范书原件 ③公开搜索+按采购文件口径合理推断），三查都拿不到、且属「只有客户本人能提供/只能客户实体动作」的信息（如银行账户、真实签署人身份、证照原件、公章）才允许问。禁止问：资料库里有的、公开可查的、可推断的、可写「无/不适用」的、不影响直接投标的。一次批量问完所有问题（不一条一条问）。调用后不干等：工具立即返回，客户在页面回答后回答会自动回到本会话；继续推进不依赖答案的工作。每问一条都要写清 need（为什么需要）与 checked（已自查说明），问得傻会被自己暴露。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "task_id": {
+                "type": "integer",
+                "description": "任务 id（缺省按授权上下文解析）"
+              },
+              "questions": {
+                "type": "array",
+                "description": "批量问题（一次列完）",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "q": {
+                      "type": "string",
+                      "description": "问题一句话"
+                    },
+                    "need": {
+                      "type": "string",
+                      "description": "为什么需要这个信息（不答会卡住什么）"
+                    },
+                    "checked": {
+                      "type": "string",
+                      "description": "已自查说明（查了哪些来源、为什么拿不到）"
+                    }
+                  },
+                  "required": [
+                    "q"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "project_id",
+              "questions"
+            ],
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "report_customer_actions",
+      "summary": "客户交互工具：上报「提交前客户动作清单」（action）——只能客户实体完成的事（如盖章/签字/提交证照原件），服务端记录并在页面呈现给客户，客户照着做。每行一条、写明动作+位置（如「盖章：授权委托书第X页加盖公章」）。没有客户动作就不用调用。收尾前必须把仍缺的实体动作用本工具上报。",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer"
+              },
+              "task_id": {
+                "type": "integer",
+                "description": "任务 id（缺省按授权上下文解析）"
+              },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "客户动作清单（每行一条，写明动作+位置）"
+              }
+            },
+            "required": [
+              "project_id",
+              "actions"
             ],
             "additionalProperties": false
           },
