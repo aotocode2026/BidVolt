@@ -104,13 +104,14 @@ def _download_project_material(args: dict) -> dict:
 
 
 def _upload_deliverable_file(args: dict) -> dict:
-    """整文件交付：读取本地写好的完整交付文件并上传封存。
+    """整文件交付：读取本地写好的完整交付文件并上传封存；传 artifact_id 时覆盖修改原产物。
 
     Hermes 用 python-docx/openpyxl（可含 matplotlib/mermaid 生成的图片）直接写完整文件，
     再经本工具上传——服务端不介入内容生成。local_path 须为服务器本地绝对路径
     （/data/hermes/... 或 /tmp/...，与 Hermes 工作区同机）。"""
     local_path = str(args.get("local_path") or "")
     name = str(args.get("name") or "")
+    artifact_id = args.get("artifact_id")
     if not local_path.startswith(("/data/hermes/", "/tmp/")):
         raise ValueError("local_path 仅允许 /data/hermes/ 或 /tmp/ 下的文件")
     try:
@@ -118,9 +119,17 @@ def _upload_deliverable_file(args: dict) -> dict:
             content = f.read()
     except OSError as exc:
         raise ValueError(f"无法读取 local_path：{exc}") from exc
-    if not name:
+    if not name and not artifact_id:
         name = local_path.rsplit("/", 1)[-1]
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=300) as client:
+        if artifact_id is not None:
+            resp = client.put(
+                f"/api/v1/projects/{args['project_id']}/assembly/artifacts/{int(artifact_id)}",
+                files={"file": ((name or "file").rsplit("/", 1)[-1], content, "application/octet-stream")},
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
         resp = client.post(
             f"/api/v1/projects/{args['project_id']}/assembly/upload-file",
             data={"name": name},
@@ -395,11 +404,14 @@ ASSEMBLY_TOOL_DEFS = [
     {
         "name": "upload_deliverable_file",
         "description": (
-            "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存。"
+            "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存；"
+            "传 artifact_id 时**覆盖修改**原产物（artifact_id 与包内路径名不变，内容整体替换）——"
+            "产物随时可以改：本地改完文件后覆盖上传，再重新 package_response_zip 打包即可。"
             "推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、"
             "数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片填空路径并列可选，"
             "服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；"
-            "name 为包内路径名（如 技术文件/（二）专项响应文件.docx）。上传后与切片产物同样参与打包与审计。"
+            "name 为包内路径名（如 技术文件/（二）专项响应文件.docx；覆盖时可不传）。"
+            "上传后与切片产物同样参与打包与审计。"
         ),
         "inputSchema": {
             "type": "object",
@@ -407,8 +419,12 @@ ASSEMBLY_TOOL_DEFS = [
                 "project_id": {"type": "integer"},
                 "local_path": {"type": "string"},
                 "name": {"type": "string"},
+                "artifact_id": {
+                    "type": "integer",
+                    "description": "覆盖修改时传原产物 id（seal/上传回执里拿），不传则新建产物",
+                },
             },
-            "required": ["project_id", "local_path", "name"],
+            "required": ["project_id", "local_path"],
             "additionalProperties": False,
         },
         "handler": _upload_deliverable_file,

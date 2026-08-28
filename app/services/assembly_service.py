@@ -535,6 +535,58 @@ async def upload_artifact_file(
     return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "kind": kind}
 
 
+async def replace_artifact_file(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    task_id: int,
+    artifact_id: int,
+    data: bytes,
+) -> dict:
+    """覆盖修改已封存产物（Hermes 修完文件直接换内容）：artifact_id 与包内路径名不变，
+    内容整体替换——随时可改，改完重新打包即可。"""
+    import io as _io
+    import zipfile as _zip
+
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    if len(data) > 60 * 1024 * 1024:
+        raise ValueError("文件超过 60MB 上限")
+    await _set_rls_context(session, enterprise_id)
+    art = await session.scalar(
+        _sa_select(AgentArtifact).where(
+            AgentArtifact.id == int(artifact_id),
+            AgentArtifact.enterprise_id == enterprise_id,
+            AgentArtifact.project_id == int(project_id),
+        )
+    )
+    if art is None:
+        raise ValueError("产物不存在或不属于本项目")
+    stem = (art.name or "").rsplit("/", 1)[-1]
+    ext = stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
+    if ext == "docx":
+        try:
+            with _zip.ZipFile(_io.BytesIO(data)) as zf:
+                if "word/document.xml" not in zf.namelist():
+                    raise ValueError
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("docx 结构无效（不是有效的 Word 文件）") from exc
+    elif ext == "xlsx":
+        pass
+    elif ext == "pdf":
+        if not data.startswith(b"%PDF-"):
+            raise ValueError("pdf 文件头无效")
+    else:
+        raise ValueError("仅支持 docx/xlsx/pdf 产物覆盖")
+    art.content = data
+    await session.commit()
+    await _set_rls_context(session, enterprise_id)
+    return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "replaced": True}
+
+
 async def package_zip(
     session: AsyncSession,
     enterprise_id: int,

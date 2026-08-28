@@ -1738,7 +1738,7 @@
     },
     {
       "name": "upload_deliverable_file",
-      "summary": "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存。推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片填空路径并列可选，服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；name 为包内路径名（如 技术文件/（二）专项响应文件.docx）。上传后与切片产物同样参与打包与审计。",
+      "summary": "成文工具（整文件交付通道）：把 Hermes 本地写好的完整交付文件（docx/xlsx/pdf）上传封存；传 artifact_id 时**覆盖修改**原产物（artifact_id 与包内路径名不变，内容整体替换）——产物随时可以改：本地改完文件后覆盖上传，再重新 package_response_zip 打包即可。推荐做法：用 python-docx/openpyxl 直接生成完整文档（可用 matplotlib/mermaid 生成架构图、数据流图、进度甘特图并插入 docx），写好后经本工具上传；与切片填空路径并列可选，服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；name 为包内路径名（如 技术文件/（二）专项响应文件.docx；覆盖时可不传）。上传后与切片产物同样参与打包与审计。",
       "params": [
         {
           "name": "args",
@@ -1753,12 +1753,15 @@
               },
               "name": {
                 "type": "string"
+              },
+              "artifact_id": {
+                "type": "integer",
+                "description": "覆盖修改时传原产物 id（seal/上传回执里拿），不传则新建产物"
               }
             },
             "required": [
               "project_id",
-              "local_path",
-              "name"
+              "local_path"
             ],
             "additionalProperties": false
           },

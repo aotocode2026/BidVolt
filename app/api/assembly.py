@@ -206,6 +206,32 @@ async def upload_deliverable_file(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.put("/{project_id}/assembly/artifacts/{artifact_id}")
+async def replace_deliverable_file(
+    project_id: int,
+    artifact_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("upload_deliverable_file")),
+) -> dict:
+    """覆盖修改已封存产物：Hermes 修完文件直接换内容，artifact_id 与包内路径名不变。
+    随时可改——改完重新 package_response_zip 打包即可，交付包与最终文件保持一致。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    data = await file.read(60 * 1024 * 1024 + 1)
+    try:
+        return await assembly_service.replace_artifact_file(
+            session,
+            user.enterprise_id,
+            project_id,
+            _cap_task(request),
+            artifact_id,
+            data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("/{project_id}/assembly/package", status_code=status.HTTP_201_CREATED)
 async def package_response_zip(
     project_id: int,
