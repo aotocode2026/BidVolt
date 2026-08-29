@@ -620,6 +620,14 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 last_out_at = loop.time()
                     except Exception:  # noqa: BLE001 会话库读取瞬时失败下次再试
                         round_marker = None
+                    if not round_marker:
+                        # 兜底：事件流里的主会话回执（导出通道偶发失配时仍能识别）
+                        try:
+                            round_marker = await asyncio.wait_for(
+                                _marker_from_events(session, task), timeout=20
+                            )
+                        except Exception:  # noqa: BLE001
+                            round_marker = None
                     if round_marker:
                         break
                 # 进程提前退出且没有待刷事件
@@ -628,6 +636,13 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 # 卡顿催办：逐级加强，最后一级只索取结束标记
                 if loop.time() - last_out_at > STALL_SECONDS:
                     if nudges >= NUDGE_LIMIT:
+                        # 出口前兜底：事件流里已有主会话输出的结束标记（导出通道偶发失配时误催办）
+                        try:
+                            if await asyncio.wait_for(_marker_from_events(session, task), timeout=20) == MARK_COMPLETE:
+                                round_marker = MARK_COMPLETE
+                                break
+                        except Exception:  # noqa: BLE001
+                            pass
                         logger.warning("主会话持续无输出，判定卡死（task=%s）", task.id)
                         round_marker = MARK_INCOMPLETE
                         pending.append(
@@ -807,7 +822,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
 
 async def _export_session_json(hermes_bin: str, env: dict, session_id: str) -> dict | None:
-    """导出一个 Hermes 会话的最新 jsonl 记录（最后一条）。失败返回 None。"""
+    """导出一个 Hermes 会话的最新 jsonl 记录。失败返回 None。
+    导出可能多行（每行一条记录）、也可能单行整包；最后一行可能是会话元信息——
+    从后往前找第一条带消息内容（messages 键或 assistant/user 内容）的记录。"""
     import json  # noqa: PLC0415
 
     proc = await asyncio.create_subprocess_exec(
@@ -819,24 +836,39 @@ async def _export_session_json(hermes_bin: str, env: dict, session_id: str) -> d
     lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()]
     if not lines:
         return None
-    try:
-        return json.loads(lines[-1])
-    except ValueError:
-        return None
+    for ln in reversed(lines):
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and (
+            rec.get("messages")
+            or rec.get("role") in ("assistant", "user")
+            or rec.get("content") not in (None, "")
+        ):
+            return rec
+    return None
 
 
 def _marker_from_export(data: dict | None, min_index: int = 0) -> str | None:
-    """从会话导出数据判完成标记（只看 min_index 之后的最后一条 assistant 回复）。
+    """从会话导出数据判完成标记（只看 min_index 之后的 assistant 回复，多扫最近若干条——
+    末尾可能夹着用户催办/工具记录，不能只看最后一条）。
     协议要求标记逐字出现在**最后一行**——正文里转述子 agent 的「判【PIPELINE_INCOMPLETE】」
     等字样不算回执（曾因此把主会话工作摘要误判为结束回执，提前终止任务）。"""
     if not data:
         return None
     messages = data.get("messages") or []
+    checked = 0
     for idx in range(len(messages) - 1, min_index - 1, -1):
         m = messages[idx]
         if m.get("role") != "assistant":
             continue
         content = str(m.get("content") or "")
+        if isinstance(m.get("content"), list):  # 兼容 content 为分片数组的导出形状
+            content = " ".join(
+                str(p.get("text") or "") if isinstance(p, dict) else str(p)
+                for p in m["content"]
+            )
         lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
         if not lines:
             continue
@@ -845,7 +877,35 @@ def _marker_from_export(data: dict | None, min_index: int = 0) -> str | None:
             return MARK_COMPLETE
         if last == MARK_INCOMPLETE or last.startswith(MARK_INCOMPLETE):
             return MARK_INCOMPLETE
-        break  # 只看最后一条 assistant 回复
+        checked += 1
+        if checked >= 10:  # 只回看最近 10 条 assistant 回复，防误读旧回执
+            break
+    return None
+
+
+async def _marker_from_events(session: AsyncSession, task: Task, limit: int = 400) -> str | None:
+    """兜底通道：直接扫事件库里主会话最近的输出行找结束标记。
+    会话库导出偶发失配（压缩/快照时序）时，主会话真实回执仍在事件流里。"""
+    from sqlalchemy import select as sa_select
+
+    rows = (
+        await session.scalars(
+            sa_select(AgentSessionEvent)
+            .where(
+                AgentSessionEvent.task_id == task.id,
+                AgentSessionEvent.kind == "hermes",
+            )
+            .order_by(AgentSessionEvent.seq.desc())
+            .limit(limit)
+        )
+    ).all()
+    for r in rows:
+        for ln in (r.content or "").splitlines():
+            ln = ln.strip()
+            if ln == MARK_COMPLETE or ln.startswith(MARK_COMPLETE):
+                return MARK_COMPLETE
+            if ln == MARK_INCOMPLETE or ln.startswith(MARK_INCOMPLETE):
+                return MARK_INCOMPLETE
     return None
 
 
