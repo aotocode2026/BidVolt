@@ -94,6 +94,10 @@ async def agent_run(
             )
         payload["resume_from_task_id"] = int(resume_from_task_id)
         payload["resume_session_id"] = prev_sid
+    # 任务前对话：项目已有 pre-chat 会话且未显式续跑时，把任务 prompt 注入该会话
+    if not payload.get("resume_session_id") and project.pre_chat_session_id:
+        payload["resume_session_id"] = project.pre_chat_session_id
+        payload["pre_chat"] = True
     task, created = await create_task(
         session,
         enterprise_id=user.enterprise_id,
@@ -351,6 +355,37 @@ async def agent_run_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/{project_id}/pre-chat")
+async def project_pre_chat(
+    project_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.PROJECT_EDIT)),
+) -> dict:
+    """任务前对话：项目尚无主会话任务时，客户先与 Hermes 聊天建立项目会话
+    （session 存 project.pre_chat_session_id）；之后 agent-run 会把任务 prompt
+    注入该会话，任务前的交代自动成为主会话上下文。"""
+    if not settings.agent_pipeline_enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent 主会话流程未启用")
+    project = await session.scalar(
+        select(Project).where(
+            Project.id == project_id,
+            Project.enterprise_id == user.enterprise_id,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    message = str(body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message 不能为空")
+    from app.services.agent_pipeline import pre_chat
+
+    try:
+        return await pre_chat(session, project, message)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/{project_id}/agent-run/{task_id}/chat")

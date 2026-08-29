@@ -273,7 +273,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     payload = task.payload or {}
     resume_session_id = str(payload.get("resume_session_id") or "").strip() or None
     resume_from_task = payload.get("resume_from_task_id")
-    if resume_session_id:
+    pre_chat = bool(payload.get("pre_chat"))
+    if resume_session_id and not pre_chat:
         prompt = (
             f"这是对上一轮主会话任务（id={resume_from_task or '上一单'}）的【续跑】，沿用同一会话上下文。"
             "项目数据可能已更新（如新增/更换材料、补录企业资料）：请先用 MCP 工具重新核实项目现状"
@@ -373,7 +374,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         )
     else:
         prompt = (
-            f"请为项目 {task.project_id} 执行投标工作台端到端流程：解析→撰写→校验→评审→交付。"
+            (("（会话历史中有客户在任务开始前的交代，先快速回顾一遍再按任务书执行。）" if pre_chat else ""))
+            + f"请为项目 {task.project_id} 执行投标工作台端到端流程：解析→撰写→校验→评审→交付。"
             "流程与守则见预载 skill（bidvolt-agent-pipeline）；用 todo 列计划，"
             "用 delegate_task 派子任务（子 agent 结果会自动回到本会话，派完继续推进，不要停下来等），"
             "验收不通过带报告修复，全部满足后再输出。"
@@ -972,6 +974,57 @@ def _strip_session_trailer(raw: str) -> str:
             continue
         out.append(ln)
     return "\n".join(out).strip()
+
+
+_SESSION_ID_RE = re.compile(r"Session:\s*([\w-]+)")
+
+
+async def pre_chat(session: AsyncSession, project, message: str) -> dict:
+    """任务前对话：项目尚无主会话任务时，客户先与 Hermes 聊天建立项目会话
+    （session id 存 project.pre_chat_session_id）；后续 agent-run 把任务 prompt
+    注入该会话，任务前的交代自动成为主会话上下文。"""
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    hermes_bin = _hermes_bin()
+    if hermes_bin is None or not os.path.exists(hermes_bin):
+        raise ValueError("Hermes 未安装：无法对话")
+    sid = project.pre_chat_session_id
+    env = _hermes_env("")
+    env["BIDVOLT_CAPABILITY_TOKEN"] = ""
+    # 任务前无 capability：清掉 cap 文件残留，避免读到上一个任务的过期 token
+    try:
+        cap_file = os.environ.get("BIDVOLT_CAP_FILE", "/tmp/bidvolt_cap_token")
+        if os.path.exists(cap_file):
+            os.remove(cap_file)
+    except OSError:
+        pass
+    await _set_rls_context(session, project.enterprise_id)
+
+    lock = _CHAT_LOCKS.setdefault(f"project-{project.id}", asyncio.Lock())
+    async with lock:
+        args = [hermes_bin, "chat", "-q", message,
+                "-t", _CHAT_TOOLSETS,
+                "--cli", "-Q", "--yolo", "--accept-hooks",
+                "--max-turns", "60", "--no-restore-cwd"]
+        if sid:
+            args += ["--resume", sid]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=env, cwd=env["HERMES_HOME"],
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=1800)
+        except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
+            raise ValueError("任务前对话超时（1800s）：请稍后再试") from None
+        raw = out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace")
+        reply = _strip_session_trailer(raw).strip()
+        m = _SESSION_ID_RE.search(raw)
+        if m:
+            sid = m.group(1)
+            project.pre_chat_session_id = sid
+            await session.commit()
+        return {"reply": reply, "session_id": sid, "returncode": proc.returncode}
 
 
 _KIND_TITLES = {

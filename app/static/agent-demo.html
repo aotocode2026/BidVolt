@@ -74,7 +74,7 @@ input{padding:6px;margin:4px;width:280px}
 <hr>
 <h2>会话控制台（服务 ↔ Hermes 主会话 全量消息；可直接对话）</h2>
 <div>
-  <input id="c-msg" placeholder="给主会话发消息（运行中排队注入·当前轮结束后回复；完成后直接对话）" style="width:520px">
+  <input id="c-msg" placeholder="给主会话发消息（任务前先交代·开跑自动带上；运行中排队注入；完成后直接对话）" style="width:560px">
   <button onclick="chatSend()">发送</button>
   <label style="margin-left:14px;user-select:none">
     <input type="checkbox" id="c-condensed" onchange="renderConsole()"> 精简视图
@@ -363,7 +363,21 @@ function consoleClose(){
 async function chatSend(){
   const msg = document.getElementById("c-msg").value.trim();
   if(!msg){log("先输入消息");return;}
-  if(!taskId){log("还没有任务");return;}
+  if(!taskId){
+    // 任务前对话：项目级 pre-chat 会话（agent-run 开跑时任务 prompt 会注入该会话）
+    if(!projectId){log("先创建项目");return;}
+    try{
+      const d = await api("POST", `/api/v1/projects/${projectId}/pre-chat`, {message: msg});
+      consoleAppend(++consoleSeq, "user", msg);
+      consoleAppend(++consoleSeq, "hermes", d.reply || "(空回复)");
+      log("任务前对话已建立（session_id=" + d.session_id + "）——开跑时自动带上这段交代");
+      document.getElementById("c-msg").value = "";
+      return;
+    }catch(e){
+      consoleAppend(++consoleSeq, "error", String(e.message || e));
+      return;
+    }
+  }
   consoleAppend(++consoleSeq, "user", msg);
   try{
     const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/chat`, {message: msg});
