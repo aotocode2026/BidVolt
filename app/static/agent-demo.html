@@ -32,6 +32,10 @@ input{padding:6px;margin:4px;width:280px}
   <button onclick="upload()">上传采购文件</button>
 </div>
 <div>
+  <input type="file" id="e-file" multiple>
+  <button onclick="uploadEnterprise()">上传企业资料（资质/业绩/人员/财务 → 企业资料库）</button>
+</div>
+<div>
   <button onclick="agentRun()">▶ Agent 主会话（端到端）</button>
   <button onclick="agentRunResume()">↻ 续跑上次主会话</button>
   <button onclick="refreshTask()">刷新任务状态</button>
@@ -70,7 +74,7 @@ input{padding:6px;margin:4px;width:280px}
 <hr>
 <h2>会话控制台（服务 ↔ Hermes 主会话 全量消息；可直接对话）</h2>
 <div>
-  <input id="c-msg" placeholder="给主会话发消息（任务完成后可对话）" style="width:520px">
+  <input id="c-msg" placeholder="给主会话发消息（运行中排队注入·当前轮结束后回复；完成后直接对话）" style="width:520px">
   <button onclick="chatSend()">发送</button>
   <label style="margin-left:14px;user-select:none">
     <input type="checkbox" id="c-condensed" onchange="renderConsole()"> 精简视图
@@ -408,6 +412,17 @@ async function upload(){
   const resp = await fetch(BASE + "/api/v1/files/upload", {method:"POST", headers:{"Authorization":"Bearer "+token}, body:fd});
   const d = await resp.json();
   log("上传: " + JSON.stringify(d).slice(0,200));
+}
+async function uploadEnterprise(){
+  const files = document.getElementById("e-file").files;
+  if(!files.length){log("先选文件");return;}
+  const fd = new FormData();
+  fd.append("target","enterprise"); fd.append("files", files[0]);
+  for(let i=1;i<files.length;i++) fd.append("files", files[i]);
+  log("企业资料上传中（自动入库+按文件名分类+抽取初始事实）…");
+  const resp = await fetch(BASE + "/api/v1/files/upload", {method:"POST", headers:{"Authorization":"Bearer "+token}, body:fd});
+  const d = await resp.json();
+  log("企业资料: " + JSON.stringify(d).slice(0,600));
 }
 async function agentRun(){
   const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}});
