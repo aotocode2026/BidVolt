@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # 主会话最大时长（秒）：端到端包含多轮子任务 + 跑内验收回修循环 + 完成复核，
 # 主会话自主收敛需要充足预算（378 实测 2h 不够，验收循环干到超时被切）——给足 3h
-PIPELINE_TIMEOUT = 10800
+PIPELINE_TIMEOUT = 21600
 # 事件落库节流：每 5 秒刷一次
 EVENT_FLUSH_SECONDS = 5
 # 卡顿阈值：无任何新输出超过该时长则温和催办一次
@@ -485,7 +485,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         # 全能力开放：跳过危险命令确认与 shell 钩子确认（自主批量运行无人可点确认，
         # 留着确认流程=终端能力形同虚设；交付件合规性由主会话+验收/评审子 agent 保证）
         "--yolo", "--accept-hooks",
-        "--no-restore-cwd", "--max-turns", "120",
+        "--no-restore-cwd", "--max-turns", "360",
     ]
     # 模型可选（A/B 用）：agent-run payload 传 model/provider 时切换主模型，
     # 不传默认 MiniMax-M3/minimax（config.yaml）
