@@ -265,16 +265,20 @@ async def process_archive(
 
     imported: list[int] = []
     failed: list[dict] = []
+    duplicates: list[dict] = []
     for entry in entries:
         try:
             fobj = await process_upload(
                 session, user, entry["data"], entry["name"], target, project_id
             )
             imported.append(fobj.id)
+        except DuplicateUploadError as dup:
+            # 包内文件与库内已有文件内容相同：跳过重复入库（不算失败）
+            duplicates.append({"name": entry["name"], "file_id": dup.existing.id})
         except Exception as exc:  # noqa: BLE001
             failed.append({"name": entry["name"], "reason": str(exc)})
 
     job.status = 2 if not failed else 3
-    job.result = {"imported": imported, "failed": failed}
+    job.result = {"imported": imported, "failed": failed, "duplicates": duplicates}
     await session.commit()
     return job
