@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     cors_origins: str = ""
 
     # 文件安全（M2，P1）
-    max_upload_bytes: int = 200 * 1024 * 1024
+    max_upload_bytes: int = 500 * 1024 * 1024
     virus_scan_required: bool = False  # 生产置 True：ClamAV 不可用则 fail-closed
 
     @property

@@ -165,8 +165,11 @@ const KIND_LABEL = {
 
 let consoleEvents = [];
 
-/* 精简视图噪音行判定（与后端 session_record 精简版同一套规则） */
-const NOISE_LINE = [/^⚕/, /^❯/, /^\(°ロ°\)/, /^\(⌐■_■\)/, /^\(¬_¬\)/, /^╭─/, /^╰─/, /^┌─/, /^└/, /^[│╭╰╞┌└─═]+$/];
+/* 精简视图噪音行判定（与后端 session_record 精简版同一套规则 + 状态条碎片补充） */
+const NOISE_LINE = [
+  /^⚕/, /^❯/, /^\(°ロ°\)/, /^\(⌐■_■\)/, /^\(¬_¬\)/, /^╭─/, /^╰─/, /^┌─/, /^└/, /^[│╭╰╞┌└─═]+$/,
+  /^\([^()\n]{1,12}\)\s/, /^ヽ/, /^🗜️/, /^↩/, /^\d{1,4}s?\s*│/, /^\d{1,6}$/, /^⚠/, /^Requesting summary/, /^Iteration budget/,
+];
 const BOX_CHARS = "█░╭╮╰╯│┤┐┌└┘─═╞╡┴┬├";
 function isNoiseLine(s){
   s = (s || "").trim();
@@ -191,9 +194,16 @@ function eventVisible(content){
 function renderConsole(){
   const el = document.getElementById("console");
   const condensed = document.getElementById("c-condensed").checked;
+  const MAX_EVENTS = 2000; // 只渲染最近 N 条，防止长任务事件洪峰撑爆页面（完整记录随交付包会话记录）
+  let events = consoleEvents;
+  let folded = 0;
+  if(events.length > MAX_EVENTS){
+    folded = events.length - MAX_EVENTS;
+    events = events.slice(-MAX_EVENTS);
+  }
   let out = "";
   let hidden = 0;
-  for(const e of consoleEvents){
+  for(const e of events){
     if(condensed && !eventVisible(e.content)){ hidden++; continue; }
     let head = KIND_LABEL[e.kind] || e.kind;
     if(e.kind === "service" && /催办|系统提示|判定|未闭环|续跑/.test(e.content || "")){
@@ -202,6 +212,7 @@ function renderConsole(){
     out += `\n\n=== ${head} [seq ${e.seq}] ===\n${e.content}`;
   }
   if(condensed && hidden) out += `\n\n……（精简视图已过滤 ${hidden} 条噪音事件；取消勾选查看全量原始记录）`;
+  if(folded) out += `\n\n……（控制台仅渲染最近 ${MAX_EVENTS} 条，更早 ${folded} 条已折叠——完整记录见交付包内会话记录）`;
   el.innerText = out;
   el.scrollTop = el.scrollHeight;
 }
@@ -444,10 +455,45 @@ async function agentRun(){
 }
 async function agentRunResume(){
   if(!lastTaskId){ log("没有可续跑的任务（先跑一单）"); return; }
+  // 上一任务仍在运行：不新建续跑任务，直接恢复监控（刷新后点续跑的正确行为）
+  try{
+    const prev = await api("GET", `/api/v1/projects/${projectId}/agent-run/${lastTaskId}`);
+    if([1,2].includes(prev.status)){
+      taskId = String(lastTaskId);
+      localStorage.setItem("bidvolt_agent_task", taskId);
+      log("上一任务 #" + lastTaskId + " 仍在运行：已恢复监控（无需新建续跑）");
+      bannerState = "running";
+      showBanner("info", "⏳ 已恢复对运行中任务 #" + lastTaskId + " 的监控…");
+      openConsole();
+      poll();
+      return;
+    }
+  }catch(e){ /* 状态查询失败则走新建续跑 */ }
   const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}, resume_from_task_id: Number(lastTaskId)});
   log("已发起续跑：沿用上一单会话（resume_session_id=" + (d.resume_session_id || "") + "）");
   startRun(d);
 }
+/* 页面加载/刷新：恢复本地会话状态；若任务仍在运行则自动恢复监控 */
+async function restoreMonitor(){
+  if(!token){return;}
+  if(projectId) log("已恢复项目 #" + projectId + (taskId ? "（任务 #" + taskId + "）" : ""));
+  if(!taskId) return;
+  try{
+    const d = await api("GET", `/api/v1/projects/${projectId}/agent-run/${taskId}`);
+    if([1,2].includes(d.status)){
+      bannerState = "running";
+      showBanner("info", "⏳ 检测到运行中的任务 #" + taskId + "，已自动恢复监控…");
+      openConsole();
+      poll();
+    } else if([3,4,5,6].includes(d.status)){
+      bannerFromEnd({status: d.status, error: d.error,
+        outcome: d.result && d.result.outcome, reason: d.result && d.result.reason,
+        session_id: d.result && d.result.session_id, action_list: d.result && d.result.action_list});
+      log("任务 #" + taskId + " 已终态：可点『续跑上次主会话』继续，或点『下载响应文件包』取件。");
+    }
+  }catch(e){ log("恢复监控失败: " + e); }
+}
+window.addEventListener("load", restoreMonitor);
 function startRun(d){
   taskId = d.task_id; localStorage.setItem("bidvolt_agent_task", String(taskId));
   lastTaskId = String(taskId); localStorage.setItem("bidvolt_agent_last_task", lastTaskId);

@@ -96,6 +96,27 @@ async def upload_files(
                         or 0
                     ) if asset else 0
             results.append(item)
+        except file_service.DuplicateUploadError as dup:
+            # 内容去重：同企业已入库相同文件——返回既有文件，不重复解析/入库
+            asset_id = None
+            if target == "enterprise":
+                existing_asset = await session.scalar(
+                    select(EnterpriseAsset).where(
+                        EnterpriseAsset.enterprise_id == user.enterprise_id,
+                        EnterpriseAsset.source_file_id == dup.existing.id,
+                    )
+                )
+                asset_id = existing_asset.id if existing_asset else None
+            results.append(
+                {
+                    "name": upload.filename,
+                    "duplicate": True,
+                    "file_id": dup.existing.id,
+                    "asset_id": asset_id,
+                    "size": dup.existing.size_bytes,
+                    "message": "内容与已入库文件相同（sha256 一致），已跳过重复入库；如需另存请改名后重传",
+                }
+            )
         except ValueError as exc:
             results.append({"name": upload.filename, "error": str(exc)})
         except QuotaExceeded as exc:

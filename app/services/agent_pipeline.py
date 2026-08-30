@@ -154,6 +154,29 @@ _CHAT_TOOLSETS = _HERMES_TOOLSETS
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
 _NOISE_RE = re.compile(r"^[─═╭╮╰╯│┌└┐┘├┤┊\s]+$")
+# 事件泵噪音过滤（比精简版记录更狠：状态条/表情动画/进度碎片不进事件库，控制台与记录都不再被淹没）
+_PUMP_NOISE_RES = (
+    re.compile(r"^⚕"),                     # 状态条：⚕ deepseek-v4-pro │ 0/1M │ ... ⚠ YOLO / ⚕ ❯ msg=interrupt ...
+    re.compile(r"^❯"),                     # 提示符行 / ❯ msg=interrupt ...
+    re.compile(r"^\([^()]{1,12}\)\s"),   # (°ロ°) deliberating... / (¬‿¬) pondering... / (◉_◉) ruminating...
+    re.compile(r"^ヽ"),                    # ヽ(>∀<☆)☆ reflecting...
+    re.compile(r"^🗜️"),
+    re.compile(r"^↩"),
+    re.compile(r"^\d{1,4}s?\s*│"),        # 状态条碎片：1s │ ⚠ YOLO / 10s │ ⚠ YOLO
+    re.compile(r"^\d{1,6}$"),             # 进度条裸数字碎片：8 / 9 / 302
+    re.compile(r"^⚠"),
+    re.compile(r"^Requesting summary"),
+    re.compile(r"^Iteration budget"),
+)
+
+
+def _is_pump_noise(ln: str) -> bool:
+    """事件泵行级噪音判定：框线/状态条/表情动画/进度碎片。工具横幅与正文保留。"""
+    if _NOISE_RE.match(ln):
+        return True
+    if any(p.match(ln) for p in _PUMP_NOISE_RES):
+        return True
+    return False
 
 _CHAT_LOCKS: dict[int, asyncio.Lock] = {}
 
@@ -573,7 +596,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     session_id = m.group(1)
                 for ln in text.split("\n"):
                     ln = ln.strip()
-                    if not ln or _NOISE_RE.match(ln) or ln == last_line:
+                    if not ln or _is_pump_noise(ln) or ln == last_line:
                         continue
                     # 我方提交在 REPL 里的回显（含提示符前缀）不作为主会话输出
                     t = ln

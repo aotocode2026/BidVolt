@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +19,14 @@ from app.services.quota_service import check_storage
 from app.services.storage import StorageProvider
 
 storage = StorageProvider()
+
+
+class DuplicateUploadError(Exception):
+    """内容重复：同企业已入库相同 sha256 的文件。"""
+
+    def __init__(self, existing: FileObject):
+        super().__init__("内容与已入库文件相同，已跳过重复入库")
+        self.existing = existing
 
 
 def _category_heuristic(name: str) -> str | None:
@@ -116,6 +126,17 @@ async def process_upload(
     mime, ext = file_safety.validate_upload(filename, data)
     file_safety.virus_scan(data)
     await check_storage(session, user.enterprise_id, len(data))
+    # 内容去重：同企业已入库相同内容的文件直接复用，不重复解析/重复建资产
+    sha = hashlib.sha256(data).hexdigest()
+    existing = await session.scalar(
+        select(FileObject).where(
+            FileObject.enterprise_id == user.enterprise_id,
+            FileObject.sha256 == sha,
+            FileObject.is_deleted.is_(False),
+        ).limit(1)
+    )
+    if existing is not None:
+        raise DuplicateUploadError(existing)
     saved = storage.save(data, user.enterprise_id, filename)
 
     fobj = FileObject(

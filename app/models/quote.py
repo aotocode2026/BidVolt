@@ -21,10 +21,10 @@ class HistoryPriceSnapshot(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
     enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     provider_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    material_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    material_code: Mapped[str | None] = mapped_column(String(100))
-    spec: Mapped[str | None] = mapped_column(String(200))
-    region: Mapped[str | None] = mapped_column(String(100))
+    material_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    material_code: Mapped[str | None] = mapped_column(String(200))
+    spec: Mapped[str | None] = mapped_column(String(500))
+    region: Mapped[str | None] = mapped_column(String(300))
     win_price: Mapped[float] = mapped_column(Numeric(18, 2), nullable=False)
     win_date: Mapped[date] = mapped_column(Date, nullable=False)
     source_hash: Mapped[str | None] = mapped_column(String(64))
@@ -32,15 +32,15 @@ class HistoryPriceSnapshot(Base, TimestampMixin):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     # —— 公共/私有行情库扩展（限价↔中标价配对，源自公开采集 xlsx 共建）——
-    publisher: Mapped[str | None] = mapped_column(String(200))  # 发布单位
-    category: Mapped[str | None] = mapped_column(String(200))  # 分标/品类
-    package_name: Mapped[str | None] = mapped_column(String(300))  # 包/项目名称
+    publisher: Mapped[str | None] = mapped_column(String(500))  # 发布单位
+    category: Mapped[str | None] = mapped_column(String(500))  # 分标/品类
+    package_name: Mapped[str | None] = mapped_column(String(500))  # 包/项目名称
     price_mode: Mapped[str | None] = mapped_column(String(30))  # 报价方式（归一枚举）
     limit_price: Mapped[float | None] = mapped_column(Numeric(18, 4))  # 限价（万元；折扣率类为 None）
     publish_date: Mapped[date | None] = mapped_column(Date)  # 公告发布时间
-    notice_id: Mapped[str | None] = mapped_column(String(100))  # 公告ID
-    limit_evidence: Mapped[str | None] = mapped_column(String(300))  # 限价证据原文
-    win_evidence: Mapped[str | None] = mapped_column(String(300))  # 中标价证据原文
+    notice_id: Mapped[str | None] = mapped_column(String(300))  # 公告ID
+    limit_evidence: Mapped[str | None] = mapped_column(String(500))  # 限价证据原文
+    win_evidence: Mapped[str | None] = mapped_column(String(500))  # 中标价证据原文
     limit_evidence_url: Mapped[str | None] = mapped_column(String(500))
     win_evidence_url: Mapped[str | None] = mapped_column(String(500))
 
