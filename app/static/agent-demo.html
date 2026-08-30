@@ -104,15 +104,15 @@ const BASE = location.origin;
 
 function log(s){document.getElementById("log").innerText += "\n" + s;}
 
-/* 显眼错误横幅：任何接口失败/上传失败都在页面顶部红条显示（用户一眼知道是文件/请求的问题，不是服务挂了） */
-let errTimer = null;
+/* 显眼错误横幅：任何接口失败/上传失败都在页面顶部红条显示（用户一眼知道是文件/请求的问题，不是服务挂了）。
+   不自动消失（用户需要时间看原因），点击横幅关闭；底部日志同步保留一份。 */
 function showError(msg){
+  const text = msg || "操作失败";
   const el = document.getElementById("err");
-  el.innerText = "❌ " + (msg || "操作失败");
+  el.innerText = "❌ " + text;
   el.style.display = "block";
   el.scrollIntoView({behavior:"smooth", block:"center"});
-  if(errTimer) clearTimeout(errTimer);
-  errTimer = setTimeout(() => { el.style.display = "none"; }, 15000);
+  log("❌ 错误：" + text); // 底部日志同步记录
 }
 window.addEventListener("unhandledrejection", (e) => {
   const reason = e.reason;
