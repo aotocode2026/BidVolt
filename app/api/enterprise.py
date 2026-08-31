@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import UserContext, get_current_user, require_capability, require_permission
+from app.api.deps import UserContext, _set_rls_context, get_current_user, require_capability, require_permission
 from app.constants import Permission, TaskStatus, TaskType
 from app.db import get_session
 from app.models.enterprise_domain import (
@@ -59,6 +59,10 @@ async def list_assets(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("search_assets")),
 ) -> list[dict]:
+    # R7 线上定位（2026-08-31）：本端点曾对 1425 条资产返回空列表——RLS GUC 未在
+    # 本事务生效（FORCE RLS 全隐行）。与泵循环同款防御：入口自设 RLS 上下文，
+    # 不依赖上游依赖链的事务状态（FastAPI 版本差异/依赖缓存都可能丢 GUC）。
+    await _set_rls_context(session, user.enterprise_id)
     rows = await session.scalars(
         select(EnterpriseAsset).where(
             EnterpriseAsset.enterprise_id == user.enterprise_id,
@@ -102,6 +106,7 @@ async def get_asset(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_asset")),
 ) -> dict:
+    await _set_rls_context(session, user.enterprise_id)  # 同 /assets：自含 RLS（R7 线上定位）
     asset = await session.scalar(
         select(EnterpriseAsset).where(
             EnterpriseAsset.id == asset_id,
