@@ -685,30 +685,40 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 # 经与催办/复核提示相同的 PTY 通道注入（hermes CLI 的 /queue 在忙时排队，
                 # 主会话当前轮结束后按到达顺序逐条处理）。行锁防 app/worker 双进程丢失更新；
                 # 失败下轮再试，不打断主流程。
+                # R7 线上定位：本块必须用【独立短命会话】——主泵会话历史上一次 commit
+                # 失败后不 rollback，事务悬挂持有 task 行锁，后续 FOR UPDATE 全部等锁
+                # （曾致客户回答 40 分钟投不出去）。独立会话自带 with 回滚，不留锁。
                 try:
                     from sqlalchemy import select as sa_select
+
+                    from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
                     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
-                    row = (
-                        await session.execute(
-                            sa_select(Task).where(Task.id == task.id).with_for_update()
-                        )
-                    ).scalar_one()
-                    pending_chat = list((row.payload or {}).get("pending_chat") or [])
-                    if pending_chat:
-                        row.payload = {**(row.payload or {}), "pending_chat": []}
-                        await session.commit()
-                        # commit 清掉事务级 GUC：立即重设，防后续事件写入撞 RLS
-                        await _set_rls_context(session, task.enterprise_id)
-                        for msg in pending_chat:
-                            # 排队（/queue，下一轮处理）或插话（/steer，下一个工具调用后注入改方向）
-                            if isinstance(msg, dict):
-                                _text = str(msg.get("text") or "")
-                                _cmd = "/steer" if msg.get("mode") == "steer" else "/queue"
-                            else:
-                                _text = str(msg)
-                                _cmd = "/queue"
-                            _submit(_cmd + " " + " ".join(_text.split()))
+                    async with _PumpSessionLocal() as _s2:
+                        await _set_rls_context(_s2, task.enterprise_id)
+                        row = (
+                            await _s2.execute(
+                                sa_select(Task).where(Task.id == task.id).with_for_update()
+                            )
+                        ).scalar_one()
+                        pending_chat = list((row.payload or {}).get("pending_chat") or [])
+                        if pending_chat:
+                            if not sent_first:
+                                # REPL 尚未就绪（interrupt 模式下就绪前的 PTY 提交会被丢弃，
+                                # R7 线上实证）：只释放行锁不取走，等首条消息发出后再投递
+                                await _s2.commit()
+                                continue
+                            row.payload = {**(row.payload or {}), "pending_chat": []}
+                            await _s2.commit()
+                            for msg in pending_chat:
+                                # 排队（/queue，下一轮处理）或插话（/steer，下一个工具调用后注入改方向）
+                                if isinstance(msg, dict):
+                                    _text = str(msg.get("text") or "")
+                                    _cmd = "/steer" if msg.get("mode") == "steer" else "/queue"
+                                else:
+                                    _text = str(msg)
+                                    _cmd = "/queue"
+                                _submit(_cmd + " " + " ".join(_text.split()))
                 except Exception:  # noqa: BLE001 瞬时失败（事务/锁）下轮再取
                     logger.warning("中途对话注入暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 提问关问答窗口：超过窗口仍未回答的 ask 注入「已超时，由你自行决定」
@@ -720,30 +730,38 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     try:
                         from sqlalchemy import select as _sa_sel
 
+                        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
                         from app.models.agent import AgentCustomerAsk
                         from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
-                        # 上一步 pending_chat 可能已 commit（RLS 上下文随事务消失），重新设置
-                        await _set_rls_context(session, task.enterprise_id)
+                        # 与 pending_chat 排水同理：读与幂等标记用独立短命会话，
+                        # 不依赖主泵会话的事务状态（R7 线上主会话事务悬挂曾卡死注入）
                         _now = datetime.now(timezone.utc)
-                        rows = (
-                            await session.scalars(
-                                _sa_sel(AgentCustomerAsk)
-                                .where(
-                                    AgentCustomerAsk.task_id == task.id,
-                                    AgentCustomerAsk.kind == "question",
-                                    AgentCustomerAsk.answered == 0,
-                                    AgentCustomerAsk.timeout_notified == 0,
+                        _due: list[tuple[int, int, datetime, list]] = []  # (ask_id, window, created_at, items)
+                        async with _PumpSessionLocal() as _s3:
+                            await _set_rls_context(_s3, task.enterprise_id)
+                            rows = (
+                                await _s3.scalars(
+                                    _sa_sel(AgentCustomerAsk)
+                                    .where(
+                                        AgentCustomerAsk.task_id == task.id,
+                                        AgentCustomerAsk.kind == "question",
+                                        AgentCustomerAsk.answered == 0,
+                                        AgentCustomerAsk.timeout_notified == 0,
+                                    )
                                 )
-                            )
-                        ).all()
-                        for a in rows:
-                            _window = max(1, int(a.window_minutes or 20))
-                            if _now < a.created_at + timedelta(minutes=_window):
-                                continue
-                            lines = ["- " + (it.get("q") if isinstance(it, dict) else str(it)).strip() for it in (a.items or [])]
+                            ).all()
+                            for a in rows:
+                                _window = max(1, int(a.window_minutes or 20))
+                                if _now < a.created_at + timedelta(minutes=_window):
+                                    continue
+                                _due.append((a.id, _window, a.created_at, list(a.items or [])))
+                                a.timeout_notified = 1
+                            await _s3.commit()
+                        for _aid, _window, _created, _items in _due:
+                            lines = ["- " + (it.get("q") if isinstance(it, dict) else str(it)).strip() for it in _items]
                             signal = (
-                                f"（系统提示·问答窗口已过）提问 ask_id={a.id} 已等待超过 {_window} 分钟，"
+                                f"（系统提示·问答窗口已过）提问 ask_id={_aid} 已等待超过 {_window} 分钟，"
                                 "客户尚未回答。问卡仍可补答，补答会自动回到本会话。"
                                 "不再等待：请按任务书三级处置纪律**由你自行决定**这些问题的走向——"
                                 "能核实的核实、能推断的推断、该写「无/不适用」的照写；"
@@ -751,12 +769,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 "确需客户实体动作的收口时用 report_customer_actions 列出。原问题：\n"
                                 + "\n".join(lines)
                             )
-                            a.timeout_notified = 1
                             await _append_events(session, task, seq, [("service", signal)])
                             # _append_events 已 commit + 重设 RLS，无需再提交
                             # 关键：事件库只是控制台展示，主会话读不到——必须经 PTY 队列注入
                             _submit("/queue " + " ".join(signal.split()))
-                            logger.info("提问关超时信号已注入 ask=%s（task=%s）", a.id, task.id)
+                            logger.info("提问关超时信号已注入 ask=%s（task=%s）", _aid, task.id)
                     except Exception:  # noqa: BLE001 瞬时失败下轮再查
                         logger.warning("提问关超时检查暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 进度条（观感 + 页面监控信息量）：按真实里程碑推进 percent/current_work——
