@@ -289,17 +289,20 @@ async def agent_run_ask_answer(
         + "\n请据此回填相关字段并重新核验；其余仍缺的信息继续按三级处置。"
     )
     if task.status in (1, 2):
-        await queue_chat_message(session, task, inject)
+        # R8 线上定位：主会话长轮次（单轮可达数十分钟）期间，/queue 注入会被
+        # interrupt 模式吞掉（hermes 会话库实证：消息从未入会话）。/steer 挂在
+        # 下一个工具调用后注入，不依赖轮次边界——运行中任务一律用 steer。
+        await queue_chat_message(session, task, inject, mode="steer")
         reply = None
     else:
         try:
             d = await chat_with_session(session, task, inject)
             reply = d.get("reply")
         except ValueError as exc:
-            await queue_chat_message(session, task, inject)
+            await queue_chat_message(session, task, inject, mode="steer")
             reply = None
             logger_ = __import__("logging").getLogger(__name__)
-            logger_.warning("回答注入走排队通道（%s）", exc)
+            logger_.warning("回答注入走插话通道（%s）", exc)
     await session.commit()
     return {"ask_id": row.id, "answered": True, "queued": reply is None, "reply": reply}
 
