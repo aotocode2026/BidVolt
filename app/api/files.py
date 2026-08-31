@@ -121,6 +121,31 @@ async def upload_files(
             results.append({"name": upload.filename, "error": str(exc)})
         except QuotaExceeded as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    # 压缩包自动解包：上传的 zip 立即展开成内部文件入库（项目侧=内部文件成为项目材料；
+    # 企业侧=每个内部文件自动入库成资料资产）。原件保留，expanded 回执随响应返回。
+    for item in results:
+        if item.get("error") or item.get("duplicate"):
+            continue
+        _fid = item.get("file_id")
+        if not _fid:
+            continue
+        _fobj = await session.get(FileObject, _fid)
+        if _fobj is None or _fobj.ext != ".zip":
+            continue
+        try:
+            _job = await file_service.process_archive(session, user, _fobj.id, target, project_id)
+            _res = _job.result or {}
+            item["expanded"] = {
+                "imported": len(_res.get("imported") or []),
+                "failed": len(_res.get("failed") or []),
+                "duplicates": len(_res.get("duplicates") or []),
+            }
+        except ValueError as exc:
+            item["expanded"] = {"error": str(exc)}
+        # process_archive 内部 commit 会清掉事务级 RLS 上下文：重设后再处理下一个文件
+        from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+        await _set_rls_context(session, user.enterprise_id)
     await session.commit()
     return {"files": results}
 
@@ -197,7 +222,7 @@ async def _serve_download(
 async def download_file(
     file_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
+    user: UserContext = Depends(require_capability("download_project_material")),
 ) -> FileResponse:
     return await _serve_download(file_id, session, user)
 
@@ -265,6 +290,77 @@ async def parse_status(
     return {"status": f.status, "category": f.category, "parse_status": f.parse_status}
 
 
+@router.get("/image-describe-progress")
+async def image_describe_progress(
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """后台识图任务进度：按状态统计本企业 image_describe 任务 + 全局已缓存描述张数。"""
+    from app.constants import TaskType
+    from app.models.file import ImageDescription
+    from app.models.task import Task
+
+    rows = await session.execute(
+        select(Task.status, func.count())
+        .where(
+            Task.task_type == TaskType.IMAGE_DESCRIBE,
+            Task.enterprise_id == user.enterprise_id,
+        )
+        .group_by(Task.status)
+    )
+    stats = {int(s): int(n) for s, n in rows}
+    total_described = await session.scalar(
+        select(func.count()).select_from(ImageDescription)
+    )
+    return {
+        "queued": stats.get(1, 0),
+        "running": stats.get(2, 0),
+        "done": stats.get(3, 0),
+        "failed_terminal": stats.get(4, 0) + stats.get(6, 0),
+        "remaining": stats.get(1, 0) + stats.get(2, 0),
+        "described_images": int(total_described or 0),
+    }
+
+
+@router.get("/{file_id}/image-descriptions")
+async def file_image_descriptions(
+    file_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("get_image_descriptions")),
+) -> dict:
+    """文件内嵌图片的结构化描述清单（入库后台任务产出，sha256 全局缓存）。
+    描述用于「找」该装的证据（编号/金额/日期/主体/印章/摘要）；
+    装订关键字段时仍须 vision 复核原件图。"""
+    from app.models.file import FileImage, ImageDescription
+
+    await _get_file(session, user, file_id)
+    rows = list(
+        await session.scalars(
+            select(FileImage).where(FileImage.file_id == file_id).order_by(FileImage.ordinal)
+        )
+    )
+    hashes = [r.sha256 for r in rows]
+    descs = {
+        d.sha256: d
+        for d in await session.scalars(select(ImageDescription).where(ImageDescription.sha256.in_(hashes)))
+    } if hashes else {}
+    return {
+        "file_id": file_id,
+        "image_count": len(rows),
+        "described_count": sum(1 for h in hashes if h in descs),
+        "items": [
+            {
+                "ordinal": r.ordinal,
+                "page": r.page,
+                "sha256": r.sha256,
+                "described": r.sha256 in descs,
+                "description": (descs[r.sha256].description if r.sha256 in descs else None),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/{file_id}/blocks")
 async def file_blocks(
     file_id: int,
@@ -277,7 +373,7 @@ async def file_blocks(
     query = select(DocBlock).where(DocBlock.file_id == file_id)
     total = await session.scalar(select(func.count()).select_from(query.subquery()))
     rows = await session.scalars(query.order_by(DocBlock.block_index).offset((page - 1) * size).limit(size))
-    return Page(items=[{"block_id": b.id, "block_type": b.block_type, "page_no": b.page_no, "block_index": b.block_index, "text": b.text_content} for b in rows], total=total or 0, page=page, size=size)
+    return Page(items=[{"block_id": b.id, "block_type": b.block_type, "page_no": b.page_no, "block_index": b.block_index, "text": b.text_content, "extra": b.extra} for b in rows], total=total or 0, page=page, size=size)
 
 
 @router.get("/projects/{project_id}/materials")
@@ -305,11 +401,63 @@ async def project_materials(
         f.id: f
         for f in await session.scalars(select(FileObject).where(FileObject.id.in_(file_ids)))
     } if file_ids else {}
+    # 解包溯源：展开来的文件带出「来源压缩包名 + 包内路径层次」
+    src_ids = {f.source_archive_id for f in files.values() if f.source_archive_id}
+    src_files = {
+        f.id: f
+        for f in await session.scalars(select(FileObject).where(FileObject.id.in_(src_ids)))
+    } if src_ids else {}
+    # 已解包统计：zip 行标注「已解包 N 个文件」（列表降噪，原件字节保留）
+    expanded_counts: dict[int, int] = {}
+    if file_ids:
+        exp_rows = await session.execute(
+            select(FileObject.source_archive_id, func.count())
+            .where(FileObject.source_archive_id.in_(file_ids))
+            .group_by(FileObject.source_archive_id)
+        )
+        expanded_counts = {int(sid): int(n) for sid, n in exp_rows if sid is not None}
+    # 内容结构信号：块类型统计（段落/表格/图片/页眉页脚）+ 内嵌图片张数——
+    # 让主会话一眼知道「这文件里有几张图、几张表」，决定要不要下载原件+vision 读图取证
+    block_stats: dict[int, dict[str, int]] = {}
+    media_counts: dict[int, int] = {}
+    if file_ids:
+        stats_rows = await session.execute(
+            select(DocBlock.file_id, DocBlock.block_type, func.count())
+            .where(DocBlock.file_id.in_(file_ids))
+            .group_by(DocBlock.file_id, DocBlock.block_type)
+        )
+        for _fid, _btype, _n in stats_rows:
+            block_stats.setdefault(int(_fid), {})[_btype] = int(_n)
+        img_rows = await session.execute(
+            select(DocBlock.file_id, DocBlock.extra).where(
+                DocBlock.file_id.in_(file_ids),
+                DocBlock.block_type == "image",
+            )
+        )
+        for _fid, _extra in img_rows:
+            _cnt = _extra.get("count") if isinstance(_extra, dict) else 0
+            media_counts[int(_fid)] = media_counts.get(int(_fid), 0) + int(_cnt or 0)
+    # 图片描述进度：file_image 登记数 vs 已描述数（入库后台任务逐步填满）
+    image_counts: dict[int, int] = {}
+    image_described: dict[int, int] = {}
+    if file_ids:
+        from app.models.file import FileImage, ImageDescription
+
+        desc_rows = await session.execute(
+            select(FileImage.file_id, func.count(), func.count(ImageDescription.sha256))
+            .outerjoin(ImageDescription, FileImage.sha256 == ImageDescription.sha256)
+            .where(FileImage.file_id.in_(file_ids))
+            .group_by(FileImage.file_id)
+        )
+        for _fid, _total, _done in desc_rows:
+            image_counts[int(_fid)] = int(_total)
+            image_described[int(_fid)] = int(_done or 0)
     return [
         {
             "material_id": m.id,
             "file_id": m.file_id,
             "file_name": (files.get(m.file_id).original_name if m.file_id in files else None),
+            "ext": (files.get(m.file_id).ext if m.file_id in files else None),
             "status": m.status,
             # 解析完整性信号（服务端只给信号不裁决）：
             # - status=3 已解析，但 block_count 只统计"可提取文字块"；扫描件/图表可能无文字层或块不完整，
@@ -317,6 +465,21 @@ async def project_materials(
             # - status=4 解析失败，必须走原件。
             "parse_status": (files.get(m.file_id).parse_status if m.file_id in files else None),
             "block_count": block_counts.get(m.file_id, 0),
+            # 解包溯源（压缩包展开来的文件才非空）
+            "source_archive_id": (files.get(m.file_id).source_archive_id if m.file_id in files else None),
+            "source_archive_name": (
+                src_files.get(files[m.file_id].source_archive_id).original_name
+                if m.file_id in files and files[m.file_id].source_archive_id in src_files else None
+            ),
+            "archive_path": (files.get(m.file_id).archive_path if m.file_id in files else None),
+            # 该 zip 已解包展开的文件数（仅 zip 行有值，0=未解包）
+            "expanded_count": expanded_counts.get(m.file_id, 0),
+            # 内容结构信号：段落/表格/图片/页眉页脚块统计 + 内嵌图片张数
+            "block_stats": block_stats.get(m.file_id, {}),
+            "media_count": media_counts.get(m.file_id, 0),
+            # 图片描述进度（入库后台任务）：已提取图数 / 已有结构化描述的图数
+            "image_count": image_counts.get(m.file_id, 0),
+            "image_described_count": image_described.get(m.file_id, 0),
         }
         for m in rows
     ]

@@ -17,6 +17,8 @@ input{padding:6px;margin:4px;width:280px}
 <h1>BidVolt · Agent 主会话演示 <span class="badge">新方案</span> <span class="badge">旧 /demo 不受影响</span></h1>
 <div id="banner" style="display:none;padding:12px 14px;margin:10px 0;border-radius:8px;font-size:14px;font-weight:bold;white-space:pre-wrap"></div>
 <div id="err" title="点击关闭" style="display:none;padding:12px 14px;margin:10px 0;border-radius:8px;font-size:14px;font-weight:bold;background:#fdeaea;color:#a02727;border:2px solid #d64545;white-space:pre-wrap;cursor:pointer" onclick="this.style.display='none'"></div>
+<div id="session-bar" style="font:12px/1.7 Microsoft YaHei,sans-serif;color:#2f6db3;background:#eef4fb;border:1px solid #2f6db3;border-radius:6px;padding:4px 10px;margin:4px 0;display:none"></div>
+<div id="imgdesc-status" style="font:12px/1.7 Microsoft YaHei,sans-serif;color:#3f5f85;margin:2px 0;display:none"></div>
 <div>
   <input id="a-email" placeholder="邮箱（自动生成）">
   <input id="a-pwd" placeholder="密码" value="Abc12345">
@@ -29,7 +31,7 @@ input{padding:6px;margin:4px;width:280px}
   <button onclick="createProject()">创建项目</button>
 </div>
 <div>
-  <input type="file" id="f-file">
+  <input type="file" id="f-file" multiple>
   <button onclick="upload()">上传采购文件</button>
 </div>
 <div>
@@ -37,8 +39,12 @@ input{padding:6px;margin:4px;width:280px}
   <button onclick="uploadEnterprise()">上传企业资料（资质/业绩/人员/财务 → 企业资料库）</button>
 </div>
 <div>
-  <button onclick="agentRun()">▶ Agent 主会话（端到端）</button>
-  <button onclick="agentRunResume()">↻ 续跑上次主会话</button>
+  <button onclick="refreshMaterials()">刷新项目资料列表</button>
+  <div id="mat-list" style="background:#fff;border:1px solid #d9e2ec;border-radius:8px;padding:10px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;max-height:320px;overflow:auto;display:none"></div>
+</div>
+<div>
+  <button onclick="agentRun()" title="发起端到端投标任务：解析→提问→撰写→校验→评审→成文→打包，全程自动">▶ 开始</button>
+  <button onclick="agentRunResume()" title="沿用上一次任务的会话继续跑（运行中则恢复监控）">↻ 续跑上次主会话</button>
   <button onclick="refreshTask()">刷新任务状态</button>
   <button onclick="openConsole()">打开会话控制台</button>
   <button onclick="downloadPackage()">下载响应文件包</button>
@@ -76,6 +82,10 @@ input{padding:6px;margin:4px;width:280px}
 <h2>会话控制台（服务 ↔ Hermes 主会话 全量消息；可直接对话）</h2>
 <div>
   <input id="c-msg" placeholder="给主会话发消息（任务前先交代·开跑自动带上；运行中排队注入；完成后直接对话）" style="width:560px">
+  <select id="c-mode" style="padding:6px;margin:4px" title="排队=主会话忙完这一步再处理；插话=不打断，下一步工具调用后注入改方向">
+    <option value="queue">排队回复</option>
+    <option value="steer">插话（边干边改）</option>
+  </select>
   <button onclick="chatSend()">发送</button>
   <label style="margin-left:14px;user-select:none">
     <input type="checkbox" id="c-condensed" checked onchange="renderConsole()"> 精简视图
@@ -85,10 +95,8 @@ input{padding:6px;margin:4px;width:280px}
 </div>
 <div id="console" style="display:none;background:#10202f;color:#cfe6f8;padding:12px;border-radius:8px;font:12px/1.7 Consolas,monospace;white-space:pre-wrap;min-height:260px;max-height:520px;overflow:auto"></div>
 <div id="ask-panel" style="display:none;background:#fffbe8;border:2px solid #d98a00;border-radius:8px;padding:12px;margin:10px 0;font:13px/1.8 Microsoft YaHei,sans-serif">
-  <div style="font-weight:bold;color:#8a5a00">📩 主会话向你提问（它已自查企业资料库/采购文件/公开渠道，仅剩需要你确认的信息，回答后自动回传）：</div>
-  <ol id="ask-list" style="margin:6px 0;padding-left:22px"></ol>
-  <textarea id="ask-answer" rows="3" style="width:100%;box-sizing:border-box;padding:6px" placeholder="逐条回答（如：1. 被授权人：张三；2. 开户行：xx银行xx支行；3. 不需要的写『无』）"></textarea>
-  <button onclick="sendAskAnswer()">提交回答（回传给主会话）</button>
+  <div style="font-weight:bold;color:#8a5a00">📩 主会话向你提问（它已自查企业资料库/采购文件/公开渠道，仅剩需要你确认的信息，每组回答独立提交，回答后自动回传）：</div>
+  <ol id="ask-list" style="margin:6px 0;padding-left:6px"></ol>
 </div>
 <hr>
 <div id="log">就绪。此页面只调用新接口 /agent-run（task_type=agent_pipeline），与旧流程接口隔离。</div>
@@ -239,9 +247,31 @@ function consoleAppend(seq, kind, content){
   renderConsole();
 }
 
-/* 客户问卡：主数据来自 /questions 端点（ask_customer 工具落库），旧【ASK】文本块仅作兜底 */
-let currentAskId = null;
+/* 客户问卡：主数据来自 /questions 端点（ask_customer 工具落库），旧【ASK】文本块仅作兜底。
+   多组提问全部展示：每组独立倒计时 + 独立作答（不再只显示最新一组） */
 let lastAskKey = "";
+let askWindowTimer = null;
+let askWindowBlocks = [];
+let pollTimer = null;
+async function pollQuestions(){
+  if(!taskId) return;
+  try{
+    const state = await api("GET", `/api/v1/projects/${projectId}/agent-run/${taskId}/questions`);
+    renderAskFromState(state);
+  }catch(e){ /* 端点不可用时静默（旧块兜底仍走流解析） */ }
+}
+function fmtWindow(created_at, window_minutes){
+  const deadline = new Date(created_at).getTime() + window_minutes * 60000;
+  const remain = deadline - Date.now();
+  if(remain > 0){
+    const m = Math.floor(remain / 60000), s = Math.floor((remain % 60000) / 1000);
+    return "⏳ 问答窗口：" + m + " 分 " + s + " 秒（超时后主会话将自行决定走向，你仍可补答）";
+  }
+  return "⏳ 已超时：主会话已收到「自行决定」提示，不再等待（你仍可补答，补答会回传重验）";
+}
+function refreshAskWindows(){
+  for(const b of askWindowBlocks){ b.el.innerText = fmtWindow(b.created_at, b.window_minutes); }
+}
 function askItemText(it){
   if(typeof it === "string") return it;
   const t = it.q || "";
@@ -253,53 +283,76 @@ function askItemText(it){
 function renderAskFromState(state){
   const asks = (state && state.asks) || [];
   const unanswered = asks.filter(a => a.kind === "question" && !a.answered && !a.legacy);
-  let target = null;
-  if(unanswered.length){
-    target = unanswered[unanswered.length - 1]; // 最新一批未答复提问
-  } else {
-    const legacy = asks.filter(a => a.legacy && !a.answered);
-    if(legacy.length) target = legacy[legacy.length - 1];
-  }
-  if(!target) return;
-  const key = (target.ask_id || "legacy") + ":" + JSON.stringify(target.items).length;
-  if(key === lastAskKey) return;
+  const legacy = asks.filter(a => a.legacy && !a.answered);
+  const targets = unanswered.length ? unanswered : legacy;
+  if(!targets.length) return;
+  const key = targets.map(a => (a.ask_id || "legacy") + ":" + (a.items || []).length).join("|");
+  if(key === lastAskKey){ refreshAskWindows(); return; }
   lastAskKey = key;
-  currentAskId = target.ask_id || null;
   const panel = document.getElementById("ask-panel");
   const list = document.getElementById("ask-list");
   list.innerHTML = "";
-  (target.items || []).forEach(it => {
-    const li = document.createElement("li");
-    li.textContent = askItemText(it);
-    list.appendChild(li);
+  askWindowBlocks = [];
+  targets.forEach((t, bi) => {
+    const block = document.createElement("li");
+    block.style.cssText = "margin-bottom:12px;list-style:none";
+    const head = document.createElement("div");
+    head.style.fontWeight = "bold";
+    head.textContent = t.ask_id
+      ? ("📩 提问 ask#" + t.ask_id + (targets.length > 1 ? "（第 " + (bi + 1) + "/" + targets.length + " 组）" : ""))
+      : "📩 主会话提问（历史会话）";
+    block.appendChild(head);
+    if(t.created_at && t.window_minutes){
+      const win = document.createElement("div");
+      win.style.cssText = "color:#8a5a00;font-size:12px";
+      win.innerText = fmtWindow(t.created_at, t.window_minutes);
+      block.appendChild(win);
+      askWindowBlocks.push({el: win, created_at: t.created_at, window_minutes: t.window_minutes});
+    }
+    const ol = document.createElement("ol");
+    ol.style.cssText = "margin:4px 0;padding-left:18px";
+    (t.items || []).forEach(it => {
+      const li = document.createElement("li");
+      li.textContent = askItemText(it);
+      ol.appendChild(li);
+    });
+    block.appendChild(ol);
+    if(t.ask_id){
+      const ta = document.createElement("textarea");
+      ta.id = "ask-ta-" + t.ask_id;
+      ta.rows = 3;
+      ta.style.cssText = "width:100%;box-sizing:border-box;padding:6px";
+      ta.placeholder = "逐条回答（如：1. 被授权人：张三；2. 开户行：xx银行xx支行；3. 不需要的写『无』）";
+      block.appendChild(ta);
+      const btn = document.createElement("button");
+      btn.textContent = "提交本组回答（回传给主会话）";
+      btn.onclick = function(){ sendAskAnswerFor(t.ask_id, ta.id); };
+      block.appendChild(btn);
+    } else {
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:12px;color:#666";
+      note.textContent = "（历史会话提问：请在下方聊天输入框输入回答后点发送）";
+      block.appendChild(note);
+    }
+    list.appendChild(block);
   });
-  document.getElementById("ask-answer").value = "";
   panel.style.display = "block";
   panel.scrollIntoView({behavior:"smooth", block:"center"});
+  if(askWindowTimer) clearInterval(askWindowTimer);
+  askWindowTimer = setInterval(refreshAskWindows, 30000);
 }
-let pollTimer = null;
-async function pollQuestions(){
-  if(!taskId) return;
-  try{
-    const state = await api("GET", `/api/v1/projects/${projectId}/agent-run/${taskId}/questions`);
-    renderAskFromState(state);
-  }catch(e){ /* 端点不可用时静默（旧块兜底仍走流解析） */ }
-}
-async function sendAskAnswer(){
-  const msg = document.getElementById("ask-answer").value.trim();
+async function sendAskAnswerFor(askId, taId){
+  const ta = document.getElementById(taId);
+  const msg = ta.value.trim();
   if(!msg){log("先填写回答");return;}
   if(!taskId){log("还没有任务");return;}
-  document.getElementById("ask-panel").style.display = "none";
-  lastAskKey = "";
   try{
-    if(currentAskId){
-      const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/asks/${currentAskId}/answer`, {answer: msg});
-      consoleAppend(++consoleSeq, "user", "对提问 ask#" + currentAskId + " 的回答：" + msg);
-      log(d.queued ? "回答已送达主会话（当前轮结束后处理）" : "主会话已回复（见控制台）");
-    } else {
-      document.getElementById("c-msg").value = msg;
-      await chatSend();
-    }
+    const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/asks/${askId}/answer`, {answer: msg});
+    consoleAppend(++consoleSeq, "user", "对提问 ask#" + askId + " 的回答：" + msg);
+    log(d.queued ? "回答已送达主会话：它手头这步忙完就会读取并回填（几分钟内）" : "主会话已回复（见控制台）");
+    ta.value = "";
+    lastAskKey = "";
+    pollQuestions();
   }catch(e){
     consoleAppend(++consoleSeq, "error", String(e.message || e));
   }
@@ -316,16 +369,29 @@ function showAskPanel(seq, text){
   const key = "legacy:" + seq;
   if(key === lastAskKey) return;
   lastAskKey = key;
-  currentAskId = null;
   const panel = document.getElementById("ask-panel");
   const list = document.getElementById("ask-list");
   list.innerHTML = "";
+  askWindowBlocks = [];
+  const block = document.createElement("li");
+  block.style.cssText = "margin-bottom:12px;list-style:none";
+  const head = document.createElement("div");
+  head.style.fontWeight = "bold";
+  head.textContent = "📩 主会话提问（历史会话）";
+  block.appendChild(head);
+  const ol = document.createElement("ol");
+  ol.style.cssText = "margin:4px 0;padding-left:18px";
   lines.forEach(l => {
     const li = document.createElement("li");
     li.textContent = l;
-    list.appendChild(li);
+    ol.appendChild(li);
   });
-  document.getElementById("ask-answer").value = "";
+  block.appendChild(ol);
+  const note = document.createElement("div");
+  note.style.cssText = "font-size:12px;color:#666";
+  note.textContent = "（历史会话提问：请在下方聊天输入框输入回答后点发送）";
+  block.appendChild(note);
+  list.appendChild(block);
   panel.style.display = "block";
   panel.scrollIntoView({behavior:"smooth", block:"center"});
 }
@@ -391,8 +457,9 @@ async function chatSend(){
   const msg = document.getElementById("c-msg").value.trim();
   if(!msg){log("先输入消息");return;}
   if(!taskId){
-    // 任务前对话：项目级 pre-chat 会话（agent-run 开跑时任务 prompt 会注入该会话）
-    if(!projectId){log("先创建项目");return;}
+    // 任务前对话：项目级 pre-chat 会话（可问「现在都有哪些资料？」——只读工具可用；
+    // agent-run 开跑时任务 prompt 会注入该会话，交代自动成为主会话上下文）
+    if(!projectId){ showError("先创建项目（上方【项目名称】→【创建项目】）再对话。"); return; }
     try{
       const d = await api("POST", `/api/v1/projects/${projectId}/pre-chat`, {message: msg});
       consoleAppend(++consoleSeq, "user", msg);
@@ -407,9 +474,15 @@ async function chatSend(){
   }
   consoleAppend(++consoleSeq, "user", msg);
   try{
-    const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/chat`, {message: msg});
+    const mode = (document.getElementById("c-mode") || {}).value || "queue";
+    const d = await api("POST", `/api/v1/projects/${projectId}/agent-run/${taskId}/chat`, {message: msg, mode: mode});
     if(d.queued){
-      log("已送达主会话队列（当前轮结束后处理，回复会出现在控制台）");
+      if(d.mode === "steer"){
+        showBanner("info", "✋ 插话已注入：主会话在下一步工具调用后会看到你的消息并调整方向（不打断当前步骤）。");
+      } else {
+        showBanner("info", "⏳ 消息已送达主会话：它正在忙手头这一步，做完马上读你的消息并回复（通常几分钟内，不用等整份标书完成）。回复会出现在下方控制台。");
+      }
+      log("已送达主会话（" + (d.mode === "steer" ? "插话" : "排队") + "）：" + msg);
       document.getElementById("c-msg").value = "";
       return;
     }
@@ -422,9 +495,37 @@ async function chatSend(){
 }
 
 async function api(method, path, body){
-  const resp = await fetch(BASE + path, {method, headers:{"Content-Type":"application/json","Authorization":"Bearer "+token}, body: body?JSON.stringify(body):undefined});
+  let resp = await fetch(BASE + path, {method, headers:{"Content-Type":"application/json","Authorization":"Bearer "+token}, body: body?JSON.stringify(body):undefined});
+  // 访问令牌过期（2h）：用 30 天有效的 refresh token 自动续期一次并重试
+  const refresh = localStorage.getItem("bidvolt_agent_refresh");
+  if(resp.status === 401 && refresh){
+    try{
+      const r = await fetch(BASE + "/api/v1/auth/refresh", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({refresh_token: refresh})});
+      if(r.ok){
+        const d = await r.json();
+        token = d.access_token; localStorage.setItem("bidvolt_agent_token", token);
+        localStorage.setItem("bidvolt_agent_refresh", d.refresh_token);
+        log("登录令牌已自动续期");
+        resp = await fetch(BASE + path, {method, headers:{"Content-Type":"application/json","Authorization":"Bearer "+token}, body: body?JSON.stringify(body):undefined});
+      }
+    }catch(_e){ /* 续期失败走下方统一 401 处理 */ }
+  }
   const data = await resp.json().catch(()=>({}));
   if(!resp.ok){
+    if(resp.status === 401){
+      token = ""; localStorage.removeItem("bidvolt_agent_token"); localStorage.removeItem("bidvolt_agent_refresh");
+      refreshSessionBar();
+      showError(
+        "⚠️ 登录已失效，当前操作被拒绝。\n\n" +
+        "请重新登录（页面顶部第一行）：\n" +
+        "① 在【邮箱】框输入你的账号邮箱；\n" +
+        "② 在【密码】框输入密码；\n" +
+        "③ 点【登录】按钮；\n" +
+        "④ 登录成功后再重试刚才的操作。\n\n" +
+        "（登录状态保持 30 天；超过 30 天未登录就需要重新登录一次。）"
+      );
+      throw new Error("登录已失效，请重新登录");
+    }
     const msg = data.detail || (resp.status + " " + resp.statusText);
     showError(msg);
     throw new Error(msg);
@@ -437,33 +538,57 @@ async function register(){
   document.getElementById("a-email").value = email;
   const d = await api("POST","/api/v1/auth/register",{email,password:document.getElementById("a-pwd").value,enterprise_name:document.getElementById("a-name").value});
   token = d.access_token; localStorage.setItem("bidvolt_agent_token", token);
-  log("注册成功 " + email);
+  localStorage.setItem("bidvolt_agent_refresh", d.refresh_token);
+  localStorage.setItem("bidvolt_agent_email", email);
+  localStorage.setItem("bidvolt_agent_ent", document.getElementById("a-name").value);
+  document.getElementById("err").style.display = "none";
+  refreshSessionBar();
+  refreshImgDescStatus();
+  log("注册成功 " + email + "（已自动登录）");
 }
 async function login(){
   const d = await api("POST","/api/v1/auth/login",{email:document.getElementById("a-email").value,password:document.getElementById("a-pwd").value});
   token = d.access_token; localStorage.setItem("bidvolt_agent_token", token);
+  localStorage.setItem("bidvolt_agent_refresh", d.refresh_token);
+  localStorage.setItem("bidvolt_agent_email", document.getElementById("a-email").value);
+  document.getElementById("err").style.display = "none";
+  refreshSessionBar();
+  refreshImgDescStatus();
   log("登录成功");
 }
 async function createProject(){
-  const d = await api("POST","/api/v1/projects",{name:document.getElementById("p-name").value});
+  const name = document.getElementById("p-name").value;
+  const d = await api("POST","/api/v1/projects",{name:name});
   projectId = d.project_id; localStorage.setItem("bidvolt_agent_pid", String(projectId));
+  localStorage.setItem("bidvolt_agent_pname", name);
   log("项目创建 #" + projectId);
+  refreshSessionBar();
 }
 async function upload(){
-  const f = document.getElementById("f-file").files[0];
-  if(!f){showError("先选择要上传的采购文件");return;}
-  const fd = new FormData();
-  fd.append("target","project"); fd.append("project_id", String(projectId)); fd.append("files", f);
-  try{
-    const resp = await fetch(BASE + "/api/v1/files/upload", {method:"POST", headers:{"Authorization":"Bearer "+token}, body:fd});
-    const d = await resp.json();
-    if(!resp.ok){ showError((d.detail) || ("上传失败 " + resp.status)); return; }
-    const errs = (d.files||[]).filter(x => x.error);
-    const dups = (d.files||[]).filter(x => x.duplicate);
-    if(errs.length){ showError("上传部分失败：\n" + errs.map(x => x.name + " → " + x.error).join("\n")); }
-    if(dups.length){ log("重复文件已跳过：" + dups.map(x => x.name).join("、")); }
-    log("上传: " + JSON.stringify(d).slice(0,200));
-  }catch(e){ showError(e.message); }
+  if(!projectId){ showError("先创建项目（上方【项目名称】→【创建项目】）再上传采购文件。"); return; }
+  const files = document.getElementById("f-file").files;
+  if(!files.length){showError("先选择要上传的采购文件（可多选，支持压缩包自动解包）");return;}
+  for(let i=0;i<files.length;i++){
+    const fd = new FormData();
+    fd.append("target","project"); fd.append("project_id", String(projectId)); fd.append("files", files[i]);
+    try{
+      const resp = await fetch(BASE + "/api/v1/files/upload", {method:"POST", headers:{"Authorization":"Bearer "+token}, body:fd});
+      const d = await resp.json();
+      if(!resp.ok){ showError((d.detail) || ("上传失败 " + resp.status)); continue; }
+      const errs = (d.files||[]).filter(x => x.error);
+      const dups = (d.files||[]).filter(x => x.duplicate);
+      if(errs.length){ showError("上传部分失败：\n" + errs.map(x => x.name + " → " + x.error).join("\n")); }
+      if(dups.length){ log("重复文件已跳过：" + dups.map(x => x.name).join("、")); }
+      for(const x of (d.files||[])){
+        if(x.expanded){
+          if(x.expanded.error){ showError("压缩包 " + x.name + " 解包失败：" + x.expanded.error); }
+          else log("压缩包 " + x.name + " 已自动解包入库：新增 " + x.expanded.imported + " 个文件（重复跳过 " + x.expanded.duplicates + "，失败 " + x.expanded.failed + "）");
+        }
+      }
+      log("上传: " + JSON.stringify(d).slice(0,200));
+    }catch(e){ showError(e.message); }
+  }
+  refreshMaterials();
 }
 async function uploadEnterprise(){
   const files = document.getElementById("e-file").files;
@@ -480,15 +605,106 @@ async function uploadEnterprise(){
     const dups = (d.files||[]).filter(x => x.duplicate);
     if(errs.length){ showError("企业资料部分上传失败：\n" + errs.map(x => x.name + " → " + x.error).join("\n")); }
     if(dups.length){ log("重复资料已跳过（内容与库内相同）：" + dups.map(x => x.name).join("、")); }
+    for(const x of (d.files||[])){
+      if(x.expanded){
+        if(x.expanded.error){ showError("压缩包 " + x.name + " 解包失败：" + x.expanded.error); }
+        else log("压缩包 " + x.name + " 已自动解包入库：新增 " + x.expanded.imported + " 个资料（重复跳过 " + x.expanded.duplicates + "，失败 " + x.expanded.failed + "）");
+      }
+    }
     log("企业资料: " + JSON.stringify(d).slice(0,600));
   }catch(e){ showError(e.message); }
 }
+async function refreshSessionBar(){
+  const el = document.getElementById("session-bar");
+  if(!token){
+    el.style.display = "block";
+    el.textContent = "⚠️ 未登录：请在下方输入邮箱密码后点【登录】";
+    return;
+  }
+  try{
+    const d = await api("GET", "/api/v1/auth/me");
+    if(d.email) document.getElementById("a-email").value = d.email;
+    const pid = localStorage.getItem("bidvolt_agent_pid") || "";
+    const pname = localStorage.getItem("bidvolt_agent_pname") || "";
+    if(pname) document.getElementById("p-name").value = pname;
+    const tid = localStorage.getItem("bidvolt_agent_task") || "";
+    el.style.display = "block";
+    el.textContent = "✅ 已登录：" + d.email + "（企业：" + (d.enterprise_name || "—") + "）"
+      + (pid ? (" · 当前项目：#" + pid + (pname ? " " + pname : "")) : " · 尚未创建项目")
+      + (tid ? (" · 上次任务：#" + tid) : "");
+  }catch(_e){
+    el.style.display = "block";
+    el.textContent = "⚠️ 登录状态未知：请在下方输入邮箱密码后点【登录】";
+  }
+}
+async function refreshImgDescStatus(){
+  if(!token) return;
+  try{
+    const d = await api("GET", "/api/v1/files/image-describe-progress");
+    const el = document.getElementById("imgdesc-status");
+    el.style.display = "block";
+    if(d.remaining > 0){
+      el.textContent = "🖼 后台识图进行中：剩余 " + d.remaining + " 个文件（已完成 " + d.done
+          + "，失败 " + d.failed_terminal + "）· 已缓存图片描述 " + d.described_images + " 张（30 秒自动刷新）";
+    } else if((d.done + d.failed_terminal) > 0){
+      el.textContent = "🖼 后台识图全部完成（共处理 " + d.done + " 个文件，失败 " + d.failed_terminal
+          + "）· 已缓存图片描述 " + d.described_images + " 张";
+    }
+  }catch(_e){ /* 静默：登录态无效时不打扰 */ }
+}
+async function refreshMaterials(){
+  if(!projectId){ showError("先创建项目（上方【项目名称】→【创建项目】）"); return; }
+  const mats = await api("GET", `/api/v1/files/projects/${projectId}/materials`);
+  refreshImgDescStatus();
+  const el = document.getElementById("mat-list");
+  el.style.display = "block";
+  el.innerHTML = "";
+  const rows = Array.isArray(mats) ? mats : [];
+  if(!rows.length){ el.innerHTML = "（暂无资料：上传采购文件/压缩包后会自动出现在这里）"; return; }
+  for(const m of rows){
+    const div = document.createElement("div");
+    let line;
+    if(m.source_archive_name){
+      line = "　↳ " + (m.file_name || "?") + (m.block_count ? "（" + m.block_count + " 块）" : "")
+           + "　← 来自《" + m.source_archive_name + "》" + (m.archive_path ? "　路径：" + m.archive_path : "");
+    } else {
+      line = "• " + (m.file_name || "?") + (m.block_count ? "（" + m.block_count + " 块）" : "");
+      if((m.ext || "") === ".zip"){
+        line += m.expanded_count ? ("　📦 已解包（" + m.expanded_count + " 个文件）") : "　📦 未解包";
+      }
+    }
+    div.textContent = line;
+    if((m.ext || "") === ".zip"){
+      const btn = document.createElement("button");
+      btn.style.cssText = "margin-left:8px;padding:1px 8px;font-size:12px";
+      btn.textContent = m.expanded_count ? "重新解包入库" : "解包入库";
+      btn.onclick = function(){ expandZip(m.file_id, m.file_name); };
+      div.appendChild(btn);
+    }
+    el.appendChild(div);
+  }
+}
+async function expandZip(fileId, name){
+  try{
+    const d = await api("POST", "/api/v1/files/archive", {archive_file_id: fileId, target: "project", project_id: Number(projectId)});
+    const res = d.result || {};
+    log("压缩包《" + (name || fileId) + "》解包完成：新增 " + (res.imported || []).length
+        + " 个（重复跳过 " + (res.duplicates || []).length + "，失败 " + (res.failed || []).length + "）");
+    if((res.failed || []).length){
+      log("失败明细：\n" + res.failed.map(function(f){ return "  ✗ " + f.name + " → " + f.reason; }).join("\n"));
+    }
+    refreshMaterials();
+  }catch(e){ showError(e.message); }
+}
+
 async function agentRun(){
+  if(!projectId){ showError("先创建项目：在上方【项目名称】输入名字，点【创建项目】后再点【开始】。"); return; }
   const d = await api("POST", `/api/v1/projects/${projectId}/agent-run`, {idempotency_key: "agent-" + Date.now(), payload:{}});
   startRun(d);
 }
 async function agentRunResume(){
-  if(!lastTaskId){ log("没有可续跑的任务（先跑一单）"); return; }
+  if(!projectId){ showError("先创建项目（上方【项目名称】→【创建项目】）再续跑。"); return; }
+  if(!lastTaskId){ log("没有可续跑的任务（先点【开始】跑一单）"); return; }
   // 上一任务仍在运行：不新建续跑任务，直接恢复监控（刷新后点续跑的正确行为）
   try{
     const prev = await api("GET", `/api/v1/projects/${projectId}/agent-run/${lastTaskId}`);
@@ -528,12 +744,19 @@ async function restoreMonitor(){
   }catch(e){ log("恢复监控失败: " + e); }
 }
 window.addEventListener("load", restoreMonitor);
+// 后台识图进度 + 会话状态：页面打开期间每 30 秒刷新一次（登录态有效才请求）
+window.addEventListener("load", function(){
+  refreshSessionBar();
+  refreshImgDescStatus();
+  setInterval(refreshImgDescStatus, 30000);
+});
 function startRun(d){
   taskId = d.task_id; localStorage.setItem("bidvolt_agent_task", String(taskId));
   lastTaskId = String(taskId); localStorage.setItem("bidvolt_agent_last_task", lastTaskId);
   log("Agent 主会话任务 #" + taskId + " 已提交（task_type=agent_pipeline）");
   bannerState = "running";
   showBanner("info", "⏳ 主会话启动中…");
+  refreshSessionBar();
   openConsole(); // 自动打开控制台：事件流实时展示 + 驱动运行横幅动态条
   poll();
 }

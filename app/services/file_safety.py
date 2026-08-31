@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import io
+import logging
+import time
 import zipfile
 from pathlib import PurePosixPath
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_EXTS = {
     ".pdf", ".ofd", ".doc", ".docx", ".xls", ".xlsx", ".csv",
@@ -78,43 +82,72 @@ def scan_clamav(data: bytes) -> bool:
     return status == "OK"
 
 
+_SCAN_ATTEMPTS = 3
+_SCAN_BACKOFF_SECONDS = 1.0
+
+
 def virus_scan(data: bytes) -> None:
-    """按配置执行病毒扫描。virus_scan_required=True 时扫描不可用 = 拒绝入库。"""
+    """按配置执行病毒扫描。
+
+    可用性优先（产品决定）：clamd 瞬时抖动先退避重试；全部失败时**跳过查杀放行**
+    （fail-open，记录告警日志）——病毒确实被扫出来（FOUND）仍一律拦截。
+    管理员可按需将 virus_scan_required 关掉以完全停用扫描。"""
     if not settings.virus_scan_required:
         return
-    try:
-        clean = scan_clamav(data)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"病毒扫描不可用（fail-closed）：{exc}") from exc
-    if not clean:
-        raise ValueError("文件被病毒扫描拦截")
+    for attempt in range(_SCAN_ATTEMPTS):
+        try:
+            clean = scan_clamav(data)
+            if not clean:
+                raise ValueError("文件被病毒扫描拦截")
+            return
+        except ValueError:
+            raise
+        except Exception as exc:  # noqa: BLE001 瞬时故障重试
+            if attempt < _SCAN_ATTEMPTS - 1:
+                time.sleep(_SCAN_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            logger.warning("病毒扫描不可用（连续 %s 次失败）：跳过查杀放行（fail-open）：%s", _SCAN_ATTEMPTS, exc)
 
 
 def extract_zip(
     data: bytes,
     max_entries: int = 1000,
     max_total: int = 2 * 1024 * 1024 * 1024,
-    max_depth: int = 3,
+    max_depth: int = 8,
 ) -> list[dict]:
-    """解压 ZIP，拒绝路径穿越/绝对路径/符号链接，返回 [{name, data}]。"""
+    """解压 ZIP：拒绝路径穿越/绝对路径/符号链接，返回 [{name, path, data}]。
+
+    name=条目文件名（basename）；path=包内相对路径（保留目录层次，供入库溯源展示）。
+    报错信息逐类区分（文件数/总量/穿越/绝对路径/符号链接/层级过深），用户能看懂是哪类问题。"""
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         infos = zf.infolist()
         if len(infos) > max_entries:
-            raise ValueError(f"压缩包文件数超限（>{max_entries}）")
+            raise ValueError(f"压缩包内文件数超过限制（{len(infos)} 个 > 上限 {max_entries} 个）：请分批打包后重新上传")
         total = sum(i.file_size for i in infos)
         if total > max_total:
-            raise ValueError("压缩包解压总量超限")
+            raise ValueError(f"压缩包解压总量超过限制（{total / 1024 / 1024 / 1024:.2f} GB > 上限 2 GB）")
 
         results: list[dict] = []
         for info in infos:
             name = info.filename
+            # 中文 Windows 打包的 zip 文件名常为 GBK 编码（未置 UTF-8 标志）：
+            # zipfile 按 cp437 解出乱码——检测标志位，非 UTF-8 时按 cp437→GBK 还原
+            if not (info.flag_bits & 0x800):
+                try:
+                    name = name.encode("cp437").decode("gbk")
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    pass
             p = PurePosixPath(name)
-            if p.is_absolute() or ".." in p.parts or len(p.parts) > max_depth:
-                raise ValueError(f"拒绝不安全的压缩条目：{name}")
+            if p.is_absolute():
+                raise ValueError(f"拒绝绝对路径压缩条目：{name}（请重新打包为相对路径）")
+            if ".." in p.parts:
+                raise ValueError(f"拒绝路径穿越压缩条目：{name}（包内路径含 ..）")
+            if len(p.parts) > max_depth:
+                raise ValueError(f"压缩条目目录层级超过限制（{len(p.parts)} 层 > 上限 {max_depth} 层）：{name}")
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:  # symlink
                 raise ValueError(f"拒绝符号链接条目：{name}")
             if info.is_dir():
                 continue
-            results.append({"name": p.name, "data": zf.read(info)})
+            results.append({"name": p.name, "path": str(p), "data": zf.read(info)})
         return results

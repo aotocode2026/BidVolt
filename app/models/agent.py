@@ -53,5 +53,9 @@ class AgentCustomerAsk(Base, TimestampMixin):
     items: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     # 0=待回答 1=已回答（action 恒为 1=已呈现）
     answered: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    # 问答窗口（分钟）：超时后服务端注入「由你自行决定」信号；问卡仍可补答
+    window_minutes: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=20)
+    # 超时信号是否已注入（幂等标记）
+    timeout_notified: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     # 客户回答（question 用）：[str]（与 items 逐条对应；客户未逐条时整体一条）
     answer: Mapped[list | None] = mapped_column(JSON, nullable=True)

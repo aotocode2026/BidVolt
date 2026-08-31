@@ -59,6 +59,21 @@ def parse_to_blocks(path: Path, ext: str) -> list[dict]:
                     }
                 )
                 idx += 1
+        # 内嵌图片信号（扫描页/图表页）：只统计张数，视觉理解由主会话 vision 工具做
+        try:
+            image_count = sum(len(page.get_images()) or 0 for page in doc)
+        except Exception:  # noqa: BLE001
+            image_count = 0
+        if image_count:
+            blocks.append(
+                {
+                    "block_type": "image",
+                    "page_no": None,
+                    "block_index": idx,
+                    "text_content": "",
+                    "extra": {"count": image_count},
+                }
+            )
         doc.close()
         return blocks
 
@@ -198,7 +213,8 @@ def _parse_pptx(path: Path) -> list[dict]:
 
 
 def _parse_docx(path: Path) -> list[dict]:
-    """docx：段落 + 表格行提取为 doc_block。"""
+    """docx：段落 + 表格行提取为 doc_block；内嵌图片只统计张数（不 OCR、不抽内容——
+    视觉理解由主会话 vision 工具做，这里只给"文件里有图"的信号）。"""
     from docx import Document
 
     doc = Document(str(path))
@@ -240,6 +256,23 @@ def _parse_docx(path: Path) -> list[dict]:
                         }
                     )
                     idx += 1
+    # 内嵌图片信号：统计包内 image 部件张数（正文内联图/浮图/表格插图都在内）
+    try:
+        image_count = sum(
+            1 for p in doc.part.package.parts if (p.content_type or "").startswith("image/")
+        )
+    except Exception:  # noqa: BLE001 图片统计失败不影响文本块
+        image_count = 0
+    if image_count:
+        blocks.append(
+            {
+                "block_type": "image",
+                "page_no": None,
+                "block_index": idx,
+                "text_content": "",
+                "extra": {"count": image_count},
+            }
+        )
     return blocks
 
 

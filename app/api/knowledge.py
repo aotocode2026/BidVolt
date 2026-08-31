@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import UserContext, require_permission
+from app.api.deps import UserContext, require_capability
 from app.constants import Permission
 from app.db import get_session
 from app.services import knowledge_service
@@ -26,7 +26,7 @@ class KnowledgeSearchRequest(BaseModel):
 async def search(
     body: KnowledgeSearchRequest,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("search_knowledge")),
 ) -> dict:
     if not body.query.strip():
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="query 不能为空")

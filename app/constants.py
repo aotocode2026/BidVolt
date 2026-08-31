@@ -52,6 +52,11 @@ class Permission:
     DEFAULT = ALL - RESTRICTED
 
 
+# 提问关问答窗口（分钟）：客户在此窗口内作答；超时后服务端注入
+# 「已超时，由你自行决定」信号（纯信号，不替主会话决定），问卡仍可补答
+QUESTION_GATE_WINDOW_MINUTES = 20
+
+
 class ProjectStatus(IntEnum):
     DRAFT = 1
     PROCESSING = 2
@@ -90,6 +95,8 @@ class TaskType:
     CHAT = "chat"
     # 新方案（Agent 主会话端到端，与旧任务类型完全隔离）
     AGENT_PIPELINE = "agent_pipeline"
+    # 图片描述（入库后台任务）：sha256 缓存，每张图只描述一次
+    IMAGE_DESCRIBE = "image_describe"
 
     ALL = {
         ENTERPRISE_INGESTION,
@@ -101,4 +108,5 @@ class TaskType:
         TARGETED_EDIT,
         CHAT,
         AGENT_PIPELINE,
+        IMAGE_DESCRIBE,
     }

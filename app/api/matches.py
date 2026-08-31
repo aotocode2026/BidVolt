@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import UserContext, require_permission
+from app.api.deps import UserContext, require_capability
 from app.constants import Permission
 from app.db import get_session
 from app.models.project_material import MaterialMatchResult
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/projects", tags=["matches"])
 async def list_matches(
     project_id: int,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+    user: UserContext = Depends(require_capability("list_material_matches")),
 ) -> list[dict]:
     rows = await session.scalars(
         select(MaterialMatchResult).where(
@@ -45,7 +45,7 @@ async def save_matches(
     project_id: int,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_permission(Permission.PROJECT_EDIT)),
+    user: UserContext = Depends(require_capability("save_material_match_results")),
 ) -> dict:
     saved: list[int] = []
     for item in body.get("results", []):

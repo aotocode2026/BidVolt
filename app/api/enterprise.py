@@ -65,6 +65,19 @@ async def list_assets(
             EnterpriseAsset.is_deleted.is_(False),
         )
     )
+    # 图片描述状态（sha256 缓存：入库后台任务产出）——asset 是图片时给 described 标记
+    from app.models.file import FileObject, ImageDescription
+
+    fids = [a.source_file_id for a in rows if a.source_file_id]
+    fobjs = {
+        f.id: f
+        for f in await session.scalars(select(FileObject).where(FileObject.id.in_(fids)))
+    } if fids else {}
+    img_hashes = [f.sha256 for f in fobjs.values() if f.ext in (".png", ".jpg", ".jpeg", ".bmp", ".tiff")]
+    desc_hashes = {
+        d.sha256
+        for d in await session.scalars(select(ImageDescription).where(ImageDescription.sha256.in_(img_hashes)))
+    } if img_hashes else set()
     return [
         {
             "asset_id": a.id,
@@ -73,6 +86,11 @@ async def list_assets(
             "category_id": a.category_id,
             "status": a.status,
             "source_file_id": a.source_file_id,
+            # 图片资料：是否已有结构化描述（described=True 时 get_asset 带 description）
+            "image_described": (
+                fobjs[a.source_file_id].sha256 in desc_hashes
+                if a.source_file_id and a.source_file_id in fobjs else False
+            ),
         }
         for a in rows
     ]
@@ -94,6 +112,16 @@ async def get_asset(
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
     facts = await session.scalars(select(EnterpriseFact).where(EnterpriseFact.asset_id == asset.id))
+    # 图片资产的结构化描述（入库后台任务产出，sha256 缓存）：描述找图、装订复核
+    image_description = None
+    if asset.source_file_id:
+        from app.models.file import FileObject, ImageDescription
+
+        _fobj = await session.get(FileObject, asset.source_file_id)
+        if _fobj is not None:
+            _desc = await session.get(ImageDescription, _fobj.sha256)
+            if _desc is not None:
+                image_description = _desc.description
     return {
         "asset_id": asset.id,
         "name": asset.name,
@@ -101,6 +129,7 @@ async def get_asset(
         "category_id": asset.category_id,
         "status": asset.status,
         "source_file_id": asset.source_file_id,
+        "image_description": image_description,
         "facts": [
             {"fact_id": f.id, "fact_key": f.fact_key, "fact_value": f.fact_value, "confidence": float(f.confidence) if f.confidence is not None else None, "status": f.status}
             for f in facts

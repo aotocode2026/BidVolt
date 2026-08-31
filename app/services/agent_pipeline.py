@@ -24,10 +24,11 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import TaskType
+from app.constants import QUESTION_GATE_WINDOW_MINUTES as ASK_WINDOW_MINUTES, TaskType
 from app.models.agent import AgentSessionEvent
 from app.models.task import Task
 
@@ -104,6 +105,8 @@ async def _customer_state(session, task_id: int, limit: int = 400) -> dict:
             "answered": bool(r.answered),
             "answer": r.answer,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "window_minutes": int(r.window_minutes or 0),
+            "timeout_notified": bool(r.timeout_notified),
         }
         if r.kind == "action":
             action_list = [str(x) for x in (r.items or []) if str(x).strip()] + action_list
@@ -220,8 +223,21 @@ async def _next_seq(session: AsyncSession, task: Task) -> int:
 
 
 async def _append_events(session: AsyncSession, task: Task, seq: list[int], batch: list[tuple[str, str]]) -> None:
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select as sa_select
+
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
+    # 自含 RLS：本函数可能在任意 commit 之后被调用（泵循环的进度块/pending_chat
+    # 提交都会清掉事务级 GUC）——入口先设上下文，保证 INSERT 不撞 WITH CHECK
+    await _set_rls_context(session, task.enterprise_id)
+    # app 与 worker 双进程都会写事件：用任务行锁把「取 max(seq) + 插入」串行化，
+    # 避免两进程读到同一个 max 产生重复 seq（控制台顺序错乱）
+    await session.execute(sa_select(Task).where(Task.id == task.id).with_for_update())
+    cur = await session.scalar(
+        sa_select(sa_func.max(AgentSessionEvent.seq)).where(AgentSessionEvent.task_id == task.id)
+    )
+    seq[0] = max(seq[0], int(cur or 0))
     for kind, content in batch:
         seq[0] += 1
         session.add(
@@ -292,6 +308,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         project_id=task.project_id,
         task_id=task.id,
         task_type=TaskType.AGENT_PIPELINE,
+        # 管线最长跑 PIPELINE_TIMEOUT（6h），cap 必须覆盖整个运行期：
+        # 默认 1h TTL 曾让主会话在第 60 分钟全线 403（capability token 已过期），
+        # 靠重签脚本自救才跑完——留 1h 余量，杜绝中途失效
+        ttl=PIPELINE_TIMEOUT + 3600,
     )
     payload = task.payload or {}
     resume_session_id = str(payload.get("resume_session_id") or "").strip() or None
@@ -353,9 +373,13 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "用 ask_customer 工具**批量**问（一次列完所有问题，不一条一条问），每条带 q/need/checked"
             "（问题/为什么需要/已自查说明——问得傻会被自己的 checked 暴露）；提问由主会话发起，"
             "子 agent 发现客户独占信息在回执里列给主会话，主会话统一批量 ask_customer。"
-            "工具立即返回（ask_id），客户在页面回答后回答会自动回到本会话；提问后不干等："
+            "工具立即返回（ask_id），客户回答后回答会自动回到本会话；提问后不干等："
             "继续推进不依赖答案的工作；答案回来再回填相关字段并重验；"
             "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/用 report_customer_actions 上报实体动作）。"
+            f"**提问关问答窗口**：每条提问有 {ASK_WINDOW_MINUTES} 分钟问答窗口，超时未答系统会注入"
+            "「问答窗口已过，由你自行决定」信号——收到即不再等待，按三级处置纪律自主拍板"
+            "（材料类问题以企业资料库事实为准，能装订的全部装订整本/整组，不保守跳过）；"
+            "客户之后补答会自动注入本会话，届时回填并重验。"
             "**报价依据必附（依据随项目而定，缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据写进交付件本身"
             "（报价单「备注/说明」格或价格文件「报价测算说明」页）。依据的**具体构成随本项目而定，由你按实际确定，不照清单硬套**："
             "成本法按本项目真实成本科目（人力/设备/差旅/管理/税费——有什么算什么，没有的不硬凑）；"
@@ -469,9 +493,13 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "用 ask_customer 工具**批量**问（一次列完所有问题，不一条一条问），每条带 q/need/checked"
             "（问题/为什么需要/已自查说明——问得傻会被自己的 checked 暴露）；提问由主会话发起，"
             "子 agent 发现客户独占信息在回执里列给主会话，主会话统一批量 ask_customer。"
-            "工具立即返回（ask_id），客户在页面回答后回答会自动回到本会话；提问后不干等："
+            "工具立即返回（ask_id），客户回答后回答会自动回到本会话；提问后不干等："
             "继续推进不依赖答案的工作；答案回来再回填相关字段并重验；"
             "收口时未答复项按三级处置（能推断的填实/写「无/不适用」/用 report_customer_actions 上报实体动作）。"
+            f"**提问关问答窗口**：每条提问有 {ASK_WINDOW_MINUTES} 分钟问答窗口，超时未答系统会注入"
+            "「问答窗口已过，由你自行决定」信号——收到即不再等待，按三级处置纪律自主拍板"
+            "（材料类问题以企业资料库事实为准，能装订的全部装订整本/整组，不保守跳过）；"
+            "客户之后补答会自动注入本会话，届时回填并重验。"
             "**报价依据必附（依据随项目而定，缺依据不出数字）**：测算出的每个报价数字必须附带书面依据，且依据写进交付件本身"
             "（报价单「备注/说明」格或价格文件「报价测算说明」页）。依据的**具体构成随本项目而定，由你按实际确定，不照清单硬套**："
             "成本法按本项目真实成本科目（人力/设备/差旅/管理/税费——有什么算什么，没有的不硬凑）；"
@@ -567,6 +595,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         session_id: str | None = resume_sid
         round_marker: str | None = None
         marker_poll_at = 0.0
+        ask_timeout_at = 0.0
+        progress_at = 0.0
         # 续跑基线：旧会话里已有消息（含上一单回执）不算本轮完成
         marker_min_index = 0
         if resume_sid:
@@ -620,6 +650,16 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                             break
                     if ln in echo_texts or t in echo_texts:
                         continue
+                    # 终端按列硬折行时，我方提交文本的回显会以「子串行」形式回流
+                    # （长提示词/催办/复核提示被折行，恰好折在完成标记前就形成
+                    # 以【PIPELINE_COMPLETE】开头的假回执行）——按子串过滤；
+                    # 真实回执行（完整标记，或 INCOMPLETE+原因）不在此列，永不丢弃
+                    if (
+                        ln not in (MARK_COMPLETE, MARK_INCOMPLETE)
+                        and not ln.startswith(MARK_INCOMPLETE)
+                        and any(ln in e or t in e for e in echo_texts)
+                    ):
+                        continue
                     last_line = ln
                     pending.append(("hermes", ln))
             except Exception:  # noqa: BLE001 回调内异常不得吞掉事件流
@@ -635,13 +675,19 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         try:
             while True:
                 await asyncio.sleep(EVENT_FLUSH_SECONDS)
-                await _flush()
+                # 事件写入自身含 RLS 重设；任何瞬时 DB 故障都不得杀死泵循环
+                # （批量留在 pending，下轮重试）——历史上 INSERT 撞 RLS 曾把整轮打死
+                try:
+                    await _flush()
+                except Exception:  # noqa: BLE001
+                    logger.warning("事件冲刷暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 客户中途对话：复用现有泵循环——取出任务字段里的排队消息，
                 # 经与催办/复核提示相同的 PTY 通道注入（hermes CLI 的 /queue 在忙时排队，
                 # 主会话当前轮结束后按到达顺序逐条处理）。行锁防 app/worker 双进程丢失更新；
                 # 失败下轮再试，不打断主流程。
                 try:
                     from sqlalchemy import select as sa_select
+                    from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
                     row = (
                         await session.execute(
@@ -652,10 +698,135 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     if pending_chat:
                         row.payload = {**(row.payload or {}), "pending_chat": []}
                         await session.commit()
+                        # commit 清掉事务级 GUC：立即重设，防后续事件写入撞 RLS
+                        await _set_rls_context(session, task.enterprise_id)
                         for msg in pending_chat:
-                            _submit("/queue " + " ".join(str(msg).split()))
+                            # 排队（/queue，下一轮处理）或插话（/steer，下一个工具调用后注入改方向）
+                            if isinstance(msg, dict):
+                                _text = str(msg.get("text") or "")
+                                _cmd = "/steer" if msg.get("mode") == "steer" else "/queue"
+                            else:
+                                _text = str(msg)
+                                _cmd = "/queue"
+                            _submit(_cmd + " " + " ".join(_text.split()))
                 except Exception:  # noqa: BLE001 瞬时失败（事务/锁）下轮再取
                     logger.warning("中途对话注入暂未成功（task=%s），下轮重试", task.id, exc_info=True)
+                # 提问关问答窗口：超过窗口仍未回答的 ask 注入「已超时，由你自行决定」
+                # 纯信号（原问题原文附上，不给任何默认答案——走向由主会话按三级处置
+                # 纪律自己拍板）；一条 ask 只注入一次（timeout_notified 幂等）。
+                # 问卡不消失：客户之后补答仍会走 queue_chat_message 回填。
+                if loop.time() - ask_timeout_at > 60:
+                    ask_timeout_at = loop.time()
+                    try:
+                        from sqlalchemy import select as _sa_sel
+
+                        from app.models.agent import AgentCustomerAsk
+                        from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+                        # 上一步 pending_chat 可能已 commit（RLS 上下文随事务消失），重新设置
+                        await _set_rls_context(session, task.enterprise_id)
+                        _now = datetime.now(timezone.utc)
+                        rows = (
+                            await session.scalars(
+                                _sa_sel(AgentCustomerAsk)
+                                .where(
+                                    AgentCustomerAsk.task_id == task.id,
+                                    AgentCustomerAsk.kind == "question",
+                                    AgentCustomerAsk.answered == 0,
+                                    AgentCustomerAsk.timeout_notified == 0,
+                                )
+                            )
+                        ).all()
+                        for a in rows:
+                            _window = max(1, int(a.window_minutes or 20))
+                            if _now < a.created_at + timedelta(minutes=_window):
+                                continue
+                            lines = ["- " + (it.get("q") if isinstance(it, dict) else str(it)).strip() for it in (a.items or [])]
+                            signal = (
+                                f"（系统提示·问答窗口已过）提问 ask_id={a.id} 已等待超过 {_window} 分钟，"
+                                "客户尚未回答。问卡仍可补答，补答会自动回到本会话。"
+                                "不再等待：请按任务书三级处置纪律**由你自行决定**这些问题的走向——"
+                                "能核实的核实、能推断的推断、该写「无/不适用」的照写；"
+                                "材料类问题以企业资料库事实为准，能装订的全部装订（整本/整组），不保守跳过；"
+                                "确需客户实体动作的收口时用 report_customer_actions 列出。原问题：\n"
+                                + "\n".join(lines)
+                            )
+                            a.timeout_notified = 1
+                            await _append_events(session, task, seq, [("service", signal)])
+                            # _append_events 已 commit + 重设 RLS，无需再提交
+                            # 关键：事件库只是控制台展示，主会话读不到——必须经 PTY 队列注入
+                            _submit("/queue " + " ".join(signal.split()))
+                            logger.info("提问关超时信号已注入 ask=%s（task=%s）", a.id, task.id)
+                    except Exception:  # noqa: BLE001 瞬时失败下轮再查
+                        logger.warning("提问关超时检查暂未成功（task=%s），下轮重试", task.id, exc_info=True)
+                # 进度条（观感 + 页面监控信息量）：按真实里程碑推进 percent/current_work——
+                # 提问关发起 15% → 成文产物落库 40-70% → 打包 85%，期间随耗时缓慢爬升
+                if loop.time() - progress_at > 60:
+                    progress_at = loop.time()
+                    try:
+                        from sqlalchemy import func as sa_func
+                        from sqlalchemy import select as _sa_sel_p
+
+                        from app.models.agent import AgentArtifact, AgentCustomerAsk
+                        from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+                        await _set_rls_context(session, task.enterprise_id)
+                        _n_asks = int(
+                            (await session.scalar(
+                                _sa_sel_p(sa_func.count(AgentCustomerAsk.id)).where(
+                                    AgentCustomerAsk.task_id == task.id,
+                                    AgentCustomerAsk.kind == "question",
+                                )
+                            ))
+                            or 0
+                        )
+                        _n_ans = int(
+                            (await session.scalar(
+                                _sa_sel_p(sa_func.count(AgentCustomerAsk.id)).where(
+                                    AgentCustomerAsk.task_id == task.id,
+                                    AgentCustomerAsk.kind == "question",
+                                    AgentCustomerAsk.answered == 1,
+                                )
+                            ))
+                            or 0
+                        )
+                        _n_art = int(
+                            (await session.scalar(
+                                _sa_sel_p(sa_func.count(AgentArtifact.id)).where(AgentArtifact.task_id == task.id)
+                            ))
+                            or 0
+                        )
+                        _n_zip = int(
+                            (await session.scalar(
+                                _sa_sel_p(sa_func.count(AgentArtifact.id)).where(
+                                    AgentArtifact.task_id == task.id,
+                                    AgentArtifact.kind == "zip",
+                                )
+                            ))
+                            or 0
+                        )
+                        _elapsed = int(loop.time() - started_at)
+                        if _n_zip:
+                            _pct, _work = 85, f"交付包已生成（第 {_n_zip} 版），主会话复核收尾中…"
+                        elif _n_art:
+                            _pct, _work = min(70, 40 + _n_art * 2), f"成文产物 {_n_art} 份落库：撰写/校验/评审推进中…"
+                        elif _n_asks:
+                            _pct, _work = 15, f"提问关已发起（{_n_ans}/{_n_asks} 组已答，超时未答主会话将自行决定），并行推进中…"
+                        else:
+                            _pct, _work = 5 + min(5, _elapsed // 300), "Agent 主会话启动（todo 计划 + 子任务编排，全程自主）…"
+                        _cur = dict(task.progress or {})
+                        if _cur.get("percent") != _pct or _cur.get("current_work") != _work:
+                            task.progress = {
+                                "phase": "agent_pipeline",
+                                "status": "running",
+                                "percent": _pct,
+                                "current_work": _work,
+                            }
+                            await session.commit()
+                            # commit 清掉事务级 GUC：立即重设，防下一轮事件写入撞 RLS
+                            await _set_rls_context(session, task.enterprise_id)
+                    except Exception:  # noqa: BLE001 进度纯观感，失败下轮再试
+                        logger.warning("进度更新暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
                 # 不解析终端回显，避免我方提示里的标记文本误判）；
                 # 同一份导出顺便看消息总数增长 → 有增长即算有进展（防误催办）
@@ -673,14 +844,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 last_out_at = loop.time()
                     except Exception:  # noqa: BLE001 会话库读取瞬时失败下次再试
                         round_marker = None
-                    if not round_marker:
-                        # 兜底：事件流里的主会话回执（导出通道偶发失配时仍能识别）
-                        try:
-                            round_marker = await asyncio.wait_for(
-                                _marker_from_events(session, task), timeout=20
-                            )
-                        except Exception:  # noqa: BLE001
-                            round_marker = None
+                    # 完成标记以会话库导出为唯一判据（assistant 消息原文，我方提示词
+                    # 注入不可能混入）。事件流兜底通道已从轮询中移除：终端折行会把
+                    # 推理中提及标记/我方提示词回显折成「以标记开头」的假回执行，
+                    # 曾两次误判提前终止健康会话——只在卡死出口处做精确整行兜底（见下）。
                     if round_marker:
                         break
                 # 进程提前退出且没有待刷事件
@@ -785,7 +952,12 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "逐处填实或写「无/不适用」，不留待补标签。"
             "同时核对：报价单已随件附测算依据（依据构成随项目而定——真实成本科目+真实找到的行情样本+本项目真实存在的规则面，"
             "缺依据必须补写）；收尾前已用 report_customer_actions 工具上报提交前客户动作清单（没有客户动作则说明未调用）。"
-            "发现问题立即修复（重新 fill/seal/package）后再输出结束标记；"
+            "**深度与证据核对（防止「能交但薄」）**：①方案性条目（技术专项响应/商务补充等）正文必须是**实质内容**——"
+            "项目理解/总体方案与架构/分项技术方案/实施组织与进度/质量安全进度保障/售后培训逐章有货，"
+            "对照技术规范书逐条要求每条都有实质性响应正文，只有目录或空话=不足；"
+            "②评分装订矩阵每行证据已**实际插入**交付文件（数文件 media 图数与矩阵行对齐：业绩/人员/资质/审计的"
+            "扫描件页在文件里，不是只有文字叙述）；③报价测算依据三路（成本科目/行情样本/规则面）已随件写明。"
+            "上述任何一项不足就回修（重写正文/补装证据/补依据，重新 fill/seal/package）后再输出结束标记；"
             "确认无误最后一行输出 " + MARK_COMPLETE + "；确有无法修复项输出 " + MARK_INCOMPLETE + " 原因…。"
         )
         await _append_events(
@@ -833,6 +1005,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             or "并紧接着写出具体原因" in reason
             or "不要写" in reason
             or "写真实原因" in reason
+            or "总结正文放在标记之前" in reason
+            or "只写" in reason
         ):
             reason = ""
         task.result = {
@@ -955,7 +1129,10 @@ async def _marker_from_events(session: AsyncSession, task: Task, limit: int = 40
     for r in rows:
         for ln in (r.content or "").splitlines():
             ln = ln.strip()
-            if ln == MARK_COMPLETE or ln.startswith(MARK_COMPLETE):
+            # COMPLETE 只认整行等于标记：终端折行会让「模型推理中提及标记」「我方提示词回显」
+            # 的片段以标记开头（如「【PIPELINE_COMPLETE】 at the end.」），
+            # startswith 会把这些假回执误判成真完成、杀掉健康会话——整行精确匹配才能当真。
+            if ln == MARK_COMPLETE:
                 return MARK_COMPLETE
             if ln == MARK_INCOMPLETE or ln.startswith(MARK_INCOMPLETE):
                 return MARK_INCOMPLETE
@@ -1001,11 +1178,13 @@ async def _event_tail(session: AsyncSession, task: Task, limit: int) -> str:
     return "\n".join(r.content or "" for r in reversed(rows))[-limit:]
 
 
-async def queue_chat_message(session: AsyncSession, task: Task, message: str) -> None:
+async def queue_chat_message(session: AsyncSession, task: Task, message: str, mode: str = "queue") -> None:
     """运行中的任务：把客户消息追加进任务字段 + 事件流（runner 泵循环取出后经 PTY 注入）。
 
+    mode：queue=排队（下一轮处理，/queue 注入）；steer=插话（下一个工具调用后注入
+    改方向提示，不打断当前步骤，/steer 注入）。
     行锁串行化：app 与 worker 是两个进程，同写 task.payload.pending_chat 必须
-    FOR UPDATE 防丢失更新（多条插话按到达顺序排队，逐条注入）。"""
+    FOR UPDATE 防丢失更新（多条按到达顺序排队，逐条注入）。"""
     from sqlalchemy import select as sa_select
 
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
@@ -1018,7 +1197,7 @@ async def queue_chat_message(session: AsyncSession, task: Task, message: str) ->
     ).scalar_one()
     payload = dict(row.payload or {})
     pending = list(payload.get("pending_chat") or [])
-    pending.append(message)
+    pending.append({"text": message, "mode": "steer" if mode == "steer" else "queue"})
     payload["pending_chat"] = pending
     row.payload = payload
     seq = [await _next_seq(session, task)]
@@ -1046,6 +1225,9 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
         project_id=task.project_id,
         task_id=task.id,
         task_type=TaskType.AGENT_PIPELINE,
+        # 终态任务的对话授权：任务 DONE 后普通 cap 会被 require_capability 拒绝
+        # （「任务已结束，授权上下文失效」），带 purpose=chat 放行——见 deps.require_capability
+        purpose="chat",
     )
     env = _hermes_env(cap)
     _write_cap_file(cap)
@@ -1083,13 +1265,13 @@ def _strip_session_trailer(raw: str) -> str:
     lines = raw.splitlines()
     out = []
     for ln in lines:
-        if re.match(r"^(Resume this session with:|Session:|Duration:|Messages:|$)", ln.strip()):
+        if re.match(r"^(Resume this session with:|[Ss]ession[_ ]?[Ii]?[Dd]?:|Duration:|Messages:|$)", ln.strip()):
             continue
         out.append(ln)
     return "\n".join(out).strip()
 
 
-_SESSION_ID_RE = re.compile(r"Session:\s*([\w-]+)")
+_SESSION_ID_RE = re.compile(r"[Ss]ession[_ ]?[Ii]?[Dd]?:\s*([\w-]+)")
 
 
 async def pre_chat(session: AsyncSession, project, message: str) -> dict:
@@ -1102,20 +1284,32 @@ async def pre_chat(session: AsyncSession, project, message: str) -> dict:
     if hermes_bin is None or not os.path.exists(hermes_bin):
         raise ValueError("Hermes 未安装：无法对话")
     sid = project.pre_chat_session_id
-    env = _hermes_env("")
-    env["BIDVOLT_CAPABILITY_TOKEN"] = ""
-    # 任务前无 capability：清掉 cap 文件残留，避免读到上一个任务的过期 token
-    try:
-        cap_file = os.environ.get("BIDVOLT_CAP_FILE", "/tmp/bidvolt_cap_token")
-        if os.path.exists(cap_file):
-            os.remove(cap_file)
-    except OSError:
-        pass
+    # 任务前对话：签发只读 capability（能列项目材料/查企业资料库/查需求，
+    # 不能写）——客户问「现在都有哪些资料？」模型要能据实回答
+    from app.services.capability import issue_capability
+
+    cap = issue_capability(
+        enterprise_id=project.enterprise_id,
+        project_id=project.id,
+        task_id=0,
+        task_type="pre_chat",
+        purpose="pre_chat",
+    )
+    env = _hermes_env(cap)
+    _write_cap_file(cap)
     await _set_rls_context(session, project.enterprise_id)
 
     lock = _CHAT_LOCKS.setdefault(f"project-{project.id}", asyncio.Lock())
     async with lock:
-        args = [hermes_bin, "chat", "-q", message,
+        # 只读说明：业务工具已开放（只读白名单），可查资料/材料/需求如实回答客户
+        chat_message = (
+            "（系统说明：这是任务创建前的对话，你可以调用业务工具查询企业资料库/项目材料/需求清单"
+            "（只读，无写入权限）——客户问「现在都有哪些资料/材料齐不齐」时要据实查询回答；"
+            f"当前项目 project_id={project.id}（企业 enterprise_id={project.enterprise_id}）。"
+            "客户交代的偏好与背景信息要记进会话，任务开始后这些内容会自动成为主会话上下文。）\n"
+            + message
+        )
+        args = [hermes_bin, "chat", "-q", chat_message,
                 "-t", _CHAT_TOOLSETS,
                 "--cli", "-Q", "--yolo", "--accept-hooks",
                 "--max-turns", "60", "--no-restore-cwd"]

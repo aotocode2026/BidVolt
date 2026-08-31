@@ -33,9 +33,21 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
   来源可追溯（文件/项目/页码/块索引），租户隔离 + 默认排除当前项目，REST + MCP `search_knowledge`
 - **招标公告 URL 安全导入**（Issue #6）：逐跳 SSRF/DNS rebinding 防护、重定向/大小/类型限额，
   正文仅进入本项目材料（document_role=招标公告），失败落 error_code 留审计
-- 云模型：MiniMax **M3**（文本主推理，2026-08-19 由 Text-01 切换）、百炼 DashScope qwen-vl（视觉），受 P1 门禁控制
-- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（26 个工具）+ 5 个业务 Skill；
-  **标书生成默认路径**（质量门兜底内嵌闭环），任务级 capability token 逐调用授权
+- 云模型：**DeepSeek V4 Flash**（文本主推理，2026-08-31 由 MiniMax M3 切换，成本/质量平衡）、百炼 DashScope qwen-vl（视觉，含入库图片描述后台任务），受 P1 门禁控制
+- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（44 个工具）+ 业务 Skill；
+  **Agent 主会话端到端**（新方案，默认产品流程）：一个任务=一个 Hermes 主会话，
+  自主编排 解析→提问关→撰写→校验→评审→成文→打包，交付前逐份自查；
+  旧任务类型/旧页面完全隔离保留。详见 [docs/Agent新方案README.md](docs/Agent新方案README.md)
+- **图片描述缓存**：企业资料/项目材料内嵌图片入库后台自动调视觉模型生成结构化描述
+  （doc_type/编号/日期/金额/主体/印章/摘要），sha256 全局缓存每张图只描述一次；
+  页面顶部进度条可查后台识图进度；主会话「描述找图、装订复核」
+- **提问关问答窗口**：主会话开编前批量向客户提问；每条提问 20 分钟问答窗口（页面倒计时），
+  超时服务端注入「由你自行决定」信号（纯信号不代答），问卡仍可补答
+- **压缩包自动解包**：上传 zip 即展开内部文件入库（嵌套递归 ≤6 层、GBK 文件名、逐条安全校验），
+  原件保留并标注「已解包 N 个文件」；解包文件带来源压缩包名与包内路径层次
+- **控制台对话双模式**：排队回复（主会话忙完当前步骤处理）/ 插话（steer，不打断、下一步工具调用后注入改方向）
+- **任务前对话（pre-chat）**：开跑前可对话（只读工具，可问"现在都有哪些资料？"），开跑时交代自动注入任务书
+- 前端对接（登录/上传/材料/任务/问卡/对话/行情全量接口）：[docs/前端对接接口文档.md](docs/前端对接接口文档.md)
 - 测试客户端：`/demo/`（真实调用后端 API，多环境配置 + 连接测试，`scripts/build_test_client.py` 打包分发）
 
 ## 2. 架构
@@ -47,7 +59,7 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
 FastAPI（app.main，uvicorn :8123）
    ├─ PostgreSQL 14（/data/pgdata，RLS 租户隔离）      ← supervisor 守护
    ├─ Worker（app.services.worker，任务队列）            ← supervisor 守护
-   ├─ ClamAV（病毒扫描，fail-closed）                    ← supervisor 守护
+   ├─ ClamAV（病毒扫描：不可用时重试后放行=fail-open，扫出病毒仍拦截）← supervisor 守护
    ├─ Hermes Agent（/data/hermes，headless gateway :9119）← supervisor 守护
    │    └─ bidvolt MCP（stdio，26 工具，任务级 capability 授权）→ 后端
    │         └─ Worker 以 hermes chat 无头模式驱动 bid-generate skill（默认路径，质量门兜底）
@@ -173,14 +185,15 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 |---|---|
 | `DATABASE_URL` / `APP_DB_PASSWORD` | PostgreSQL 连接与建库密码 |
 | `JWT_SECRET` / `BIDVOLT_INTERNAL_TOKEN` | 签名密钥与内部传输令牌（≥32 位随机串） |
-| `MINIMAX_API_KEY` / `MINIMAX_BASE_URL` | MiniMax 文本模型（默认 api.minimax.chat/v1） |
+| `MINIMAX_API_KEY` / `MINIMAX_BASE_URL` | MiniMax 文本模型（备用；主模型为 DeepSeek，Key 在 supervisor 环境） |
+| `DEEPSEEK_API_KEY` | DeepSeek 文本模型（supervisor `environment=` 注入，不进 .env） |
 | `DASHSCOPE_API_KEY` | 百炼 qwen-vl 视觉模型 |
 | `ANYSEARCH_KEY` / `ANYSEARCH_BASE_URL` | 搜索（空 = 匿名额度；端点默认 api.anysearch.com/mcp） |
 | `DATA_CLASSIFICATION_CONFIRMED` | P1 门禁总开关（签署清单后才置 1） |
 | `CLOUD_LLM_ENABLED` / `SEARCH_ENABLED` | 云模型/搜索子开关 |
 | `SEARCH_MODE` | `mock`（离线合成）/ `anysearch`（真实出网） |
 | `STORAGE_ROOT` / `BACKUP_ROOT` | 文件与备份根目录（/data 约定） |
-| `VIRUS_SCAN_REQUIRED` | 1 = ClamAV 不可用即拒绝入库（fail-closed） |
+| `VIRUS_SCAN_REQUIRED` | 1 = 开启病毒扫描（扫描不可用时重试后**放行**=fail-open，扫出病毒仍拦截） |
 
 ## 7. 使用说明（产品侧）
 
@@ -214,11 +227,12 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 
 - 位置：`/data/hermes`（venv + 数据 + skills），supervisor `[program:hermes]` 守护
   `hermes serve` headless gateway（127.0.0.1:9119）
-- 模型：主推理 MiniMax-Text-01（`minimax` provider，max_tokens=8000）；
-  视觉辅助 = 百炼 qwen-vl-max（`auxiliary.vision` custom + DashScope 兼容端点）
-- MCP：`bidvolt`（24 工具，stdio），调用后端需 `BIDVOLT_INTERNAL_TOKEN`
-  （当前为 Hermes 服务账号 JWT；生产按 P0-2 走任务级 capability token）
-- Skills：`bidvolt-tender-parse / material-match / bid-generate / mock-evaluate / targeted-edit`
+- 模型：主推理 **deepseek-v4-flash**（`deepseek` provider，max_tokens=32768，忙时输入模式=queue/steer）；
+  视觉辅助 = 百炼 qwen-vl-max（`auxiliary.vision` custom + DashScope 兼容端点；
+  入库图片描述后台任务也走此模型）
+- MCP：`bidvolt`（44 工具，stdio），调用后端需 `BIDVOLT_INTERNAL_TOKEN` + 任务级 capability token
+- Skills：`bidvolt-agent-pipeline`（主会话端到端，默认产品流程）+
+  `bidvolt-tender-parse / material-match / bid-generate / mock-evaluate / targeted-edit`（旧方案，隔离保留）
 - 常用命令（容器内，`export HERMES_HOME=/data/hermes`）：
 
 ```bash

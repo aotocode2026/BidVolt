@@ -38,9 +38,13 @@ async def _set_rls_context(session: AsyncSession, enterprise_id: int) -> None:
     row-level security 策略违例。）
     """
     if session.bind is not None and session.bind.dialect.name == "postgresql":
+        _eid = str(enterprise_id or "").strip()
+        if not _eid.isdigit():
+            # 绝不把空串/垃圾写进 GUC（线上曾因此触发 RLS 策略空串强转 bigint 崩溃）
+            return
         await session.execute(
             text("SELECT set_config('app.enterprise_id', :eid, true)"),
-            {"eid": str(enterprise_id)},
+            {"eid": _eid},
         )
 
 
@@ -2486,6 +2490,13 @@ async def _agent_pipeline_dispatch(session: AsyncSession, task: Task) -> None:
     await run_agent_pipeline(session, task)
 
 
+async def _image_describe_dispatch(session: AsyncSession, task: Task) -> None:
+    """入库后台：图片结构化描述（sha256 缓存，每张图只描述一次）。"""
+    from app.services.image_desc import image_describe_handler
+
+    await image_describe_handler(session, task)
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
     TaskType.BID_GENERATE: _bid_generate_handler,
@@ -2493,4 +2504,5 @@ HANDLERS: dict[str, object] = {
     TaskType.CHAT: _chat_handler,
     TaskType.BID_REVIEW: _bid_review_handler,
     TaskType.AGENT_PIPELINE: _agent_pipeline_dispatch,
+    TaskType.IMAGE_DESCRIBE: _image_describe_dispatch,
 }

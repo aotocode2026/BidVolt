@@ -115,6 +115,8 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "link_citation",
         # 看图（MiniMax 官方视觉，与主模型无关：材料图片/印章印模/表格截图/流程图）
         "vision_analyze_minimax",
+        # 图片结构化描述清单（入库后台任务产出：描述找图，装订仍须 vision 复核）
+        "get_image_descriptions",
         # 模拟评标（评审阶段落分/确认，主会话评审闭环用）
         "get_latest_score",
         "get_review_items",
@@ -138,6 +140,26 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "search_knowledge",
     },
     "chat": {},
+    # 任务前对话（项目级 pre-chat）：只读业务工具——客户问「现在都有哪些资料？」
+    # 模型要能真实回答（列材料/查资料库/查需求），但不能写任何东西
+    "pre_chat": {
+        "list_project_materials",
+        "get_project_material_blocks",
+        "list_requirements",
+        "get_requirement",
+        "get_deliverable_content",
+        "search_assets",
+        "get_asset",
+        "list_material_matches",
+        "search_knowledge",
+        "list_agent_artifacts",
+        "inspect_agent_artifact",
+        "get_latest_score",
+        "get_review_items",
+        "search_web",
+        "search_web_minimax",
+        "vision_analyze_minimax",
+    },
 }
 
 # 网页端客户对话：与主会话完全一致的业务工具集（产品决定：放开一切限制）
@@ -170,8 +192,10 @@ def issue_capability(
     task_id: int,
     task_type: str,
     ttl: int = CAPABILITY_TTL,
+    purpose: str = "",
 ) -> str:
-    """签发任务级 capability token（短时，默认 1h）。"""
+    """签发任务级 capability token（短时，默认 1h）。
+    purpose：授权用途标记（如 "chat"=任务完成后的主会话对话），校验端按需放行。"""
     payload = {
         "v": 1,
         "eid": enterprise_id,
@@ -180,6 +204,8 @@ def issue_capability(
         "tools": sorted(TASK_TOOL_WHITELIST.get(task_type, set())),
         "exp": int(time.time()) + ttl,
     }
+    if purpose:
+        payload["purpose"] = purpose
     payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     return f"bidvolt-cap.v1.{payload_b64}.{_sign(payload_b64)}"
 

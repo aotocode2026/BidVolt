@@ -126,15 +126,17 @@ async def process_upload(
     mime, ext = file_safety.validate_upload(filename, data)
     file_safety.virus_scan(data)
     await check_storage(session, user.enterprise_id, len(data))
-    # 内容去重：同企业已入库相同内容的文件直接复用，不重复解析/重复建资产
+    # 内容去重：仅限"同企业同项目"（项目文件）/"同企业"（企业资产）——跨项目的相同文件
+    # 必须各自入库（每个项目都要有自己的材料链接），不能复用别项目的 FileObject
     sha = hashlib.sha256(data).hexdigest()
-    existing = await session.scalar(
-        select(FileObject).where(
-            FileObject.enterprise_id == user.enterprise_id,
-            FileObject.sha256 == sha,
-            FileObject.is_deleted.is_(False),
-        ).limit(1)
+    dup_q = select(FileObject).where(
+        FileObject.enterprise_id == user.enterprise_id,
+        FileObject.sha256 == sha,
+        FileObject.is_deleted.is_(False),
     )
+    if target == "project":
+        dup_q = dup_q.where(FileObject.project_id == project_id)
+    existing = await session.scalar(dup_q.limit(1))
     if existing is not None:
         raise DuplicateUploadError(existing)
     saved = storage.save(data, user.enterprise_id, filename)
@@ -230,7 +232,22 @@ async def process_upload(
         project = await _get_project(session, user.enterprise_id, project_id)
         if project.status == 1:  # draft → processing
             project.status = 2
+    # 入库后台任务：图片文件直接描述；docx/pdf 提取内嵌图片后逐张描述。
+    # sha256 缓存保证每张图只调一次视觉模型；低优先级不挤占主流程；幂等入队。
+    if fobj.ext in (".png", ".jpg", ".jpeg", ".bmp", ".tiff"):
+        from app.services.image_desc import enqueue_describe
+
+        await enqueue_describe(session, fobj, "asset")
+    elif fobj.ext in (".docx", ".pdf"):
+        from app.services.image_desc import enqueue_describe
+
+        await enqueue_describe(session, fobj, "material")
     return fobj
+
+
+# 嵌套压缩包最大展开层数（含最外层）：zip 套 zip 超过该层数时不再展开，
+# 内部 zip 保留为原件并给出明确原因（防炸弹，每层都有文件数/总量/安全校验）
+ARCHIVE_MAX_RECURSE = 6
 
 
 async def process_archive(
@@ -239,6 +256,7 @@ async def process_archive(
     archive_file_id: int,
     target: str,
     project_id: int | None = None,
+    _depth: int = 0,
 ) -> ArchiveJob:
     src = await session.scalar(
         select(FileObject).where(
@@ -249,6 +267,12 @@ async def process_archive(
     )
     if src is None or src.ext != ".zip":
         raise ValueError("压缩包文件不存在或不是 zip")
+
+    # RLS：本函数内部有 commit（递归层亦然），PG 的 set_config(local) 随事务消失——
+    # 每次进入都重设租户上下文，保证后续查询（含递归返回后的外层循环）能过 RLS
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, user.enterprise_id)
 
     data = storage.open(src.bucket, src.object_key).read_bytes()
     file_safety.virus_scan(data)
@@ -268,15 +292,38 @@ async def process_archive(
     duplicates: list[dict] = []
     for entry in entries:
         try:
-            fobj = await process_upload(
-                session, user, entry["data"], entry["name"], target, project_id
-            )
+            # 每条目独立 SAVEPOINT：单文件失败只回滚该条目（残留行不落库），
+            # 其余文件互不影响——与上传循环同一隔离纪律
+            async with session.begin_nested():
+                fobj = await process_upload(
+                    session, user, entry["data"], entry["name"], target, project_id
+                )
+                # 解包溯源：记录来源压缩包与包内相对路径（保留原始层次信息）
+                fobj.source_archive_id = archive_file_id
+                fobj.archive_path = entry.get("path") or entry["name"]
             imported.append(fobj.id)
+            # 嵌套 zip（如技术规范书 zip 内再套 zip）：继续展开入库，限 ARCHIVE_MAX_RECURSE 层防炸弹
+            if fobj.ext == ".zip" and _depth < ARCHIVE_MAX_RECURSE - 1:
+                sub = await process_archive(session, user, fobj.id, target, project_id, _depth + 1)
+                sub_res = sub.result or {}
+                imported.extend(sub_res.get("imported") or [])
+                failed.extend(sub_res.get("failed") or [])
+                duplicates.extend(sub_res.get("duplicates") or [])
+                # 递归层内部 commit 会清掉 RLS 上下文：重设后继续处理外层剩余条目
+                from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+                await _set_rls_context(session, user.enterprise_id)
+            elif fobj.ext == ".zip" and _depth >= ARCHIVE_MAX_RECURSE - 1:
+                # 超过嵌套上限：不展开，如实记录（原件已入库保留）
+                failed.append({
+                    "name": entry.get("path") or entry["name"],
+                    "reason": f"嵌套压缩包超过 {ARCHIVE_MAX_RECURSE} 层展开上限，已保留原件未展开",
+                })
         except DuplicateUploadError as dup:
             # 包内文件与库内已有文件内容相同：跳过重复入库（不算失败）
-            duplicates.append({"name": entry["name"], "file_id": dup.existing.id})
+            duplicates.append({"name": entry.get("path") or entry["name"], "file_id": dup.existing.id})
         except Exception as exc:  # noqa: BLE001
-            failed.append({"name": entry["name"], "reason": str(exc)})
+            failed.append({"name": entry.get("path") or entry["name"], "reason": str(exc)})
 
     job.status = 2 if not failed else 3
     job.result = {"imported": imported, "failed": failed, "duplicates": duplicates}

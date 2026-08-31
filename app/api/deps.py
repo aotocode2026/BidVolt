@@ -42,9 +42,12 @@ TOOL_PERMISSION: dict[str, str] = {
     "link_citation": Permission.DELIVERABLE_EDIT,
     "search_assets": Permission.FILE_READ,
     "get_asset": Permission.FILE_READ,
+    "get_image_descriptions": Permission.FILE_READ,
     "classify_enterprise_asset": Permission.PROJECT_EDIT,
     "upsert_enterprise_facts": Permission.PROJECT_EDIT,
     "search_knowledge": Permission.FILE_READ,
+    "list_material_matches": Permission.FILE_READ,
+    "save_material_match_results": Permission.PROJECT_EDIT,
     "create_deliverable": Permission.DELIVERABLE_EDIT,
     # 成文工具链（新方案）：机制工具，读底稿/写产物
     "resolve_template_draft": Permission.FILE_READ,
@@ -116,9 +119,13 @@ async def _auth_user(
 async def _set_rls_context(session: AsyncSession, enterprise_id: int) -> None:
     """RLS：PG 下事务内注入租户上下文（SQLite 测试环境跳过）。"""
     if session.bind is not None and session.bind.dialect.name == "postgresql":
+        _eid = str(enterprise_id or "").strip()
+        if not _eid.isdigit():
+            # 绝不把空串/垃圾写进 GUC（线上曾因此触发 RLS 策略空串强转 bigint 崩溃）
+            return
         await session.execute(
             text("SELECT set_config('app.enterprise_id', :eid, true)"),
-            {"eid": str(enterprise_id)},
+            {"eid": _eid},
         )
 
 
@@ -151,6 +158,20 @@ def require_capability(tool: str):
                 payload = verify_capability(cap, tool=tool)
             except CapabilityError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            # 任务前对话（purpose=pre_chat）：无任务实体，凭 cap 里的 enterprise/project
+            # 直接建上下文——只读白名单已由签发端限定（capability.TASK_TOOL_WHITELIST["pre_chat"]）
+            if payload.get("purpose") == "pre_chat":
+                req_pid = request.path_params.get("project_id")
+                if req_pid is not None and int(req_pid) != int(payload.get("pid", 0)):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="capability token 不属于请求项目")
+                await _set_rls_context(session, int(payload["eid"]))
+                request.state.cap_payload = payload
+                return UserContext(
+                    user_id=0,
+                    enterprise_id=int(payload["eid"]),
+                    email="mcp",
+                    permissions=set(),
+                )
             # 任务终态后授权上下文失效（A-2）：DONE/CANCELLED/FAILED_TERMINAL 拒绝
             task = await session.scalar(
                 select(Task).where(
@@ -161,7 +182,13 @@ def require_capability(tool: str):
             if task is None:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务不存在，授权上下文失效")
             if task.status in (int(TaskStatus.DONE), int(TaskStatus.CANCELLED), int(TaskStatus.FAILED_TERMINAL)):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务已结束，授权上下文失效")
+                # 终态拒绝的默认规则保留：它的价值是让长寿命管线 cap（7h）随任务结束
+                # 立即失效，而不是"禁止终态对话"。客户在任何任务状态下都可能需要与
+                # 主会话澄清/追问，再由主会话回填重验或引导续跑/重跑——这条官方收口
+                # 通道由 chat_with_session 按需签发短时 cap（1h、purpose=chat），
+                # 对全部终态（完成/取消/失败）放行；其余用途一律拒绝。
+                if payload.get("purpose") != "chat":
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="任务已结束，授权上下文失效")
             if task.project_id != int(payload.get("pid", 0)):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="capability token 与任务项目不一致")
             req_pid = request.path_params.get("project_id")

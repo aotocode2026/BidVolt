@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext, require_capability, require_permission
 from app.config import settings
-from app.constants import Permission, TaskType
+from app.constants import Permission, QUESTION_GATE_WINDOW_MINUTES, TaskType
 from app.db import get_session
 from app.models.agent import AgentSessionEvent
 from app.models.project import Project
@@ -218,6 +218,10 @@ async def agent_run_ask(
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     await _set_rls_context(session, task.enterprise_id)
+    try:
+        window_minutes = int(body.get("window_minutes") or QUESTION_GATE_WINDOW_MINUTES)
+    except (TypeError, ValueError):
+        window_minutes = QUESTION_GATE_WINDOW_MINUTES
     row = AgentCustomerAsk(
         enterprise_id=task.enterprise_id,
         project_id=task.project_id,
@@ -225,6 +229,7 @@ async def agent_run_ask(
         kind=kind,
         items=items,
         answered=answered,
+        window_minutes=max(1, window_minutes),
     )
     session.add(row)
     await session.commit()
@@ -232,8 +237,10 @@ async def agent_run_ask(
         "ask_id": row.id,
         "kind": kind,
         "recorded": len(items),
+        "window_minutes": row.window_minutes,
         "message": (
             "提问已记录并在页面渲染问卡，客户回答后会自动回到本会话；"
+            f"问答窗口 {row.window_minutes} 分钟，超时未答系统会提示由你自行决定（问卡仍可补答）。"
             "动作清单已记录并呈现给客户。继续推进不依赖答案的工作。"
         ),
     }
@@ -405,16 +412,22 @@ async def agent_run_chat(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message 不能为空")
     from app.services.agent_pipeline import chat_with_session, queue_chat_message
 
-    if task.status in (1, 2) and not (task.result or {}).get("session_id"):
-        # 运行中：主会话尚未产出 session_id，但 runner 持有 PTY——把消息写入任务字段，
-        # 由 runner 现有泵循环取出并经同一条 PTY 通道注入（与催办/复核提示同一机制）。
-        # 客户中途发消息不再 409，而是排队待主会话当前轮结束后处理。
-        await queue_chat_message(session, task, message)
+    if task.status in (1, 2):
+        # 运行中一律经泵循环注入：runner 持有会话 PTY，另起 hermes -q --resume 直连会与
+        # 长驻 REPL 抢同一会话。mode=queue（默认）排队下一轮处理；mode=steer 插话——
+        # 下一个工具调用后注入改方向提示，不打断当前步骤。
+        mode = "steer" if str(body.get("mode") or "") == "steer" else "queue"
+        await queue_chat_message(session, task, message, mode)
+        if mode == "steer":
+            hint = "插话已注入：主会话在下一步工具调用后会看到并调整方向（不打断当前步骤）。"
+        else:
+            hint = "消息已送达主会话：它正在忙手头这一步，做完马上读你的消息并回复（通常几分钟内，不用等整份标书完成）。回复见会话控制台。"
         return {
             "queued": True,
+            "mode": mode,
             "reply": None,
-            "session_id": None,
-            "message": "已送达主会话队列：当前轮结束后主会话会读取并回复（回复见会话控制台）。",
+            "session_id": (task.result or {}).get("session_id"),
+            "message": hint,
         }
     try:
         return await chat_with_session(session, task, message)

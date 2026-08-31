@@ -98,6 +98,10 @@ def _get_project_material_blocks(args: dict) -> Any:
     )
 
 
+def _get_image_descriptions(args: dict) -> Any:
+    return _get(f"/api/v1/files/{args['file_id']}/image-descriptions")
+
+
 def _list_project_materials(args: dict) -> Any:
     return _get(f"/api/v1/files/projects/{args['project_id']}/materials")
 
@@ -427,10 +431,10 @@ TOOL_DEFS: list[dict] = [
     {
         "name": "list_project_materials",
         "description": (
-            "列出项目当前招标材料（含文件名、解析状态、可提取文本块数）。"
+            "列出项目当前招标材料（含文件名、解析状态、可提取文本块数、media_count 内嵌图数、"
+            "image_count/image_described_count 图片描述进度、block_stats 块类型统计、解包来源）。"
             "status=3 表示已解析但索引可能不完整；status=4 表示解析失败、只能读原件；"
-            "block_count=0 表示无文字层（多为扫描件），必须用 vision 工具读原件图。"
-            "解析索引仅用于定位，内容一律以原件为准。"
+            "block_count=0 表示无文字层（多为扫描件）。解析索引仅用于定位，内容一律以原件为准。"
         ),
         "inputSchema": {
             "type": "object",
@@ -439,6 +443,22 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _list_project_materials,
+    },
+    {
+        "name": "get_image_descriptions",
+        "description": (
+            "读文件内嵌图片的结构化描述清单（入库后台任务产出，sha256 缓存）："
+            "每张图带 doc_type/编号/日期/金额/主体/印章/摘要。"
+            "用途=「找」证据：写作前用清单快速定位该装订的扫描件（资质/业绩/发票/社保等）；"
+            "装订时关键字段（编号/金额/日期/主体/印章）必须再 vision 复核原件图。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "integer"}},
+            "required": ["file_id"],
+            "additionalProperties": False,
+        },
+        "handler": _get_image_descriptions,
     },
     {
         "name": "get_deliverable_content",
