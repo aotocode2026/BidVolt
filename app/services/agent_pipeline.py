@@ -785,44 +785,49 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                         from sqlalchemy import func as sa_func
                         from sqlalchemy import select as _sa_sel_p
 
+                        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
                         from app.models.agent import AgentArtifact, AgentCustomerAsk
                         from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
-                        await _set_rls_context(session, task.enterprise_id)
-                        _n_asks = int(
-                            (await session.scalar(
-                                _sa_sel_p(sa_func.count(AgentCustomerAsk.id)).where(
-                                    AgentCustomerAsk.task_id == task.id,
-                                    AgentCustomerAsk.kind == "question",
-                                )
-                            ))
-                            or 0
-                        )
-                        _n_ans = int(
-                            (await session.scalar(
-                                _sa_sel_p(sa_func.count(AgentCustomerAsk.id)).where(
-                                    AgentCustomerAsk.task_id == task.id,
-                                    AgentCustomerAsk.kind == "question",
-                                    AgentCustomerAsk.answered == 1,
-                                )
-                            ))
-                            or 0
-                        )
-                        _n_art = int(
-                            (await session.scalar(
-                                _sa_sel_p(sa_func.count(AgentArtifact.id)).where(AgentArtifact.task_id == task.id)
-                            ))
-                            or 0
-                        )
-                        _n_zip = int(
-                            (await session.scalar(
-                                _sa_sel_p(sa_func.count(AgentArtifact.id)).where(
-                                    AgentArtifact.task_id == task.id,
-                                    AgentArtifact.kind == "zip",
-                                )
-                            ))
-                            or 0
-                        )
+                        # 与 pending_chat/提问超时同理：独立短命会话——主泵会话事务
+                        # 悬挂曾两次卡死整轮（R7 排水、R8 进度块 21:34 卡死事件）
+                        _n_asks = _n_ans = _n_art = _n_zip = 0
+                        async with _PumpSessionLocal() as _s4:
+                            await _set_rls_context(_s4, task.enterprise_id)
+                            _n_asks = int(
+                                (await _s4.scalar(
+                                    _sa_sel_p(sa_func.count(AgentCustomerAsk.id)).where(
+                                        AgentCustomerAsk.task_id == task.id,
+                                        AgentCustomerAsk.kind == "question",
+                                    )
+                                ))
+                                or 0
+                            )
+                            _n_ans = int(
+                                (await _s4.scalar(
+                                    _sa_sel_p(sa_func.count(AgentCustomerAsk.id)).where(
+                                        AgentCustomerAsk.task_id == task.id,
+                                        AgentCustomerAsk.kind == "question",
+                                        AgentCustomerAsk.answered == 1,
+                                    )
+                                ))
+                                or 0
+                            )
+                            _n_art = int(
+                                (await _s4.scalar(
+                                    _sa_sel_p(sa_func.count(AgentArtifact.id)).where(AgentArtifact.task_id == task.id)
+                                ))
+                                or 0
+                            )
+                            _n_zip = int(
+                                (await _s4.scalar(
+                                    _sa_sel_p(sa_func.count(AgentArtifact.id)).where(
+                                        AgentArtifact.task_id == task.id,
+                                        AgentArtifact.kind == "zip",
+                                    )
+                                ))
+                                or 0
+                            )
                         _elapsed = int(loop.time() - started_at)
                         if _n_zip:
                             _pct, _work = 85, f"交付包已生成（第 {_n_zip} 版），主会话复核收尾中…"
@@ -832,17 +837,22 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                             _pct, _work = 15, f"提问关已发起（{_n_ans}/{_n_asks} 组已答，超时未答主会话将自行决定），并行推进中…"
                         else:
                             _pct, _work = 5 + min(5, _elapsed // 300), "Agent 主会话启动（todo 计划 + 子任务编排，全程自主）…"
-                        _cur = dict(task.progress or {})
-                        if _cur.get("percent") != _pct or _cur.get("current_work") != _work:
-                            task.progress = {
-                                "phase": "agent_pipeline",
-                                "status": "running",
-                                "percent": _pct,
-                                "current_work": _work,
-                            }
-                            await session.commit()
-                            # commit 清掉事务级 GUC：立即重设，防下一轮事件写入撞 RLS
-                            await _set_rls_context(session, task.enterprise_id)
+                        async with _PumpSessionLocal() as _s5:
+                            await _set_rls_context(_s5, task.enterprise_id)
+                            _row = (
+                                await _s5.execute(
+                                    _sa_sel_p(Task).where(Task.id == task.id).with_for_update()
+                                )
+                            ).scalar_one()
+                            _cur = dict(_row.progress or {})
+                            if _cur.get("percent") != _pct or _cur.get("current_work") != _work:
+                                _row.progress = {
+                                    "phase": "agent_pipeline",
+                                    "status": "running",
+                                    "percent": _pct,
+                                    "current_work": _work,
+                                }
+                                await _s5.commit()
                     except Exception:  # noqa: BLE001 进度纯观感，失败下轮再试
                         logger.warning("进度更新暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
