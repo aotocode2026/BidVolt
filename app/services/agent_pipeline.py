@@ -1058,20 +1058,46 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             f"（session_id={sid}，可恢复后续跑）"
         )
 
-    # 收尾：把客户交互（提问/动作清单）提取进 result，供前端直接呈现
+    # 收尾：终态写入用独立短命会话——主泵会话 commit 悬挂已三次卡死整轮
+    # （R7 排水、R8 进度块、R8 终态写入 23:23 事件）。客户交互提取只读，
+    # 与 result/progress 一起经短命会话落库，主会话不再承担终态 commit。
     try:
         customer = await _customer_state(session, task.id)
         if customer.get("action_list"):
             task.result["action_list"] = customer["action_list"]
         task.result["customer_asks"] = customer.get("asks") or []
-        await session.commit()
     except Exception:  # noqa: BLE001 提取失败不影响任务结论
         logger.warning("提取客户交互块失败（task=%s）", task.id, exc_info=True)
+
+    try:
+        from sqlalchemy import select as _sa_sel_f
+
+        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+        from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+        _result = dict(task.result or {})
+        _progress = dict(task.progress or {})
+        async with _PumpSessionLocal() as _s6:
+            await _set_rls_context(_s6, task.enterprise_id)
+            _row = (
+                await _s6.execute(_sa_sel_f(Task).where(Task.id == task.id).with_for_update())
+            ).scalar_one()
+            _row.result = _result
+            _row.progress = _progress
+            await _s6.commit()
+    except Exception:  # noqa: BLE001 终态落库失败下轮由 worker 心跳/回收兜底
+        logger.warning("终态落库暂未成功（task=%s）", task.id, exc_info=True)
 
     # 收尾：把最终 zip 附带的会话记录刷新为完整版（含最终回执）+ 附精简版。
     # 打包时的快照早于最终回执，不刷新交付包里的会话记录会戛然而止。
     try:
-        await _refresh_zip_record(session, task)
+        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+
+        from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+        async with _PumpSessionLocal() as _s7:
+            await _set_rls_context(_s7, task.enterprise_id)
+            await _refresh_zip_record(_s7, task)
     except Exception:  # noqa: BLE001 记录刷新失败不影响任务结论
         logger.warning("收尾刷新会话记录失败（task=%s）", task.id, exc_info=True)
 
