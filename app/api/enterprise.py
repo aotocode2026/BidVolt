@@ -59,14 +59,19 @@ async def list_assets(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("search_assets")),
 ) -> list[dict]:
-    # R7 线上定位（2026-08-31）：本端点曾对 1425 条资产返回空列表——RLS GUC 未在
-    # 本事务生效（FORCE RLS 全隐行）。与泵循环同款防御：入口自设 RLS 上下文，
-    # 不依赖上游依赖链的事务状态（FastAPI 版本差异/依赖缓存都可能丢 GUC）。
+    # R7 线上定位（2026-08-31）：本端点曾对 1425 条资产返回空列表。双保险：
+    # ①入口自设 RLS 上下文（与泵循环同款防御，不依赖上游依赖链事务状态）；
+    # ②下方 list() 物化——ScalarResult 单次可迭代，双重迭代时第二轮拿到空集
+    #   （经 CI 测试复现验证：这才是返回 [] 的真正根因，而非 RLS）。
     await _set_rls_context(session, user.enterprise_id)
-    rows = await session.scalars(
-        select(EnterpriseAsset).where(
-            EnterpriseAsset.enterprise_id == user.enterprise_id,
-            EnterpriseAsset.is_deleted.is_(False),
+    # 关键：ScalarResult 单次可迭代——必须 list() 物化，否则下方 fids 推导式
+    # 消费掉结果集后，返回列表推导式拿到空集（线上 1425 条资产返回 [] 的真正根因）
+    rows = list(
+        await session.scalars(
+            select(EnterpriseAsset).where(
+                EnterpriseAsset.enterprise_id == user.enterprise_id,
+                EnterpriseAsset.is_deleted.is_(False),
+            )
         )
     )
     # 图片描述状态（sha256 缓存：入库后台任务产出）——asset 是图片时给 described 标记

@@ -103,11 +103,17 @@ def test_archive_normal_zip_imports_files(client):
         zf.writestr("a.txt", "内容A")
         zf.writestr("b.txt", "内容B")
     r = _upload(client, h, content=buf.getvalue(), name="pkg.zip")
-    file_id = r.json()["files"][0]["file_id"]
+    assert r.status_code == 200
+    item = r.json()["files"][0]
+    # R6 起：上传即自动解包（原件保留，expanded 回执随响应返回）
+    assert item["expanded"]["imported"] == 2
+    file_id = item["file_id"]
 
+    # 显式 /archive 重跑：幂等——包内文件已入库判重跳过，不算失败
     ar = client.post("/api/v1/files/archive", json={"archive_file_id": file_id, "target": "enterprise"}, headers=h)
     assert ar.status_code == 200
-    assert len(ar.json()["result"]["imported"]) == 2
+    assert len(ar.json()["result"]["duplicates"]) == 2
+    assert len(ar.json()["result"]["imported"]) == 0
 
 
 def test_signed_download_url(client):

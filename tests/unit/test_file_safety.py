@@ -21,7 +21,8 @@ def test_virus_scan_disabled_skips(monkeypatch):
     assert called["n"] == 0
 
 
-def test_virus_scan_required_fail_closed(monkeypatch):
+def test_virus_scan_required(monkeypatch):
+    """required=True：扫出病毒一律拦截；clamd 不可用连续重试后 fail-open 放行（产品决定）。"""
     monkeypatch.setattr(file_safety.settings, "virus_scan_required", True)
 
     def infected(data):
@@ -34,9 +35,16 @@ def test_virus_scan_required_fail_closed(monkeypatch):
     with pytest.raises(ValueError, match="拦截"):
         file_safety.virus_scan(b"x")
 
-    monkeypatch.setattr(file_safety, "scan_clamav", unavailable)
-    with pytest.raises(ValueError, match="fail-closed"):
-        file_safety.virus_scan(b"x")
+    attempts = {"n": 0}
+
+    def unavailable_counting(data):
+        attempts["n"] += 1
+        raise RuntimeError("clamd down")
+
+    monkeypatch.setattr(file_safety, "scan_clamav", unavailable_counting)
+    monkeypatch.setattr(file_safety.time, "sleep", lambda s: None)  # 测试不真睡
+    file_safety.virus_scan(b"x")  # 不抛：3 次失败后 fail-open 放行
+    assert attempts["n"] == 3
 
 
 def test_clamav_eicar_detected():
@@ -85,7 +93,7 @@ def test_extract_zip_rejects_path_traversal():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../evil.txt", "bad")
-    with pytest.raises(ValueError, match="不安全的压缩条目"):
+    with pytest.raises(ValueError, match="路径穿越压缩条目"):
         file_safety.extract_zip(buf.getvalue())
 
 
@@ -93,7 +101,7 @@ def test_extract_zip_rejects_absolute_path():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("/etc/passwd", "bad")
-    with pytest.raises(ValueError, match="不安全的压缩条目"):
+    with pytest.raises(ValueError, match="绝对路径压缩条目"):
         file_safety.extract_zip(buf.getvalue())
 
 
@@ -110,7 +118,7 @@ def test_extract_zip_rejects_oversize_total():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("big.txt", b"x" * 1000)
-    with pytest.raises(ValueError, match="解压总量超限"):
+    with pytest.raises(ValueError, match="解压总量超过限制"):
         file_safety.extract_zip(buf.getvalue(), max_total=100)
 
 
@@ -119,7 +127,7 @@ def test_extract_zip_rejects_too_many_entries():
     with zipfile.ZipFile(buf, "w") as zf:
         for i in range(5):
             zf.writestr(f"f{i}.txt", b"x")
-    with pytest.raises(ValueError, match="文件数超限"):
+    with pytest.raises(ValueError, match="文件数超过限制"):
         file_safety.extract_zip(buf.getvalue(), max_entries=3)
 
 
@@ -127,7 +135,7 @@ def test_extract_zip_rejects_deep_nesting():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a/b/c/d/e.txt", b"deep")
-    with pytest.raises(ValueError, match="拒绝不安全的压缩条目"):
+    with pytest.raises(ValueError, match="层级超过限制"):
         file_safety.extract_zip(buf.getvalue(), max_depth=3)
 
 

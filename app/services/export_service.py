@@ -129,7 +129,6 @@ class _FillSession:
     ):
         import re as _re
 
-        from docx.oxml import OxmlElement as _OxmlElement
         from docx.oxml.ns import qn
         from docx.shared import Pt
 
@@ -463,7 +462,7 @@ class _FillSession:
         cell = tb.rows[row_idx].cells[col_idx]
         old = "".join(t.text or "" for t in cell._tc.iter(f"{{{_W_NS}}}t"))
         cell.text = ""
-        run = cell.paragraphs[0].add_run(self.fill(str(value)))
+        cell.paragraphs[0].add_run(self.fill(str(value)))
         # 记录单元格替换对（原文→新值），供忠实性校验复算模板原文
         p_el = cell.paragraphs[0]._p
         self.editor._record(p_el, old, self.fill(str(value)))
@@ -473,12 +472,11 @@ class _FillSession:
         """把撰写内容直接追加为正文（无修订无批注）；heading_text 为 None 时不加总标题。"""
         Pt = self._Pt
         qn = self._qn
-        editor = self.editor
         fill = self.fill
         if page_break:
             self.doc.add_page_break()
         if heading_text:
-            h = self.add_heading_safe(heading_text, 1)
+            self.add_heading_safe(heading_text, 1)
         for node in _norm_supplement_nodes(nodes):
             t = str(node.get("text") or "")
             ntype = node.get("type")
@@ -1062,9 +1060,7 @@ def check_doc_fidelity(doc, source_text: str, editor=None, original_text: str | 
                 )
                 if len(issues) >= 5:
                     break
-    else:
-        # 未记录替换链（无编辑会话）：当前全文即模板原文，逐字核对
-        original = current
+    # 未记录替换链（无编辑会话）：当前全文即模板原文（逐字核对时 original_text 为空回退 current）
 
     # 2) 切片完整性：模板原文 ⊂ 底稿原文
     n_orig = _norm(original_text if original_text is not None else current)

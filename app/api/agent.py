@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext, require_capability, require_permission
 from app.config import settings
-from app.constants import Permission, QUESTION_GATE_WINDOW_MINUTES, TaskType
+from app.constants import QUESTION_GATE_WINDOW_MINUTES, Permission, TaskType
 from app.db import get_session
 from app.models.agent import AgentSessionEvent
 from app.models.project import Project
@@ -165,7 +165,7 @@ async def agent_run_questions(
 ) -> dict:
     """主会话向客户提的问题（ask_customer 工具）与提交前客户动作清单（report_customer_actions 工具）。
     前端渲染问卡；客户答复走 POST /asks/{ask_id}/answer 回到主会话。"""
-    task = await _get_agent_task(session, user, project_id, task_id)
+    await _get_agent_task(session, user, project_id, task_id)
     from app.services.agent_pipeline import _customer_state
 
     return await _customer_state(session, task_id)

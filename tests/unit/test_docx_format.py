@@ -610,8 +610,8 @@ def test_consume_auto_tag_does_not_break_fidelity(tmp_path):
     from app.services.export_service import (
         _build_item_document,
         _FillSession,
-        check_doc_fidelity,
         canonical_text,
+        check_doc_fidelity,
         replace_text_tracked,
     )
 
@@ -647,8 +647,8 @@ def test_consume_tag_replaced_then_fidelity_holds(tmp_path):
     from app.services.export_service import (
         _build_item_document,
         _FillSession,
-        check_doc_fidelity,
         canonical_text,
+        check_doc_fidelity,
         replace_text_tracked,
     )
 
@@ -768,7 +768,6 @@ def test_consume_tag_leaves_no_comment_residue():
 
     from app.services.export_service import _FillSession, replace_text_tracked
 
-    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     src = Document()
     src.add_paragraph("传真：____")
     sess = _FillSession(src, "", "", "", "")
@@ -778,7 +777,7 @@ def test_consume_tag_leaves_no_comment_residue():
     data = sess.finish()
     final = _final_text(data)
     assert "传真：无（以电话/邮箱联系）" in final
-    root = _doc_xml(data)
+    _doc_xml(data)  # 可解析性冒烟（解析失败会抛异常）
     assert _count_el(data, "commentReference") == 0
     assert _count_el(data, "commentRangeStart") == 0
     assert _count_el(data, "ins") == 0

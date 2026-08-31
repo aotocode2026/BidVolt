@@ -28,7 +28,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import QUESTION_GATE_WINDOW_MINUTES as ASK_WINDOW_MINUTES, TaskType
+from app.constants import QUESTION_GATE_WINDOW_MINUTES as ASK_WINDOW_MINUTES
+from app.constants import TaskType
 from app.models.agent import AgentSessionEvent
 from app.models.task import Task
 

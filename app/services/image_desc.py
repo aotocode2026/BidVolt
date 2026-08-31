@@ -9,7 +9,6 @@ get_image_descriptions/get_asset 拿描述来「找」该装的证据，
 from __future__ import annotations
 
 import hashlib
-import io
 import zipfile
 
 from sqlalchemy import select
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import TaskType
 from app.models.file import FileImage, FileObject, ImageDescription
+from app.models.task import Task
 from app.services.llm import DashScopeVLClient, try_extract_json
 from app.services.storage import StorageProvider
 
@@ -87,7 +87,6 @@ async def describe_image_bytes(image_bytes: bytes) -> dict:
 
 async def _describe_file(session: AsyncSession, task, fobj: FileObject, kind: str) -> dict:
     """对单个文件跑描述任务：asset=整文件一张图；material=提取内嵌图逐张描述。"""
-    from app.models.task import Task  # noqa: PLC0415
 
     result = {"total": 0, "described": 0, "cached": 0, "failed": 0}
     images: list[dict] = []
@@ -139,7 +138,7 @@ async def _describe_file(session: AsyncSession, task, fobj: FileObject, kind: st
             )
             cached.add(im["sha256"])
             result["described"] += 1
-        except Exception as exc:  # noqa: BLE001 单张失败不阻塞批次
+        except Exception:  # noqa: BLE001 单张失败不阻塞批次
             result["failed"] += 1
         # 进度信号（每 10 张提交一次，长批次可见进度）
         if (i + 1) % 10 == 0 or i + 1 == len(images):

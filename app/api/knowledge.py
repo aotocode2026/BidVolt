@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext, require_capability
-from app.constants import Permission
 from app.db import get_session
 from app.services import knowledge_service
 from app.services.audit import write_audit

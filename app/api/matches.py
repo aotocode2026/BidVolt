@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext, require_capability
-from app.constants import Permission
 from app.db import get_session
 from app.models.project_material import MaterialMatchResult
 
