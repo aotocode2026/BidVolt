@@ -1092,7 +1092,6 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     # 打包时的快照早于最终回执，不刷新交付包里的会话记录会戛然而止。
     try:
         from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
-
         from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
         async with _PumpSessionLocal() as _s7:
