@@ -37,6 +37,90 @@ DESCRIBE_PROMPT = (
     "is_scan: 是否扫描件/照片（true/false）}。"
 )
 
+# 关键编号二次识别（R10 教训：徐修萍职业证书编号 C1601J02S3904821 被整图
+# 一次成型识别读成 C1601J0253904821——S↔5 形近误读且无复核。入库时对
+# 编号密集类图片做「裁剪放大→逐块重读→与首轮比对」，冲突并存两个候选供
+# 下游逐字 diff 时复核。）
+_ID_DENSE_TYPES = {"营业执照", "资质证书", "人员证件", "发票", "检测报告", "业绩合同页"}
+_VERIFY_PROMPT = (
+    "这是扫描件的放大切片。逐字符读出图中出现的所有编号/代码/号码"
+    "（证书号/注册号/编号/文号/发票号等），特别注意形近字符（S/5、O/0、I/1、B/8）。"
+    "只输出一个 JSON 对象：{\"codes\": [\"...\"]}；没有编号就输出 {\"codes\": []}。"
+)
+_VERIFY_TILES = 4  # 2x2 网格+重叠切片
+
+
+def _tile_bytes(data: bytes) -> list[bytes]:
+    """放大 2x 后切 2x2 重叠网格，输出各切片 PNG 字节。"""
+    import io as _io  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415
+
+    img = Image.open(_io.BytesIO(data)).convert("RGB")
+    w, h = img.size
+    scale = 2000 / max(w, h)
+    if scale > 1:
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        w, h = img.size
+    out: list[bytes] = []
+    ow, oh = int(w * 0.35), int(h * 0.35)
+    for i in range(2):
+        for j in range(2):
+            x0 = max(0, int(j * w / 2) - (ow if j else 0))
+            y0 = max(0, int(i * h / 2) - (oh if i else 0))
+            x1 = min(w, x0 + int(w / 2) + ow)
+            y1 = min(h, y0 + int(h / 2) + oh)
+            crop = img.crop((x0, y0, x1, y1))
+            buf = _io.BytesIO()
+            crop.save(buf, format="PNG")
+            out.append(buf.getvalue())
+    return out
+
+
+async def _verify_numbers(desc: dict, image_bytes: bytes) -> dict:
+    """关键编号二次识别：编号密集类图片裁剪放大逐块重读，与首轮 numbers 比对。
+
+    结果写入 description：numbers_verified=二轮读数、numbers_pass1=首轮读数、
+    numbers_conflict=两轮不一致条目（下游逐字 diff 时应并列复核，不盲信任一）。
+    任何失败都不阻塞首轮结果（返回原 desc）。"""
+    import os as _os  # noqa: PLC0415
+
+    if _os.environ.get("BIDVOLT_OCR_VERIFY", "1") != "1":
+        return desc
+    try:
+        if desc.get("doc_type") not in _ID_DENSE_TYPES or not desc.get("numbers"):
+            return desc
+    except Exception:  # noqa: BLE001
+        return desc
+    try:
+        client = DashScopeVLClient()
+        codes: list[str] = []
+        for tile in _tile_bytes(image_bytes):
+            try:
+                text = await client.describe(tile, mime="image/png", prompt=_VERIFY_PROMPT)
+                parsed = try_extract_json(text)
+                if isinstance(parsed, dict):
+                    for c in parsed.get("codes") or []:
+                        if isinstance(c, str) and c.strip() and c.strip() not in codes:
+                            codes.append(c.strip())
+            except Exception:  # noqa: BLE001 单块失败不阻塞
+                continue
+        if not codes:
+            return desc
+        first = [str(x).strip() for x in (desc.get("numbers") or []) if str(x).strip()]
+        conflict = [
+            c
+            for c in first
+            if c not in codes and not any(c in code or code in c for code in codes)
+        ]
+        desc = dict(desc)
+        desc["numbers_verified"] = codes
+        desc["numbers_pass1"] = first
+        desc["numbers_conflict"] = conflict
+        return desc
+    except Exception:  # noqa: BLE001
+        return desc
+
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tiff")
 DOC_IMAGE_EXTS = (".docx", ".pdf")
 
@@ -129,6 +213,7 @@ async def _describe_file(session: AsyncSession, task, fobj: FileObject, kind: st
             continue
         try:
             desc = await describe_image_bytes(im["data"])
+            desc = await _verify_numbers(desc, im["data"])
             session.add(
                 ImageDescription(
                     sha256=im["sha256"],

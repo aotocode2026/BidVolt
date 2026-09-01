@@ -27,9 +27,15 @@ def _setup(client):
 
 
 def _docx_bytes(paragraphs: list[str]) -> bytes:
+    """构造合规字体 docx（宋体 eastAsia + Times New Roman——打包字体硬门禁要求）。"""
+    from docx.oxml.ns import qn
+
     doc = Document()
     for p in paragraphs:
-        doc.add_paragraph(p)
+        para = doc.add_paragraph()
+        run = para.add_run(p)
+        run.font.name = "Times New Roman"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

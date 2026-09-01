@@ -818,6 +818,58 @@ async def package_zip(
                 items.append({"label": label, "context": full[max(0, m.start() - 12):m.start()]})
         if items:
             bare_pending[a.name] = items
+    # 表格/字体质量硬门禁（R10 教训：报价明细表用 | 竖线文本模拟表格、
+    # 响应函中文 run 缺 eastAsia 字体导致 Windows 渲染错乱——服务端直接拒绝，
+    # 不依赖主会话自觉；只对 docx 类条目检查，解析失败跳过）
+    from app.services.export_service import _W_NS as _W_NS_Q  # noqa: PLC0415
+
+    _W_Q = f"{{{_W_NS_Q}}}"
+    docx_quality: dict[str, dict] = {}
+    _pipe_row_re = _re.compile(r"^\s*\|.*\|\s*$")
+    _cjk_re = _re.compile(r"[\u4e00-\u9fff]")
+    _forbidden_east = {"Calibri", "Calibri Light", "Consolas", "等线", "等线 Light"}
+    for a in item_arts:
+        try:
+            with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                root = _etree.fromstring(zf.read("word/document.xml"))
+        except Exception:  # noqa: BLE001 非 docx 或解析失败跳过
+            continue
+        pipes = 0
+        for p in root.iter(f"{_W_Q}p"):
+            text = "".join(t.text or "" for t in p.iter(f"{_W_Q}t"))
+            if text.strip() and _pipe_row_re.match(text):
+                pipes += 1
+        font_issues = 0
+        for r in root.iter(f"{_W_Q}r"):
+            text = "".join(t.text or "" for t in r.iter(f"{_W_Q}t"))
+            if not text or not _cjk_re.search(text):
+                continue
+            rpr = r.find(f"{_W_Q}rPr")
+            if rpr is None:
+                font_issues += 1
+                continue
+            rf = rpr.find(f"{_W_Q}rFonts")
+            east = rf.get(f"{_W_Q}eastAsia") if rf is not None else None
+            if not east or east in _forbidden_east:
+                font_issues += 1
+        docx_quality[a.name] = {
+            "tables": len(root.findall(f".//{_W_Q}tbl")),
+            "pipe_paragraphs": pipes,
+            "font_issues": font_issues,
+        }
+    pipe_files = [f"{n}（{q['pipe_paragraphs']} 段竖线假表）" for n, q in docx_quality.items() if q["pipe_paragraphs"]]
+    font_files = [f"{n}（{q['font_issues']} 处字体不合规）" for n, q in docx_quality.items() if q["font_issues"]]
+    if pipe_files:
+        raise ValueError(
+            "交付件存在竖线假表格（用 | 字符在正文模拟表格），请改为真实 Word 表格（w:tbl）后重新打包："
+            + "；".join(pipe_files[:8])
+        )
+    if font_files:
+        raise ValueError(
+            "交付件字体不合规（中文 run 缺少 eastAsia 字体或使用 Calibri/等线/Consolas），"
+            "请统一为中文宋体/西文 Times New Roman 后重新打包："
+            + "；".join(font_files[:8])
+        )
     audit = {
         "checked": len(item_arts),
         "coverage_ok": not missing_items,
@@ -828,6 +880,7 @@ async def package_zip(
         "identity_issues": identity_issues,
         "bare_pending": bare_pending,
         "bare_pending_count": sum(len(v) for v in bare_pending.values()),
+        "docx_quality": docx_quality,
     }
 
     buf = _io.BytesIO()
