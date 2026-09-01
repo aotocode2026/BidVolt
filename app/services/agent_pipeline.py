@@ -255,6 +255,19 @@ async def _append_events(session: AsyncSession, task: Task, seq: list[int], batc
     await _set_rls_context(session, task.enterprise_id)
 
 
+async def _append_events_fresh(task: Task, seq: list[int], batch: list[tuple[str, str]]) -> None:
+    """泵侧事件写入统一入口：独立短命会话（R9 2057 崩溃链根因修复）。
+
+    主会话连接一旦在某次事件写入中被取消/被锁链破坏器终止，整个泵就会
+    在 run_task 的最终 commit 上崩溃（连接已死）→ retry 耗尽。事件写
+    全部走独立短命会话后：取消/终止只殃及当次短命会话，主会话永不碰
+    task 行锁，破坏器即使误杀也无后果。"""
+    from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+
+    async with _PumpSessionLocal() as _sf:
+        await asyncio.wait_for(_append_events(_sf, task, seq, batch), timeout=30)
+
+
 async def _lock_breaker_loop(task_id: int) -> None:
     """独立于泵主循环的锁链破坏器（R9 2057 冻死根因防线）。
 
@@ -676,7 +689,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     await _set_rls_context(session, task.enterprise_id)
 
     seq = [await _next_seq(session, task)]
-    await _append_events(session, task, seq, [("service", prompt)])
+    await _append_events_fresh(task, seq, [("service", prompt)])
     # 独立锁链破坏器（R9 2057 冻死根因防线）：主循环一旦冻在等锁上也能
     # 继续杀持锁悬挂事务。任务离开 RUNNING 后自退（见 _lock_breaker_loop）。
     asyncio.create_task(_lock_breaker_loop(task.id))
@@ -916,10 +929,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 "确需客户实体动作的收口时用 report_customer_actions 列出。原问题：\n"
                                 + "\n".join(lines)
                             )
-                            await asyncio.wait_for(
-                                _append_events(session, task, seq, [("service", signal)]),
-                                timeout=30,
-                            )
+                            await _append_events_fresh(task, seq, [("service", signal)])
                             # _append_events 已 commit + 重设 RLS，无需再提交
                             # 关键：事件库只是控制台展示，主会话读不到——必须经 PTY 队列注入
                             _submit("/queue " + " ".join(signal.split()))
@@ -1189,8 +1199,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             f"全部完成后最后一行输出 {MARK_COMPLETE}；"
             f"确实无法闭环则输出 {MARK_INCOMPLETE} 并说明原因。"
         )
-        await _append_events(
-            session, task, seq,
+        await _append_events_fresh(
+            task, seq,
             [("service", f"主会话提前退出（第 {resume_rounds} 次自动续跑）：--resume {sid} 继续。")],
         )
         marker, sid = await _run_repl_round(resume_sid=sid, first_message=continuation)
@@ -1218,8 +1228,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "上述任何一项不足就回修（重写正文/补装证据/补依据，重新 fill/seal/package）后再输出结束标记；"
             "确认无误最后一行输出 " + MARK_COMPLETE + "；确有无法修复项输出 " + MARK_INCOMPLETE + " 原因…。"
         )
-        await _append_events(
-            session, task, seq,
+        await _append_events_fresh(
+            task, seq,
             [("service", f"系统复核确认（第 {confirm_rounds}/{CONFIRM_ROUNDS} 轮）：主会话逐份自查交付件。")],
         )
         confirm_marker, sid2 = await _run_repl_round(resume_sid=sid, first_message=confirm_prompt)

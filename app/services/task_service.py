@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.constants import TaskStatus, TaskType
 from app.models.task import Task
 
+import logging
+
+logger_ = logging.getLogger(__name__)
+
 MAX_RETRIES = 3
 # 任务租约（Issue #3：worker 中断后任务不得永久卡在 RUNNING）
 LEASE_SECONDS = 600  # 领取后最长独占时间；到期未续期视为 worker 失联（LLM 慢调用留足余量）
@@ -257,32 +261,47 @@ async def run_task(
             task.lease_owner = None
             task.lease_expires_at = None
         # （RLS 上下文为事务级，随事务自动清理，无需复位——复位反而会泄漏到连接池）
-        # 最终提交兜底（生产定位 Issue #8）：提交失败时任务状态必须确定性落库，
-        # 不能把任务留在 RUNNING 上等租约回收兜底（表现为 15 分钟无意义重试循环）。
+        # 最终提交兜底（Issue #8 + R9 2057 崩溃链）：主会话连接可能已被锁链
+        # 破坏器终止（事件写入被取消时主会话变僵尸持锁→被杀）——终态写入改走
+        # 独立短命会话，主会话死活都不影响任务终态确定性落库。
+        _final_ok = False
         try:
             await session.commit()
-        except Exception as commit_exc:  # noqa: BLE001
-            await session.rollback()
+            _final_ok = True
+        except Exception:  # noqa: BLE001 提交失败转入短命会话直写
             try:
-                await session.refresh(task)
-                task.retry_count += 1
-                commit_now = datetime.now(timezone.utc)
-                if task.retry_count >= MAX_RETRIES:
-                    task.status = int(TaskStatus.FAILED_TERMINAL)
-                    task.error = {"message": f"任务状态提交失败且重试耗尽：{commit_exc}"}
-                    task.finished_at = commit_now
-                    task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "任务状态提交失败且重试耗尽，请人工处理"}
-                else:
-                    task.status = int(TaskStatus.QUEUED)
-                    task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"状态提交失败，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
-                task.lease_owner = None
-                task.lease_expires_at = None
-                try:
-                    await session.commit()
-                except Exception:  # noqa: BLE001  二次提交仍失败则交还租约回收兜底
-                    await session.rollback()
-            except Exception:  # noqa: BLE001
                 await session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        if not _final_ok and session_factory is not None:
+            for _attempt in range(3):
+                try:
+                    async with session_factory() as _fs:
+                        await _set_rls_context(_fs, task.enterprise_id)
+                        _row = (
+                            await asyncio.wait_for(
+                                _fs.execute(
+                                    select(Task).where(Task.id == task.id).with_for_update()
+                                ),
+                                timeout=30,
+                            )
+                        ).scalar_one()
+                        _row.status = task.status
+                        _row.progress = task.progress
+                        _row.retry_count = task.retry_count
+                        _row.error = task.error
+                        _row.finished_at = task.finished_at
+                        _row.lease_owner = None
+                        _row.lease_expires_at = None
+                        await asyncio.wait_for(_fs.commit(), timeout=30)
+                    _final_ok = True
+                    break
+                except Exception as _w_exc:  # noqa: BLE001 瞬时锁竞争重试
+                    logger_.warning(
+                        "终态短命会话直写暂未成功（task=%s，第 %s/3 次）：%s",
+                        task.id, _attempt + 1, _w_exc,
+                    )
+                    await asyncio.sleep(5)
     return task
 
 
