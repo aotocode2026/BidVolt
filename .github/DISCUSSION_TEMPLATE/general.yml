@@ -1,0 +1,52 @@
+title: "问题反馈："
+description: "只描述现象、复现步骤与证据，不写原因定位、不写命令式要求"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 写作纪律（发布前必读）
+        **本贴只陈述事实，结论交给维护方判断**：
+        - ✅ 可以写：**问题现象**（发生了什么/看到什么）、**复现步骤**、**环境信息**、**截图/日志等证据**、**期望行为**（你期望看到什么）
+        - ❌ 不要写：你自己推测的**原因定位**（"我觉得是 xxx 的问题"）、**解决方案**、**命令式要求**（"应该改成…""必须…""你去把…改了"）
+        - 原因：先入为主的定位与命令会误导排查方向；现象与证据才是有效输入。
+  - type: textarea
+    id: phenomenon
+    attributes:
+      label: 问题现象（必填）
+      description: 只描述发生了什么：报错原文、页面表现、产出结果等
+      placeholder: "例如：点击【下载响应文件包】后页面提示「……」；生成的报价明细表在 Word 里显示为竖线文本。"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤（必填）
+      description: 从哪一步开始、依次做了什么操作
+      placeholder: "1. 登录 → 2. 打开项目 202 → 3. 点击【▶ 开始】→ 4. ……"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为（选填）
+      description: 只写「你期望看到什么」，不写「应该怎么改」
+      placeholder: "期望下载的压缩包中包含报价测算说明。"
+  - type: input
+    id: context
+    attributes:
+      label: 环境与上下文（选填）
+      placeholder: "任务号/项目号/时间/浏览器/版本，如：任务 2060，2026-09-02，Chrome"
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据（选填）
+      description: 截图 / 日志 / 文件路径；注意脱敏，不要贴密钥、密码、token
+  - type: checkboxes
+    id: discipline
+    attributes:
+      label: 发布前确认（必选）
+      options:
+        - label: 本贴只写了现象、复现步骤、环境与证据，没有写我自己的原因推测/定位结论
+          required: true
+        - label: 本贴没有写命令式要求（如「应该改成…」「必须…」「你去…」）
+          required: true

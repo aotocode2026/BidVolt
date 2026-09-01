@@ -1,0 +1,39 @@
+title: "需求建议："
+description: "描述现状与期望目标，不预设实现方案、不发命令式要求"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 写作纪律（发布前必读）
+        - ✅ 可以写：**现状**（现在是什么样、哪里不方便）、**期望目标**（希望最终达到什么效果）、**约束**（不能破坏什么）、**背景**（业务场景）
+        - ❌ 不要写：命令式要求（"必须…""应该…""你去改…"）、技术方案指定（"用 xxx 实现"）
+        - 方案由维护方设计；你的目标与约束描述得越清楚，方案越容易做对。
+  - type: textarea
+    id: status
+    attributes:
+      label: 现状（必填）
+      description: 现在系统/流程/页面是什么样的，哪里不方便或不够
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 期望目标（必填）
+      description: 希望最终达到什么效果（用「希望…」表述，不要用「必须…」）
+      placeholder: "希望报价的详细测算说明随交付包一起提供，且用 Word 形式便于阅读。"
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 约束与背景（选填）
+      description: 不能破坏的现有行为、业务场景、截止时间等
+  - type: checkboxes
+    id: discipline
+    attributes:
+      label: 发布前确认（必选）
+      options:
+        - label: 本贴只描述了现状、期望目标与约束，没有指定技术方案
+          required: true
+        - label: 本贴没有写命令式要求（如「必须…」「应该…」「你去改…」）
+          required: true

@@ -351,9 +351,17 @@ Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
 - Issue #3 发布门禁：已全部落地——gitleaks/pre-commit/CI 全历史扫描、配置 fail-fast、worker 租约恢复、
   `bidvolt-upgrade` 升级回滚、备份恢复演练（2026-08-14 服务器实测）、容器重启自启动自举
   （sshd 包装器，2026-08-16 落地，见 §2/§5.3）
-  （见 https://github.com/zhangsheng377/BidVolt/issues/3）
 - Issue #4 知识检索：历史标书/方案/行业规范的检索能力尚未评估
-  （见 https://github.com/zhangsheng377/BidVolt/issues/4）
 - AnySearch 中文检索质量受上游服务限制；匿名额度 50 次/天，正式 Key（1000 次/天）由运维配置
 - 扫描版 OFD/图片走视觉模型兜底（qwen-vl），需在业务侧确认视觉门禁与授权
 - ruff 基线收窄为 E/F/I/UP 安全规则集；B008/RUF012 等风格类为后续债务（见 `.ruff.toml`）
+
+## 12. 反馈与讨论（写作纪律）
+
+- 本仓库已**停用 Issue，只保留 Discussion**；反馈走 Discussions 分类
+  **General**（问题反馈：现象/复现/证据）与 **Ideas**（需求建议：现状/期望目标/约束），
+  两个分类已挂载发布表单（`.github/DISCUSSION_TEMPLATE/general.yml` / `ideas.yml`，按分类 slug 自动加载）。
+- **写作纪律（防误导）**：帖子**只陈述事实**——问题现象、复现步骤、环境信息、截图/日志证据、
+  期望行为；**禁止**自行推测原因/下定位结论、**禁止**命令式要求（"应该改成…""必须…""你去…"）与
+  方案指定。定位与方案由维护方（Agent/人工）根据现象与证据判断，先入为主的定位与命令会误导排查方向。
+- 表单必选确认项：发布前必须勾选「未写定位结论」「未写命令式要求」。
