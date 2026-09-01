@@ -924,14 +924,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 )
                     except Exception:  # noqa: BLE001 看门狗自身故障不影响泵
                         pass
-                # 主会话事务卫生（每轮迭代末）：rollback 关闭本迭代遗留的任何读/
-                # 写事务——保证主会话连接从不 idle-in-transaction 滞留超过一个
-                # 循环节拍（≤5s），看门狗的 5 分钟阈值永不误伤健康泵；
-                # 真正悬挂的 commit 才会命中并被杀（=设计的自愈路径）。
-                try:
-                    await session.rollback()
-                except Exception:  # noqa: BLE001
-                    pass
+                # 注意：不在循环尾对主会话做 rollback——rollback 会过期 ORM 对象，
+                # 下一次 task.id/enterprise_id 访问触发惰性加载 → MissingGreenlet
+                # 崩溃（R9 2052 三连崩根因）。主会话事务卫生由各块自含性保证：
+                # 写块全部 commit、读块/看门狗全走独立短命会话，主会话不留滞留事务。
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
                 # 不解析终端回显，避免我方提示里的标记文本误判）；
                 # 同一份导出顺便看消息总数增长 → 有增长即算有进展（防误催办）
