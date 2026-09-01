@@ -365,6 +365,18 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "terminal 追加/python-docx 直写交付文件，一次写不完就继续写，写到深度达标为止（子 agent 也持整文件直写通道）。"
             "「写到什么程度」由技术规范书逐条要求+评分标准定：每条技术要求都要有实质性响应正文，"
             "禁止以「太长/一次写不下」为由只写目录或截断。图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
+            "**技术卷正文必须派专职「技术写作」子 agent（独立轮次预算）**：技术专项响应文件的正文不得由主会话顺手写——"
+            "开编后立刻 delegate_task 派专职写作子 agent，任务书逐条写明（缺哪条判不过）："
+            "①总体方案：总体设计思路+四层架构分层说明（接入层/协议转换层/数据治理层/应用层每层一段实质描述）+关键设备清单表+"
+            "多协议转换方案（适配范围/转换引擎实现细节/性能保障）+网络冗余方案（主备切换机制）；"
+            "②分项技术方案按六段式逐类对象成文（现状痛点→调试范围与接口清单→技术路线分步→关键参数与时延预算→风险与对策→验收标准），"
+            "每类对象正文不少于 500 字，另配调试作业卡（作业步骤/安全措施/工时估算/验收记录）；"
+            "③实施组织与进度：职责分工表+进度计划编制说明+里程碑与交付物表+进度网络图说明与关键路径+进度纠偏措施；"
+            "④质量安全进度保障：三级质检流程说明+检验批划分与验收标准表+安全技术交底制度+安全文明施工措施清单（≥10项）+风险矩阵表；"
+            "⑤售后培训：质保期服务承诺明细表+培训计划表+分级响应流程长文+回访与满意度管理；"
+            "⑥自绘图配额：每类对象至少 1 张调试作业流程图+总体方案 2-3 张+时延预算分解图+主备切换时序图，中文渲染自查。"
+            "子 agent 回执后主会话逐章核查（章节齐全/字数达标/图已插入），不足的回修补足再进校验阶段——"
+            "正文深度是验收硬指标，不达标不回执。"
             "公开语料没有金标准全文不是障碍：深度来源=技术规范书逐条要求+行业标准/白皮书/论文/同类项目公开资料+企业自身资料，"
             "搜索只作补充参考，以本项目文件为主为准。"
             "**向客户提问（ask_customer 工具，提问权+提问纪律）**：你可以向客户提问，但**先尽己力**——调用前必须完成三查"
@@ -503,6 +515,18 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "terminal 追加/python-docx 直写交付文件，一次写不完就继续写，写到深度达标为止（子 agent 也持整文件直写通道）。"
             "「写到什么程度」由技术规范书逐条要求+评分标准定：每条技术要求都要有实质性响应正文，"
             "禁止以「太长/一次写不下」为由只写目录或截断。图由 Hermes 自绘（mermaid/matplotlib 架构图/数据流图/拓扑图/甘特图插入交付文件）。"
+            "**技术卷正文必须派专职「技术写作」子 agent（独立轮次预算）**：技术专项响应文件的正文不得由主会话顺手写——"
+            "开编后立刻 delegate_task 派专职写作子 agent，任务书逐条写明（缺哪条判不过）："
+            "①总体方案：总体设计思路+四层架构分层说明（接入层/协议转换层/数据治理层/应用层每层一段实质描述）+关键设备清单表+"
+            "多协议转换方案（适配范围/转换引擎实现细节/性能保障）+网络冗余方案（主备切换机制）；"
+            "②分项技术方案按六段式逐类对象成文（现状痛点→调试范围与接口清单→技术路线分步→关键参数与时延预算→风险与对策→验收标准），"
+            "每类对象正文不少于 500 字，另配调试作业卡（作业步骤/安全措施/工时估算/验收记录）；"
+            "③实施组织与进度：职责分工表+进度计划编制说明+里程碑与交付物表+进度网络图说明与关键路径+进度纠偏措施；"
+            "④质量安全进度保障：三级质检流程说明+检验批划分与验收标准表+安全技术交底制度+安全文明施工措施清单（≥10项）+风险矩阵表；"
+            "⑤售后培训：质保期服务承诺明细表+培训计划表+分级响应流程长文+回访与满意度管理；"
+            "⑥自绘图配额：每类对象至少 1 张调试作业流程图+总体方案 2-3 张+时延预算分解图+主备切换时序图，中文渲染自查。"
+            "子 agent 回执后主会话逐章核查（章节齐全/字数达标/图已插入），不足的回修补足再进校验阶段——"
+            "正文深度是验收硬指标，不达标不回执。"
             "公开语料没有金标准全文不是障碍：深度来源=技术规范书逐条要求+行业标准/白皮书/论文/同类项目公开资料+企业自身资料，"
             "搜索只作补充参考，以本项目文件为主为准。"
             "**向客户提问（ask_customer 工具，提问权+提问纪律）**：你可以向客户提问，但**先尽己力**——调用前必须完成三查"
@@ -698,10 +722,17 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 # 后 commit 悬挂是 R7/R8/R9 五次整轮卡死的唯一根因，而
                 # 新鲜会话（排水/超时/进度/终态）数百次提交从未挂过。
                 # with 自带回滚，task 行锁绝不滞留。
+                # 超时兜底：即使冲刷本身被锁链卡住，循环也必须继续走到
+                # 锁链破坏器——超时后放弃本次冲刷（batch 丢回 pending 下轮重试）。
                 from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
 
-                async with _PumpSessionLocal() as _sf:
-                    await _append_events(_sf, task, seq, batch)
+                try:
+                    async with _PumpSessionLocal() as _sf:
+                        await asyncio.wait_for(_append_events(_sf, task, seq, batch), timeout=30)
+                except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
+                    pending[:0] = batch  # 未确认写入：放回队首下轮重试
+                    logger.warning("事件冲刷超时（task=%s），batch 放回重试", task.id)
+                    raise
 
         try:
             while True:
@@ -734,8 +765,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     async with _PumpSessionLocal() as _s2:
                         await _set_rls_context(_s2, task.enterprise_id)
                         row = (
-                            await _s2.execute(
-                                sa_select(Task).where(Task.id == task.id).with_for_update()
+                            await asyncio.wait_for(
+                                _s2.execute(
+                                    sa_select(Task).where(Task.id == task.id).with_for_update()
+                                ),
+                                timeout=30,
                             )
                         ).scalar_one()
                         pending_chat = list((row.payload or {}).get("pending_chat") or [])
