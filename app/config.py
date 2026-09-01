@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_vl_model: str = "qwen-vl-max"
+    # 编号二次识别专用 VL 模型（空=与主模型一致）。qwen2.5-vl 系列支持
+    # vl_high_resolution_images 高分辨率自切块，形近字符读数更稳。
+    dashscope_vl_verify_model: str = ""
     anysearch_key: str = ""
     anysearch_base_url: str = "https://api.anysearch.com/mcp"  # AnySearch 官方端点（JSON-RPC 2.0）
     search_mode: str = "mock"  # mock（本地合成，无出网）/ anysearch（真实出网，无 Key 走匿名额度）

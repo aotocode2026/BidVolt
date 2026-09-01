@@ -78,7 +78,11 @@ def _tile_bytes(data: bytes) -> list[bytes]:
 
 
 async def _verify_numbers(desc: dict, image_bytes: bytes) -> dict:
-    """关键编号二次识别：编号密集类图片裁剪放大逐块重读，与首轮 numbers 比对。
+    """关键编号二次识别：编号密集类图片二次重读，与首轮 numbers 比对。
+
+    优先让 VL 模型自行高分辨率切块（vl_high_resolution_images——qwen2.5-vl 系列
+    会把图切成局部高清块逐块识别，形近字符 S/5、O/0 读数更稳）；模型不支持该
+    参数（旧模型 400）或调用失败时，降级为服务端 Pillow 放大切块逐块重读。
 
     结果写入 description：numbers_verified=二轮读数、numbers_pass1=首轮读数、
     numbers_conflict=两轮不一致条目（下游逐字 diff 时应并列复核，不盲信任一）。
@@ -93,18 +97,38 @@ async def _verify_numbers(desc: dict, image_bytes: bytes) -> dict:
     except Exception:  # noqa: BLE001
         return desc
     try:
+        from app.config import settings  # noqa: PLC0415
+
         client = DashScopeVLClient()
+        verify_model = (settings.dashscope_vl_verify_model or "").strip() or None
         codes: list[str] = []
-        for tile in _tile_bytes(image_bytes):
-            try:
-                text = await client.describe(tile, mime="image/png", prompt=_VERIFY_PROMPT)
-                parsed = try_extract_json(text)
-                if isinstance(parsed, dict):
-                    for c in parsed.get("codes") or []:
-                        if isinstance(c, str) and c.strip() and c.strip() not in codes:
-                            codes.append(c.strip())
-            except Exception:  # noqa: BLE001 单块失败不阻塞
-                continue
+        high_res_ok = True
+        try:
+            text = await client.describe(
+                image_bytes,
+                mime="image/png",
+                prompt=_VERIFY_PROMPT,
+                model=verify_model,
+                high_res=True,
+            )
+            parsed = try_extract_json(text)
+            if isinstance(parsed, dict):
+                for c in parsed.get("codes") or []:
+                    if isinstance(c, str) and c.strip() and c.strip() not in codes:
+                        codes.append(c.strip())
+        except Exception:  # noqa: BLE001 模型自切块不可用（旧模型 400 等）→ 服务端切块降级
+            high_res_ok = False
+        if not codes and not high_res_ok:
+            for tile in _tile_bytes(image_bytes):
+                try:
+                    text = await client.describe(tile, mime="image/png", prompt=_VERIFY_PROMPT)
+                    parsed = try_extract_json(text)
+                    if isinstance(parsed, dict):
+                        for c in parsed.get("codes") or []:
+                            if isinstance(c, str) and c.strip() and c.strip() not in codes:
+                                codes.append(c.strip())
+                except Exception:  # noqa: BLE001 单块失败不阻塞
+                    continue
         if not codes:
             return desc
         first = [str(x).strip() for x in (desc.get("numbers") or []) if str(x).strip()]
@@ -117,6 +141,7 @@ async def _verify_numbers(desc: dict, image_bytes: bytes) -> dict:
         desc["numbers_verified"] = codes
         desc["numbers_pass1"] = first
         desc["numbers_conflict"] = conflict
+        desc["verify_mode"] = "vl_high_res" if high_res_ok else "pillow_tiles"
         return desc
     except Exception:  # noqa: BLE001
         return desc

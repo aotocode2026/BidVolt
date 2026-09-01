@@ -827,7 +827,10 @@ async def package_zip(
     docx_quality: dict[str, dict] = {}
     _pipe_row_re = _re.compile(r"^\s*\|.*\|\s*$")
     _cjk_re = _re.compile(r"[\u4e00-\u9fff]")
-    _forbidden_east = {"Calibri", "Calibri Light", "Consolas", "等线", "等线 Light"}
+    # 只拦客观错误：中文 run 完全没设 eastAsia（Windows 按西文默认字体渲染中文=错乱），
+    # 或把纯西文字体设成 eastAsia。宋体/仿宋/黑体/楷体/等线等中文字体一律放行——
+    # 不强制特定字体，按模板原字体即可。
+    _latin_fonts = {"Calibri", "Calibri Light", "Consolas", "Times New Roman", "Arial"}
     for a in item_arts:
         try:
             with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
@@ -850,7 +853,7 @@ async def package_zip(
                 continue
             rf = rpr.find(f"{_W_Q}rFonts")
             east = rf.get(f"{_W_Q}eastAsia") if rf is not None else None
-            if not east or east in _forbidden_east:
+            if not east or east in _latin_fonts:
                 font_issues += 1
         docx_quality[a.name] = {
             "tables": len(root.findall(f".//{_W_Q}tbl")),
@@ -866,8 +869,9 @@ async def package_zip(
         )
     if font_files:
         raise ValueError(
-            "交付件字体不合规（中文 run 缺少 eastAsia 字体或使用 Calibri/等线/Consolas），"
-            "请统一为中文宋体/西文 Times New Roman 后重新打包："
+            "交付件字体不合规（中文 run 缺少中文字体设置、或把 Calibri/Consolas 等西文字体"
+            "设成了中文字体——Windows 上会渲染错乱）。请为中文 run 显式设置 eastAsia 中文字体"
+            "（按模板原字体，如宋体/仿宋/黑体）后重新打包："
             + "；".join(font_files[:8])
         )
     audit = {

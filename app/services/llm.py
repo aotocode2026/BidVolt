@@ -83,13 +83,19 @@ class DashScopeVLClient:
         self.model = model or settings.dashscope_vl_model
 
     async def describe(
-        self, image_bytes: bytes, mime: str = "image/png", prompt: str = "识别图中全部文字与关键内容。"
+        self,
+        image_bytes: bytes,
+        mime: str = "image/png",
+        prompt: str = "识别图中全部文字与关键内容。",
+        *,
+        model: str | None = None,
+        high_res: bool = False,
     ) -> str:
         if not vl_enabled():
             raise LLMGateClosed("数据分级/客户授权未确认，视觉模型关闭（P1 门禁）")
         b64 = base64.b64encode(image_bytes).decode("ascii")
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": [
                 {
                     "role": "user",
@@ -100,7 +106,11 @@ class DashScopeVLClient:
                 }
             ],
         }
-        async with httpx.AsyncClient(timeout=90) as client:
+        # qwen2.5-vl 系列：让模型自行把图切成高分辨率块逐块识别（编号二次识别用）；
+        # 旧模型/端点不识别的参数会 400，调用方自行降级重试
+        if high_res:
+            payload["vl_high_resolution_images"] = True
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
                 json=payload,
