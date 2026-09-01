@@ -903,7 +903,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                             rows = (
                                 await _s8.execute(
                                     _sa_text(
-                                        "SELECT pid FROM pg_stat_activity "
+                                        "SELECT pid, application_name, left(query, 80) FROM pg_stat_activity "
                                         "WHERE datname = current_database() "
                                         "AND state = 'idle in transaction' "
                                         "AND xact_start < now() - interval '5 minutes' "
@@ -912,15 +912,15 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                     )
                                 )
                             ).fetchall()
-                            for (pid,) in rows:
-                                try:
-                                    await _s8.execute(_sa_text(f"SELECT pg_terminate_backend({int(pid)})"))
-                                except Exception:  # noqa: BLE001
-                                    pass
+                            # 纯日志（观察模式）：pg_terminate 误杀健康连接曾引发
+                            # R9 六连崩溃（读事务滞留本身无害，杀连接才致命）。
+                            # 真挂死（commit 悬挂）由独立会话块的 with 回滚与
+                            # 各块自含性兜底；此处只记录供离线分析。
                             if rows:
                                 logger.warning(
-                                    "悬挂事务看门狗终止 %d 个后端（task=%s）：%s",
-                                    len(rows), task.id, [int(p) for (p,) in rows],
+                                    "悬挂事务观察（task=%s）：%s",
+                                    task.id,
+                                    [(int(p), str(app), str(q)) for (p, app, q) in rows],
                                 )
                     except Exception:  # noqa: BLE001 看门狗自身故障不影响泵
                         pass
