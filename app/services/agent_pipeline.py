@@ -255,6 +255,79 @@ async def _append_events(session: AsyncSession, task: Task, seq: list[int], batc
     await _set_rls_context(session, task.enterprise_id)
 
 
+async def _lock_breaker_loop(task_id: int) -> None:
+    """独立于泵主循环的锁链破坏器（R9 2057 冻死根因防线）。
+
+    主循环里任何一处无超时的数据库等待（FOR UPDATE 等锁/连接获取）都会让
+    整轮永久冻结——若破坏器也写在主循环里，冻结时它永远轮不到执行，锁链
+    就成死锁。因此独立成 task：每 60s 自检一次，任务离开 RUNNING 即自退。
+    只杀「idle in transaction 超 3 分钟且持有 task 行锁」的后端（挂起事务
+    持锁者）；无锁滞留事务仅记录不杀（R9 误杀自身连接六连崩教训）。
+    全部 DB 操作带超时，自身故障静默自愈。"""
+    from sqlalchemy import text as _sa_text
+
+    from app.db import SessionLocal as _WD  # noqa: PLC0415
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with _WD() as _w:
+                # 任务已离开 RUNNING（成功/失败/重排队）→ 破坏器自退
+                _status = await asyncio.wait_for(
+                    _w.execute(
+                        _sa_text("SELECT status FROM task WHERE id = :tid"), {"tid": task_id}
+                    ),
+                    timeout=20,
+                )
+                if int(_status.scalar() or 0) != 2:
+                    break
+                _idle = await asyncio.wait_for(
+                    _w.execute(
+                        _sa_text(
+                            "SELECT pid, application_name, left(query, 80) FROM pg_stat_activity "
+                            "WHERE datname = current_database() AND state = 'idle in transaction' "
+                            "AND xact_start < now() - interval '5 minutes' AND pid <> pg_backend_pid()"
+                        )
+                    ),
+                    timeout=20,
+                )
+                _idle_rows = _idle.fetchall()
+                if _idle_rows:
+                    logger.warning(
+                        "悬挂事务观察（task=%s，独立破坏器）：%s",
+                        task_id,
+                        [(int(p), str(a), str(q)) for (p, a, q) in _idle_rows],
+                    )
+                _blocked = await asyncio.wait_for(
+                    _w.execute(
+                        _sa_text(
+                            "SELECT DISTINCT l.pid FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+                            "WHERE l.relation = 'task'::regclass AND l.granted "
+                            "AND a.state = 'idle in transaction' "
+                            "AND a.xact_start < now() - interval '3 minutes' "
+                            "AND a.pid <> pg_backend_pid()"
+                        )
+                    ),
+                    timeout=20,
+                )
+                for (pid,) in _blocked.fetchall():
+                    try:
+                        await asyncio.wait_for(
+                            _w.execute(_sa_text(f"SELECT pg_terminate_backend({int(pid)})")),
+                            timeout=20,
+                        )
+                        logger.warning(
+                            "独立锁链破坏器终止持 task 锁的悬挂事务（task=%s）：%s",
+                            task_id,
+                            int(pid),
+                        )
+                    except Exception:  # noqa: BLE001 单个终止失败不阻断其余
+                        pass
+                await _w.rollback()
+        except Exception:  # noqa: BLE001 破坏器自身故障静默，下轮再试
+            pass
+
+
 def _spawn_repl(hermes_bin: str, args: list[str], env: dict):
     """以 PTY 长驻方式启动 hermes chat --cli REPL。返回 (proc, master_fd)。
     仅 Linux 可用（服务器环境）；本地 Windows 开发不执行主会话。"""
@@ -604,6 +677,9 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
     seq = [await _next_seq(session, task)]
     await _append_events(session, task, seq, [("service", prompt)])
+    # 独立锁链破坏器（R9 2057 冻死根因防线）：主循环一旦冻在等锁上也能
+    # 继续杀持锁悬挂事务。任务离开 RUNNING 后自退（见 _lock_breaker_loop）。
+    asyncio.create_task(_lock_breaker_loop(task.id))
 
     loop = asyncio.get_running_loop()
     started_at = loop.time()
@@ -840,7 +916,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 "确需客户实体动作的收口时用 report_customer_actions 列出。原问题：\n"
                                 + "\n".join(lines)
                             )
-                            await _append_events(session, task, seq, [("service", signal)])
+                            await asyncio.wait_for(
+                                _append_events(session, task, seq, [("service", signal)]),
+                                timeout=30,
+                            )
                             # _append_events 已 commit + 重设 RLS，无需再提交
                             # 关键：事件库只是控制台展示，主会话读不到——必须经 PTY 队列注入
                             _submit("/queue " + " ".join(signal.split()))
@@ -908,10 +987,13 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                         else:
                             _pct, _work = 5 + min(5, _elapsed // 300), "Agent 主会话启动（todo 计划 + 子任务编排，全程自主）…"
                         async with _PumpSessionLocal() as _s5:
-                            await _set_rls_context(_s5, task.enterprise_id)
+                            await asyncio.wait_for(_set_rls_context(_s5, task.enterprise_id), timeout=30)
                             _row = (
-                                await _s5.execute(
-                                    _sa_sel_p(Task).where(Task.id == task.id).with_for_update()
+                                await asyncio.wait_for(
+                                    _s5.execute(
+                                        _sa_sel_p(Task).where(Task.id == task.id).with_for_update()
+                                    ),
+                                    timeout=30,
                                 )
                             ).scalar_one()
                             _cur = dict(_row.progress or {})
@@ -922,7 +1004,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                     "percent": _pct,
                                     "current_work": _work,
                                 }
-                                await _s5.commit()
+                                await asyncio.wait_for(_s5.commit(), timeout=30)
                     except Exception:  # noqa: BLE001 进度纯观感，失败下轮再试
                         logger.warning("进度更新暂未成功（task=%s），下轮重试", task.id, exc_info=True)
                 # 悬挂事务看门狗（R7/R8 四次整轮卡死的根本防线）：主泵会话 commit
@@ -1210,31 +1292,41 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     # （R7 排水、R8 进度块、R8 终态写入 23:23 事件）。客户交互提取只读，
     # 与 result/progress 一起经短命会话落库，主会话不再承担终态 commit。
     try:
-        customer = await _customer_state(session, task.id)
+        customer = await asyncio.wait_for(_customer_state(session, task.id), timeout=30)
         if customer.get("action_list"):
             task.result["action_list"] = customer["action_list"]
         task.result["customer_asks"] = customer.get("asks") or []
     except Exception:  # noqa: BLE001 提取失败不影响任务结论
         logger.warning("提取客户交互块失败（task=%s）", task.id, exc_info=True)
 
-    try:
-        from sqlalchemy import select as _sa_sel_f
+    _terminal_written = False
+    for _attempt in range(1, 4):
+        try:
+            from sqlalchemy import select as _sa_sel_f
 
-        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
-        from app.services.task_service import _set_rls_context  # noqa: PLC0415
+            from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+            from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
-        _result = dict(task.result or {})
-        _progress = dict(task.progress or {})
-        async with _PumpSessionLocal() as _s6:
-            await _set_rls_context(_s6, task.enterprise_id)
-            _row = (
-                await _s6.execute(_sa_sel_f(Task).where(Task.id == task.id).with_for_update())
-            ).scalar_one()
-            _row.result = _result
-            _row.progress = _progress
-            await _s6.commit()
-    except Exception:  # noqa: BLE001 终态落库失败下轮由 worker 心跳/回收兜底
-        logger.warning("终态落库暂未成功（task=%s）", task.id, exc_info=True)
+            _result = dict(task.result or {})
+            _progress = dict(task.progress or {})
+            async with _PumpSessionLocal() as _s6:
+                await asyncio.wait_for(_set_rls_context(_s6, task.enterprise_id), timeout=30)
+                _row = (
+                    await asyncio.wait_for(
+                        _s6.execute(_sa_sel_f(Task).where(Task.id == task.id).with_for_update()),
+                        timeout=30,
+                    )
+                ).scalar_one()
+                _row.result = _result
+                _row.progress = _progress
+                await asyncio.wait_for(_s6.commit(), timeout=30)
+            _terminal_written = True
+            break
+        except Exception:  # noqa: BLE001 终态落库失败下轮由 worker 心跳/回收兜底
+            logger.warning(
+                "终态落库暂未成功（task=%s，第 %s/3 次）", task.id, _attempt, exc_info=True
+            )
+            await asyncio.sleep(5)
 
     # 收尾：把最终 zip 附带的会话记录刷新为完整版（含最终回执）+ 附精简版。
     # 打包时的快照早于最终回执，不刷新交付包里的会话记录会戛然而止。
@@ -1243,8 +1335,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
         async with _PumpSessionLocal() as _s7:
-            await _set_rls_context(_s7, task.enterprise_id)
-            await _refresh_zip_record(_s7, task)
+            await asyncio.wait_for(_set_rls_context(_s7, task.enterprise_id), timeout=30)
+            await asyncio.wait_for(_refresh_zip_record(_s7, task), timeout=120)
     except Exception:  # noqa: BLE001 记录刷新失败不影响任务结论
         logger.warning("收尾刷新会话记录失败（task=%s）", task.id, exc_info=True)
 
