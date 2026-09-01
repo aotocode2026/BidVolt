@@ -1258,15 +1258,22 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         # （第二轮复核曾卡住触发催办，agent 把催办文案回显成 INCOMPLETE 造成假阴性）
         break
 
+    # 终态数据用局部变量构建，绝不直接赋值 ORM 对象（R9 2058 崩溃链根因：
+    # task.result/progress 赋值会留在主会话事务里，下一次主会话查询触发
+    # autoflush → 主会话在 2 小时长寿事务中持有 task 行锁 → 独立锁链破坏器
+    # 按规则杀死主会话 → run_task 终态 commit 崩溃 → retry 耗尽）。
+    # 终态一律经下方 _s6 独立短命会话落库，主会话全程不碰 task 行锁。
+    _final_result: dict
+    _final_progress: dict
     if marker == MARK_COMPLETE:
-        task.result = {
+        _final_result = {
             "runtime": "hermes-main-session",
             "session_id": sid,
             "log_tail": tail[-800:],
             "outcome": "complete",
             "note": "Agent 主会话端到端完成：计划/子任务/验收报告见会话控制台（事件流），session_id 可恢复。",
         }
-        task.progress = {
+        _final_progress = {
             "phase": "agent_pipeline",
             "status": "done",
             "percent": 100,
@@ -1293,7 +1300,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             or "只写" in reason
         ):
             reason = ""
-        task.result = {
+        _final_result = {
             "runtime": "hermes-main-session",
             "session_id": sid,
             "log_tail": tail[-800:],
@@ -1302,7 +1309,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "note": "Agent 主会话走完全部流程并如实判定未闭环（未冒充完成）：原因见 reason。"
                     "补齐硬约束（如企业资料）后可重新发起 agent-run。会话控制台可回看全程。",
         }
-        task.progress = {
+        _final_progress = {
             "phase": "agent_pipeline",
             "status": "done",
             "percent": 100,
@@ -1320,8 +1327,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     try:
         customer = await asyncio.wait_for(_customer_state(session, task.id), timeout=30)
         if customer.get("action_list"):
-            task.result["action_list"] = customer["action_list"]
-        task.result["customer_asks"] = customer.get("asks") or []
+            _final_result["action_list"] = customer["action_list"]
+        _final_result["customer_asks"] = customer.get("asks") or []
     except Exception:  # noqa: BLE001 提取失败不影响任务结论
         logger.warning("提取客户交互块失败（task=%s）", task.id, exc_info=True)
 
@@ -1333,8 +1340,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
             from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
-            _result = dict(task.result or {})
-            _progress = dict(task.progress or {})
+            _result = dict(_final_result)
+            _progress = dict(_final_progress)
             async with _PumpSessionLocal() as _s6:
                 await asyncio.wait_for(_set_rls_context(_s6, task.enterprise_id), timeout=30)
                 _row = (
