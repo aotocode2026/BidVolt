@@ -912,16 +912,41 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                     )
                                 )
                             ).fetchall()
-                            # 纯日志（观察模式）：pg_terminate 误杀健康连接曾引发
-                            # R9 六连崩溃（读事务滞留本身无害，杀连接才致命）。
-                            # 真挂死（commit 悬挂）由独立会话块的 with 回滚与
-                            # 各块自含性兜底；此处只记录供离线分析。
+                            # 观察记录（不杀）：详见下方精准破坏器
                             if rows:
                                 logger.warning(
                                     "悬挂事务观察（task=%s）：%s",
                                     task.id,
                                     [(int(p), str(app), str(q)) for (p, app, q) in rows],
                                 )
+                            # 精准锁链破坏器（只杀真凶）：idle-in-txn 超 5 分钟
+                            # 且持有 task 表锁的后端——这正是「冲刷事务悬挂持锁→
+                            # 排水 FOR UPDATE 永久等待」死锁链的持有方。
+                            # 无锁的遗留事务（如 app 的 set_config 余留）不杀：
+                            # 它们不阻塞任何查询，杀掉反而引发 connection closed
+                            # 崩溃（R9 六连崩教训）。
+                            blocked = (
+                                await _s8.execute(
+                                    _sa_text(
+                                        "SELECT DISTINCT l.pid FROM pg_locks l "
+                                        "JOIN pg_stat_activity a ON a.pid = l.pid "
+                                        "WHERE l.relation = 'task'::regclass "
+                                        "AND l.granted "
+                                        "AND a.state = 'idle in transaction' "
+                                        "AND a.xact_start < now() - interval '3 minutes' "
+                                        "AND a.pid <> pg_backend_pid()"
+                                    )
+                                )
+                            ).fetchall()
+                            for (pid,) in blocked:
+                                try:
+                                    await _s8.execute(_sa_text(f"SELECT pg_terminate_backend({int(pid)})"))
+                                    logger.warning(
+                                        "锁链破坏器终止持 task 锁的悬挂事务（task=%s）：%s",
+                                        task.id, int(pid),
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
                     except Exception:  # noqa: BLE001 看门狗自身故障不影响泵
                         pass
                 # 注意：不在循环尾对主会话做 rollback——rollback 会过期 ORM 对象，
