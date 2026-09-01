@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
@@ -11,8 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import TaskStatus, TaskType
 from app.models.task import Task
-
-import logging
 
 logger_ = logging.getLogger(__name__)
 

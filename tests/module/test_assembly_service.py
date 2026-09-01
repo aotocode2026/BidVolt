@@ -8,6 +8,7 @@ import io
 import time
 import zipfile
 
+import pytest
 from docx import Document
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -193,8 +194,9 @@ def _pack(maker, pid, task_id):
     return asyncio.run(_run())
 
 
-def test_package_zip_reports_missing_item(client, monkeypatch):
-    """打包只给信号、不拦截：缺条目照常出包，回执如实返回 missing_file_items。"""
+def test_package_zip_rejects_missing_item(client, monkeypatch):
+    """打包硬门禁（R8 教训）：is_file_item 条目未 seal 进包 → 直接拒绝打包并列出缺失条目。
+    旧行为是「只给信号、照常出包」，已废弃——服务端保证结构完整，不依赖主会话自觉。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
     _h, pid = _setup(client)
     engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
@@ -204,9 +206,9 @@ def test_package_zip_reports_missing_item(client, monkeypatch):
         [("价格文件/（一）响应函及报价汇总表.docx",
           _docx_bytes(["（一）响应函及报价汇总表", "我方承诺……"]))],
     )
-    result = _pack(maker, pid, tid)
-    assert "（二）报价明细表" in result["missing_file_items"]
-    assert result["audit"]["coverage_ok"] is False
+    with pytest.raises(ValueError) as exc:
+        _pack(maker, pid, tid)
+    assert "（二）报价明细表" in str(exc.value)
     asyncio.run(engine.dispose())
 
 
@@ -220,7 +222,9 @@ def test_audit_bare_pending_counts_final_text_only(client, monkeypatch):
     tid = _seed_pkg(
         maker, pid,
         [("价格文件/（一）响应函及报价汇总表.docx",
-          _docx_bytes_with_deleted_bare(["（一）响应函及报价汇总表", "我方承诺【待补充】其余【待补充：被授权人姓名】"]))],
+          _docx_bytes_with_deleted_bare(["（一）响应函及报价汇总表", "我方承诺【待补充】其余【待补充：被授权人姓名】"])),
+         ("价格文件/（二）报价明细表.docx",
+          _docx_bytes(["（二）报价明细表", "明细报价如下……"]))],
     )
     result = _pack(maker, pid, tid)
     audit = result["audit"]
