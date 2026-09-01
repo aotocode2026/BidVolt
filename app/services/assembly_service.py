@@ -383,6 +383,19 @@ def verify_slice(slice_id: str, task_id: int) -> dict:
     r["slice_id"] = slice_id
     r["req_title"] = s.get("title") or ""
     r["matched_title"] = s.get("matched_title") or ""
+    # 统一社会信用代码格式校验（R8 教训：营业执照 OCR 曾漏一位成 17 位，进包=硬伤）：
+    # 全文扫 91 开头的独立数字字母串，非 18 位一律判不过，由 agent 回修。
+    import re as _re_code
+
+    _doc_text_c = export_service._elem_text(s["doc"].element)
+    _code_issues = [
+        _m.group(0)
+        for _m in _re_code.finditer(r"(?<![0-9A-Z])91[0-9A-Z]{15,17}(?![0-9A-Z])", _doc_text_c)
+        if len(_m.group(0)) != 18
+    ]
+    if _code_issues:
+        r["ok"] = False
+        r["credit_code_issues"] = _code_issues
     r["passed"] = bool(r["ok"])
     s["verified"] = bool(r["ok"])
     if not r["ok"]:
@@ -752,6 +765,16 @@ async def package_zip(
         missing_items = [t for t in required if _item_key(t) not in covered]
     except Exception:  # noqa: BLE001 清单读取失败不阻塞打包
         logger.warning("打包完整性核对失败", exc_info=True)
+        missing_items = []
+
+    # 硬门禁（R8 教训：首轮打包缺 4 份 is_file_item 条目，靠 8 轮续跑才补齐）：
+    # 清单未全覆盖直接拒绝打包并列出缺失条目——服务端保证结构完整，
+    # 不再依赖主会话自觉。清单读取失败（unknown 状态）不拦截。
+    if missing_items:
+        raise ValueError(
+            "以下 is_file_item 条目尚未 seal 进包，请逐份 slice→fill→append→verify→seal 后重新打包："
+            + "；".join(missing_items[:12])
+        )
 
     texts: dict[int, str] = {}
     dir_texts: dict[str, list[tuple[str, str]]] = {}
