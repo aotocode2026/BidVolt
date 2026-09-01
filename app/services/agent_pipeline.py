@@ -895,6 +895,16 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
                         from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
 
+                        # 先取泵主会话自身的 backend pid——看门狗绝不杀自己人
+                        # （R9 三次整轮崩溃的根因：主会话事务闲置超 5 分钟后被看门狗
+                        # 误杀，下一次 set_config 直接 connection closed）
+                        _own_pid = None
+                        try:
+                            _own_pid = (
+                                await session.execute(_sa_text("SELECT pg_backend_pid()"))
+                            ).scalar()
+                        except Exception:  # noqa: BLE001 拿不到就不排除
+                            pass
                         async with _PumpSessionLocal() as _s8:
                             rows = (
                                 await _s8.execute(
@@ -903,8 +913,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                         "WHERE datname = current_database() "
                                         "AND state = 'idle in transaction' "
                                         "AND xact_start < now() - interval '5 minutes' "
-                                        "AND pid <> pg_backend_pid()"
-                                    )
+                                        "AND state_change < now() - interval '5 minutes' "
+                                        "AND pid <> pg_backend_pid() "
+                                        "AND pid <> :own_pid"
+                                    ),
+                                    {"own_pid": int(_own_pid) if _own_pid is not None else -1},
                                 )
                             ).fetchall()
                             for (pid,) in rows:
@@ -995,7 +1008,16 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 loop.remove_reader(master_fd)
             except Exception:  # noqa: BLE001 已因 EOF 摘除时重复摘除
                 pass
-            await _flush()
+            # 冲刷失败不得炸穿轮次（R9 看门狗误杀连接后此处曾把整轮异常抛出，
+            # 管线崩溃→reclaim 重跑×3）——失败仅记录，pending 遗留由下一轮/终态兜底
+            try:
+                await _flush()
+            except Exception:  # noqa: BLE001
+                logger.warning("轮次收尾冲刷失败（task=%s）", task.id, exc_info=True)
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
             if round_marker is not None or proc.poll() is None:
                 _repl_submit(master_fd, "/exit")
             try:
