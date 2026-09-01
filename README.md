@@ -34,13 +34,28 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
 - **招标公告 URL 安全导入**（Issue #6）：逐跳 SSRF/DNS rebinding 防护、重定向/大小/类型限额，
   正文仅进入本项目材料（document_role=招标公告），失败落 error_code 留审计
 - 云模型：**DeepSeek V4 Flash**（文本主推理，2026-08-31 由 MiniMax M3 切换，成本/质量平衡）、百炼 DashScope qwen-vl（视觉，含入库图片描述后台任务），受 P1 门禁控制
-- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（44 个工具）+ 业务 Skill；
+- Hermes Agent：NousResearch Hermes（`/data/hermes`），连接 bidvolt MCP（45 个工具）+ 业务 Skill；
   **Agent 主会话端到端**（新方案，默认产品流程）：一个任务=一个 Hermes 主会话，
   自主编排 解析→提问关→撰写→校验→评审→成文→打包，交付前逐份自查；
   旧任务类型/旧页面完全隔离保留。详见 [docs/Agent新方案README.md](docs/Agent新方案README.md)
+- **交付硬验收门**（主会话包内自查 + 服务端打包兜底，一次跑出金标准厚度）：
+  深度门（技术专项响应文件正文 ≥10 万字/大纲 ≥600 条/图 ≥400 张/表 ≥50 个，
+  商务补充 ≥3.5 万字/图 ≥300 张）、报价反算门（三步反算表「样本中位→基准价→最优报价」、
+  报价=反算表结果、规模修正只下修不上修、禁止成本加成定价）、编号逐字 diff、
+  打包内容门（最终 zip 12 条目：9 份正式文件 + 内部管理×3
+  [报价测算工作簿.xlsx/报价测算说明.docx/编制逻辑与评分响应记录.docx]）、
+  **服务端打包硬门禁**（竖线假表格/字体违规直接 409 拒绝，audit 带 docx_quality 逐文件计数）
 - **图片描述缓存**：企业资料/项目材料内嵌图片入库后台自动调视觉模型生成结构化描述
   （doc_type/编号/日期/金额/主体/印章/摘要），sha256 全局缓存每张图只描述一次；
+  **关键编号二次识别**：编号密集类图片（证件/证书/发票等）入库时自动二次重读——
+  优先 VL 模型高分辨率自切块（qwen2.5-vl-72b，`vl_high_resolution_images`），
+  不支持时降级服务端放大切块；两轮比对结果写 `numbers_verified/pass1/conflict`（S↔5 类形近误读
+  会在 conflict 中并列两个候选，下游取号对照原件再定）；
   页面顶部进度条可查后台识图进度；主会话「描述找图、装订复核」
+- **泵稳定性（R9 线上冻死根因根治）**：泵循环全部数据库操作有界化（获取/执行/提交全超时）、
+  连接池 10s 上限 + 30 分钟回收、**独立锁链破坏器常驻任务**（主循环冻死也照常杀掉
+  持 task 行锁 3 分钟以上的悬挂事务）、事件写入与终态落库全部走独立短命会话（主会话不再
+  碰 task 行锁——悬挂事务/误杀连接都不会再引发整轮崩溃与重试耗尽）
 - **提问关问答窗口**：主会话开编前批量向客户提问；每条提问 20 分钟问答窗口（页面倒计时），
   超时服务端注入「由你自行决定」信号（纯信号不代答），问卡仍可补答
 - **压缩包自动解包**：上传 zip 即展开内部文件入库（嵌套递归 ≤6 层、GBK 文件名、逐条安全校验），
@@ -61,7 +76,7 @@ FastAPI（app.main，uvicorn :8123）
    ├─ Worker（app.services.worker，任务队列）            ← supervisor 守护
    ├─ ClamAV（病毒扫描：不可用时重试后放行=fail-open，扫出病毒仍拦截）← supervisor 守护
    ├─ Hermes Agent（/data/hermes，headless gateway :9119）← supervisor 守护
-   │    └─ bidvolt MCP（stdio，26 工具，任务级 capability 授权）→ 后端
+   │    └─ bidvolt MCP（stdio，45 工具，任务级 capability 授权）→ 后端
    │         └─ Worker 以 hermes chat 无头模式驱动 bid-generate skill（默认路径，质量门兜底）
    └─ AnySearch / MiniMax-M3 / DashScope（出网，DLP 门禁）
 ```
@@ -80,7 +95,7 @@ FastAPI（app.main，uvicorn :8123）
 
 ```
 app/             FastAPI 应用（api/services/models/static demo）
-bidvolt_mcp/     MCP stdio server（OpenRPC IDL + 26 个工具）
+bidvolt_mcp/     MCP stdio server（OpenRPC IDL + 45 个工具）
 deploy/          容器部署脚本（install.sh / bidvolt-init.sh / bidvolt-boot.sh / supervisord.conf / install-hermes.sh / backup.sh / upgrade.sh / healthcheck.sh）
 docs/            架构/模块/威胁模型/数据分级授权清单/Hermes 契约与 Skill
 scripts/         冒烟与工具脚本（真实 OFD 样本、云能力线上冒烟、MCP 契约）
@@ -188,6 +203,8 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 | `MINIMAX_API_KEY` / `MINIMAX_BASE_URL` | MiniMax 文本模型（备用；主模型为 DeepSeek，Key 在 supervisor 环境） |
 | `DEEPSEEK_API_KEY` | DeepSeek 文本模型（supervisor `environment=` 注入，不进 .env） |
 | `DASHSCOPE_API_KEY` | 百炼 qwen-vl 视觉模型 |
+| `DASHSCOPE_VL_VERIFY_MODEL` | 编号二次识别专用 VL 模型（默认空=同主模型；线上为 qwen2.5-vl-72b-instruct） |
+| `BIDVOLT_OCR_VERIFY` | 1=入库关键编号二次识别（默认开；0 关闭） |
 | `ANYSEARCH_KEY` / `ANYSEARCH_BASE_URL` | 搜索（空 = 匿名额度；端点默认 api.anysearch.com/mcp） |
 | `DATA_CLASSIFICATION_CONFIRMED` | P1 门禁总开关（签署清单后才置 1） |
 | `CLOUD_LLM_ENABLED` / `SEARCH_ENABLED` | 云模型/搜索子开关 |
@@ -229,8 +246,9 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
   `hermes serve` headless gateway（127.0.0.1:9119）
 - 模型：主推理 **deepseek-v4-flash**（`deepseek` provider，max_tokens=32768，忙时输入模式=queue/steer）；
   视觉辅助 = 百炼 qwen-vl-max（`auxiliary.vision` custom + DashScope 兼容端点；
-  入库图片描述后台任务也走此模型）
-- MCP：`bidvolt`（44 工具，stdio），调用后端需 `BIDVOLT_INTERNAL_TOKEN` + 任务级 capability token
+  入库图片描述后台任务也走此模型）；**编号二次识别专用** = qwen2.5-vl-72b-instruct
+  （`DASHSCOPE_VL_VERIFY_MODEL`，支持 vl_high_resolution_images 高分辨率自切块，形近字符读数更稳）
+- MCP：`bidvolt`（45 工具，stdio），调用后端需 `BIDVOLT_INTERNAL_TOKEN` + 任务级 capability token
 - Skills：`bidvolt-agent-pipeline`（主会话端到端，默认产品流程）+
   `bidvolt-tender-parse / material-match / bid-generate / mock-evaluate / targeted-edit`（旧方案，隔离保留）
 - 常用命令（容器内，`export HERMES_HOME=/data/hermes`）：
@@ -309,11 +327,25 @@ Hermes 产出未达质量线自动回退内嵌闭环——技术标 11654 字/�
 MiniMax / 在线编辑 / PG+RLS），`live_bid_check`（三份成果生成）/ `live_req_check`（材料解析→
 Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
 
+**金标准五维对照验收基线（2026-09-01，风光场站真题项目 202，任务 2060，零续跑单任务）**：
+- 深度：技术专项响应文件正文 **177,040 字**（金标 124,882 的 142%）、大纲 954 条、图 480 张、表 117 个；
+  商务补充文件 84,942 字（金标 38,334 的 222%）、图 359 张——深度硬验收门（≥10 万字/600 条/400 图/50 表）全过；
+- 结构：最终包 12 条目齐全（9 正式 + 内部管理×3），manifest audit 三绿（coverage/unique/identity ok）、
+  missing=[]、bare_pending=0、无修订无批注；
+- 编号：全包编号类字段与资料库原文逐字 diff 27/27 PASS；主信用代码 18 位三源一致；
+- 报价：84.00 万含税，区间平均价浮动法三步反算表 + 三路依据（成本科目底线校验/行情样本 9 条/规则面）
+  随包（报价测算说明.docx + 测算工作簿.xlsx），三处勾稽一致（得分最优法，非成本加成）；
+- 证据红线：发票方向核验 61 张方向反/无关发票 0 残留；业绩 19 组三件套/人员 5 人证件/三年审计整本装订；
+- 基建：任务一次跑完（retry=0、零人工干预），终态自然落库——R9 六次复发的泵冻死/终态悬挂
+  由「全路径超时 + 独立锁链破坏器 + 短命会话」根治；
+- 对照工具与报告：`output/agent-notes/真题分析/compare_responses.py`（金标准仅本地对照，不进生成侧）。
+
 ## 11. 已知限制 / 路线图
 
 - Hermes 默认生成路径已落地（任务级 capability token → MCP 逐调用授权 → 质量门兜底内嵌闭环，
-  2026-08-19 实测）；遗留：Hermes 单次产出的篇幅受模型/会话预算影响，未达质量线时回退内嵌
-  （runtime=hermes-fallback 可追溯），Agent 产出质量随主推理模型升级持续优化
+  2026-08-19 实测）；Agent 单次产出篇幅问题已由**深度硬验收门**解决（打包前逐项计数、
+  不达标回修重验，2026-09-01 单任务实测技术卷 17.7 万字/金标 142%），
+  质量随主推理模型升级持续优化
 - 评分细则权重化评审为 V1（正文体现判分）；评分细则的细分打分（按细则子项人工评审计分）
   为后续增强
 - Issue #3 发布门禁：已全部落地——gitleaks/pre-commit/CI 全历史扫描、配置 fail-fast、worker 租约恢复、
