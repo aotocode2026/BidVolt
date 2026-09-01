@@ -874,6 +874,62 @@ async def package_zip(
             "（按模板原字体，如宋体/仿宋/黑体）后重新打包："
             + "；".join(font_files[:8])
         )
+    # 编号冲突值硬门禁（R12 教训：二次识别冲突值如 C1601J0253904821 未经对照原件处理
+    # 就留在交付件里——服务端按资料库 numbers_conflict 扫描，命中即拒绝）
+    conflict_values: set[str] = set()
+    try:
+        from app.models.file import ImageDescription as _ID  # noqa: PLC0415
+
+        _id_rows = await session.scalars(sa_select(_ID).where(_ID.description.is_not(None)))
+        for _id_row in _id_rows:
+            for _c in ((_id_row.description or {}).get("numbers_conflict") or []):
+                if isinstance(_c, str) and _c.strip():
+                    conflict_values.add(_c.strip())
+    except Exception:  # noqa: BLE001 冲突清单读取失败不拦截
+        conflict_values = set()
+    conflict_hits: list[str] = []
+    if conflict_values:
+        for a in item_arts:
+            try:
+                with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                    root = _etree.fromstring(zf.read("word/document.xml"))
+                full = _elem_text(root)
+            except Exception:  # noqa: BLE001
+                continue
+            for v in conflict_values:
+                if v in full:
+                    conflict_hits.append(f"{a.name}（编号 {v}）")
+                    break
+    if conflict_hits:
+        raise ValueError(
+            "交付件含二次识别冲突的编号（资料库 numbers_conflict，S↔5 类形近误读未处理）："
+            "请对照扫描件原件确认正确写法后回修改文件再打包："
+            + "；".join(conflict_hits[:8])
+        )
+    # 「上修」锚点作弊硬门禁（R12 教训：测算说明保留「上修约 20%」字样却声称只下修不上修）
+    upadjust_hits: list[str] = []
+    for a in arts:
+        if a.name not in ("内部管理文件/报价测算说明.docx", "内部管理文件/报价测算工作簿.xlsx"):
+            continue
+        try:
+            parts: list[bytes] = []
+            with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                for _n in zf.namelist():
+                    if _n in ("word/document.xml", "xl/sharedStrings.xml") or (
+                        _n.startswith("xl/worksheets/") and _n.endswith(".xml")
+                    ):
+                        parts.append(zf.read(_n))
+            blob = b"".join(parts).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            continue
+        if "上修" in blob:
+            upadjust_hits.append(a.name)
+    if upadjust_hits:
+        raise ValueError(
+            "报价测算说明/工作簿出现「上修」字样（锚点只允许剔除/下修样本，禁止上修任何百分比）："
+            "请重跑三步反算（锚点=同规模最相近样本原值）后重新打包："
+            + "；".join(upadjust_hits[:8])
+        )
     audit = {
         "checked": len(item_arts),
         "coverage_ok": not missing_items,
