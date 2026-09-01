@@ -895,16 +895,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
 
                         from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
 
-                        # 先取泵主会话自身的 backend pid——看门狗绝不杀自己人
-                        # （R9 三次整轮崩溃的根因：主会话事务闲置超 5 分钟后被看门狗
-                        # 误杀，下一次 set_config 直接 connection closed）
-                        _own_pid = None
-                        try:
-                            _own_pid = (
-                                await session.execute(_sa_text("SELECT pg_backend_pid()"))
-                            ).scalar()
-                        except Exception:  # noqa: BLE001 拿不到就不排除
-                            pass
+                        # 主会话事务卫生由「每轮迭代末 rollback」保证（见循环尾），
+                        # 此处只需独立会话 + state_change 守卫：健康泵的连接事务
+                        # 从不滞留（每轮 ≤5s 关闭），真悬挂的 commit 连接才会命中
+                        # 并被杀（commit 失败→except→rollback→循环自愈）。
                         async with _PumpSessionLocal() as _s8:
                             rows = (
                                 await _s8.execute(
@@ -914,10 +908,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                         "AND state = 'idle in transaction' "
                                         "AND xact_start < now() - interval '5 minutes' "
                                         "AND state_change < now() - interval '5 minutes' "
-                                        "AND pid <> pg_backend_pid() "
-                                        "AND pid <> :own_pid"
-                                    ),
-                                    {"own_pid": int(_own_pid) if _own_pid is not None else -1},
+                                        "AND pid <> pg_backend_pid()"
+                                    )
                                 )
                             ).fetchall()
                             for (pid,) in rows:
@@ -932,6 +924,14 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 )
                     except Exception:  # noqa: BLE001 看门狗自身故障不影响泵
                         pass
+                # 主会话事务卫生（每轮迭代末）：rollback 关闭本迭代遗留的任何读/
+                # 写事务——保证主会话连接从不 idle-in-transaction 滞留超过一个
+                # 循环节拍（≤5s），看门狗的 5 分钟阈值永不误伤健康泵；
+                # 真正悬挂的 commit 才会命中并被杀（=设计的自愈路径）。
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
                 # 不解析终端回显，避免我方提示里的标记文本误判）；
                 # 同一份导出顺便看消息总数增长 → 有增长即算有进展（防误催办）
