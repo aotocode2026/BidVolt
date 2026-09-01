@@ -598,6 +598,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         marker_poll_at = 0.0
         ask_timeout_at = 0.0
         progress_at = 0.0
+        watchdog_at = 0.0
         # 续跑基线：旧会话里已有消息（含上一单回执）不算本轮完成
         marker_min_index = 0
         if resume_sid:
@@ -682,6 +683,12 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     await _flush()
                 except Exception:  # noqa: BLE001
                     logger.warning("事件冲刷暂未成功（task=%s），下轮重试", task.id, exc_info=True)
+                    # 会话自愈（R7/R8 四次整轮卡死根因之一）：异常后事务可能悬挂，
+                    # 必须显式 rollback 重置——毒事务不 rollback 会永久持有行锁
+                    try:
+                        await session.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
                 # 客户中途对话：复用现有泵循环——取出任务字段里的排队消息，
                 # 经与催办/复核提示相同的 PTY 通道注入（hermes CLI 的 /queue 在忙时排队，
                 # 主会话当前轮结束后按到达顺序逐条处理）。行锁防 app/worker 双进程丢失更新；
@@ -855,6 +862,41 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 await _s5.commit()
                     except Exception:  # noqa: BLE001 进度纯观感，失败下轮再试
                         logger.warning("进度更新暂未成功（task=%s），下轮重试", task.id, exc_info=True)
+                # 悬挂事务看门狗（R7/R8 四次整轮卡死的根本防线）：主泵会话 commit
+                # 一旦悬挂，事务挂着 task 行锁，后续 FOR UPDATE 全部等锁形成死锁链。
+                # 每 60s 用独立连接终止本库「idle in transaction 超 5 分钟」的其他
+                # 后端——锁释放后本泵挂起操作自然完成或失败，循环自愈。
+                if loop.time() - watchdog_at > 60:
+                    watchdog_at = loop.time()
+                    try:
+                        from sqlalchemy import text as _sa_text
+
+                        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+
+                        async with _PumpSessionLocal() as _s8:
+                            rows = (
+                                await _s8.execute(
+                                    _sa_text(
+                                        "SELECT pid FROM pg_stat_activity "
+                                        "WHERE datname = current_database() "
+                                        "AND state = 'idle in transaction' "
+                                        "AND xact_start < now() - interval '5 minutes' "
+                                        "AND pid <> pg_backend_pid()"
+                                    )
+                                )
+                            ).fetchall()
+                            for (pid,) in rows:
+                                try:
+                                    await _s8.execute(_sa_text(f"SELECT pg_terminate_backend({int(pid)})"))
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            if rows:
+                                logger.warning(
+                                    "悬挂事务看门狗终止 %d 个后端（task=%s）：%s",
+                                    len(rows), task.id, [int(p) for (p,) in rows],
+                                )
+                    except Exception:  # noqa: BLE001 看门狗自身故障不影响泵
+                        pass
                 # 完成标记：读 Hermes 会话库的主会话最后一条回复（权威判据，
                 # 不解析终端回显，避免我方提示里的标记文本误判）；
                 # 同一份导出顺便看消息总数增长 → 有增长即算有进展（防误催办）
