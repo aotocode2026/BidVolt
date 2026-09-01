@@ -694,7 +694,14 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         async def _flush() -> None:
             if pending:
                 batch, pending[:] = list(pending), []
-                await _append_events(session, task, seq, batch)
+                # 事件冲刷用独立短命会话（R9 架构级根治）：主会话历史累积
+                # 后 commit 悬挂是 R7/R8/R9 五次整轮卡死的唯一根因，而
+                # 新鲜会话（排水/超时/进度/终态）数百次提交从未挂过。
+                # with 自带回滚，task 行锁绝不滞留。
+                from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+
+                async with _PumpSessionLocal() as _sf:
+                    await _append_events(_sf, task, seq, batch)
 
         try:
             while True:
@@ -1275,17 +1282,23 @@ async def _marker_from_events(session: AsyncSession, task: Task, limit: int = 40
     会话库导出偶发失配（压缩/快照时序）时，主会话真实回执仍在事件流里。"""
     from sqlalchemy import select as sa_select
 
-    rows = (
-        await session.scalars(
-            sa_select(AgentSessionEvent)
-            .where(
-                AgentSessionEvent.task_id == task.id,
-                AgentSessionEvent.kind == "hermes",
+    from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    # 独立短命会话（同 _flush 根治口径）
+    async with _PumpSessionLocal() as _sm:
+        await _set_rls_context(_sm, task.enterprise_id)
+        rows = (
+            await _sm.scalars(
+                sa_select(AgentSessionEvent)
+                .where(
+                    AgentSessionEvent.task_id == task.id,
+                    AgentSessionEvent.kind == "hermes",
+                )
+                .order_by(AgentSessionEvent.seq.desc())
+                .limit(limit)
             )
-            .order_by(AgentSessionEvent.seq.desc())
-            .limit(limit)
-        )
-    ).all()
+        ).all()
     for r in rows:
         for ln in (r.content or "").splitlines():
             ln = ln.strip()
@@ -1327,14 +1340,20 @@ async def _repl_session_state(session: AsyncSession, task: Task) -> tuple[str | 
 async def _event_tail(session: AsyncSession, task: Task, limit: int) -> str:
     from sqlalchemy import select as sa_select
 
-    rows = (
-        await session.scalars(
-            sa_select(AgentSessionEvent)
-            .where(AgentSessionEvent.task_id == task.id)
-            .order_by(AgentSessionEvent.seq.desc())
-            .limit(200)
-        )
-    ).all()
+    from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    # 独立短命会话（同 _flush 根治口径）
+    async with _PumpSessionLocal() as _se:
+        await _set_rls_context(_se, task.enterprise_id)
+        rows = (
+            await _se.scalars(
+                sa_select(AgentSessionEvent)
+                .where(AgentSessionEvent.task_id == task.id)
+                .order_by(AgentSessionEvent.seq.desc())
+                .limit(200)
+            )
+        ).all()
     return "\n".join(r.content or "" for r in reversed(rows))[-limit:]
 
 
