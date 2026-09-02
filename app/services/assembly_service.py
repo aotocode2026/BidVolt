@@ -906,6 +906,26 @@ async def package_zip(
             "请对照扫描件原件确认正确写法后回修改文件再打包："
             + "；".join(conflict_hits[:8])
         )
+    # 信用代码长度硬门禁（福建 R4 教训：91 开头 17 位误读变体 9111011318157964Q
+    # 混入证书描述与说明文字——18 位校验只覆盖了 slice 链路，追加/叙述文字漏网）
+    _cc17_re = _re.compile(r"(?<![0-9A-Z])91[0-9A-Z]{15}(?![0-9A-Z])")
+    cc17_hits: list[str] = []
+    for a in item_arts:
+        try:
+            with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                root = _etree.fromstring(zf.read("word/document.xml"))
+            full = _elem_text(root)
+        except Exception:  # noqa: BLE001
+            continue
+        for m in _cc17_re.finditer(full):
+            cc17_hits.append(f"{a.name}（{m.group(0)}）")
+            break
+    if cc17_hits:
+        raise ValueError(
+            "交付件含 17 位统一社会信用代码变体（91 开头应为 18 位，OCR 漏位）："
+            "请按营业执照原文回修改文件（含说明性文字中「曾误读为 xxx」的复述）再打包："
+            + "；".join(cc17_hits[:8])
+        )
     # 「上修」锚点作弊硬门禁（R12 教训：测算说明保留「上修约 20%」字样却声称只下修不上修）
     upadjust_hits: list[str] = []
     for a in arts:
