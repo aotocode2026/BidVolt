@@ -950,6 +950,33 @@ async def package_zip(
             "请重跑三步反算（锚点=同规模最相近样本原值）后重新打包："
             + "；".join(upadjust_hits[:8])
         )
+    # 限价锚定硬门禁（福建 R7 教训：项目有最高限价时，模型仍按样本/A2 估计报价绕过限价锚定纪律——
+    # 服务端按测算说明自述的限价与报价校验：报价必须在 [限价×0.95, 限价] 带内）。
+    _limit_re = _re.compile(r"(?<!无)最高限价\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*万")
+    _quote_re = _re.compile(
+        r"(?:响应总价|报价（含税总价）|含税总价)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*万元"
+    )
+    for a in arts:
+        if a.name != "内部管理文件/报价测算说明.docx":
+            continue
+        try:
+            with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                root = _etree.fromstring(zf.read("word/document.xml"))
+            full = _elem_text(root)
+        except Exception:  # noqa: BLE001
+            continue
+        lm = _limit_re.search(full)
+        if not lm:
+            continue
+        limit = float(lm.group(1))
+        qm = _quote_re.search(full)
+        if qm and not (limit * 0.95 - 0.01 <= float(qm.group(1)) <= limit + 0.01):
+            raise ValueError(
+                f"本项目有最高限价 {limit} 万元，按限价锚定纪律报价应在 "
+                f"{limit * 0.95:.2f}–{limit} 万元带内，但报价为 {qm.group(1)} 万元——"
+                "请以锚点=限价原值重新反算（报价=限价×0.98 附近取整）后重新打包"
+            )
+        break
     audit = {
         "checked": len(item_arts),
         "coverage_ok": not missing_items,
