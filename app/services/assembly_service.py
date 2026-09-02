@@ -950,14 +950,41 @@ async def package_zip(
             "请重跑三步反算（锚点=同规模最相近样本原值）后重新打包："
             + "；".join(upadjust_hits[:8])
         )
-    # 限价锚定一致性硬门禁（福建 R7 教训：项目有最高限价时，模型按样本/A2 估计报价绕过限价锚定纪律）。
-    # 只验证「锚点纪律」本身，不设任意报价带：①有最高限价时测算说明必须写明锚点金额；
-    # ②锚点必须=限价原值；③报价≈锚点×0.98（±1 万取整/微调容差）。无最高限价（「无最高限价」）不校验。
+    # 报价反算方法一致性门禁（福建 R7/R8 教训）：不猜口径、不钉数值——服务端读
+    # 「客户在提问关选择的报价策略」，校验反算表算术与方法约束，口径由客户答案决定。
     _limit_re = _re.compile(r"(?<!无)最高限价\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*万")
     _quote_re = _re.compile(
         r"(?:响应总价|报价（含税总价）|含税总价)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*万元"
     )
-    _anchor_re = _re.compile(r"锚点[^\d]{0,14}([0-9]+(?:\.[0-9]+)?)\s*万")
+    _a2_re = _re.compile(r"A2\s*估计[:：]?\s*([0-9]+(?:\.[0-9]+)?)")
+    _b_re = _re.compile(r"基准价\s*(?:B)?\s*[:：=＝]?\s*([0-9]+(?:\.[0-9]+)?)")
+    _strategy = "limit"  # 默认限价优先
+    try:
+        from app.models.agent import AgentCustomerAsk as _ACA  # noqa: PLC0415
+
+        _ask_rows = await session.scalars(
+            sa_select(_ACA).where(
+                _ACA.task_id == int(task_id),
+                _ACA.kind == "question",
+                _ACA.answered == 1,
+            )
+        )
+        _answers = []
+        for _ar in _ask_rows:
+            for _it in (_ar.items or []):
+                _q = str(_it.get("q") or "") if isinstance(_it, dict) else str(_it)
+                if "报价策略" in _q or "A2" in _q:
+                    _answers.append(str(_ar.answer or ""))
+        if _answers:
+            _ans = " ".join(_answers)
+            if "样本锚定" in _ans:
+                _strategy = "sample"
+            elif "保守取低" in _ans:
+                _strategy = "low"
+            elif "限价锚定" in _ans or "限价" in _ans:
+                _strategy = "limit"
+    except Exception:  # noqa: BLE001 客户答案读取失败按默认口径
+        _strategy = "limit"
     for a in arts:
         if a.name != "内部管理文件/报价测算说明.docx":
             continue
@@ -968,28 +995,41 @@ async def package_zip(
         except Exception:  # noqa: BLE001
             continue
         lm = _limit_re.search(full)
-        if not lm:
-            continue
-        limit = float(lm.group(1))
-        am = _anchor_re.search(full)
+        am2 = _a2_re.search(full)
+        bm = _b_re.search(full)
         qm = _quote_re.search(full)
-        if not am:
+        if not (am2 and bm and qm):
             raise ValueError(
-                f"本项目有最高限价 {limit} 万元：按限价锚定纪律，测算说明必须写明锚点金额"
-                f"（锚点=最高限价原值，如「锚点={limit:.2f} 万元」），当前未解析到锚点——请补写后重新打包"
+                "报价测算说明缺少服务端校验所需的标准行——请**单行列明**："
+                "A2 估计值（如「A2 估计：47.35」）、基准价 B=A2×0.98（如「基准价：46.40」）、"
+                "最高限价（如有）与最终报价（含税总价），后重新打包"
             )
-        anchor = float(am.group(1))
-        if abs(anchor - limit) > 0.01:
+        a2 = float(am2.group(1))
+        b = float(bm.group(1))
+        p = float(qm.group(1))
+        if abs(b - a2 * 0.98) > 0.15:
             raise ValueError(
-                f"本项目有最高限价 {limit} 万元：锚点必须=最高限价原值，但说明中锚点为 {anchor} 万元"
-                "（限价优先纪律：有最高限价时样本不得充当锚点）——请以锚点=限价重新反算后打包"
+                f"反算表算术不符：基准价 {b} 应=A2×0.98≈{a2 * 0.98:.2f}（A2={a2}）——请修正后重新打包"
             )
-        target = limit * 0.98
-        if qm and abs(float(qm.group(1)) - target) > 1.0:
+        if p > b + 1.0:
             raise ValueError(
-                f"锚点={limit} 万元时，报价应=锚点×0.98≈{target:.2f} 万元附近取整（±1 万），"
-                f"当前报价为 {qm.group(1)} 万元——请按锚点×0.98 重新取整后打包"
+                f"得分最优纪律：报价 {p} 不应高于基准价 {b}（上方扣分斜率 n1=1 更陡，"
+                "只允许取整造成的 ≤1 万上浮）——请取 B 下方整万元后重新打包"
             )
+        if p < b - 2.0:
+            raise ValueError(
+                f"得分最优纪律：报价 {p} 偏离基准价 {b} 超过 2 万（≈3%），价格分损失过大——"
+                "请取 B 附近整万元后重新打包"
+            )
+        if lm:
+            limit = float(lm.group(1))
+            if p > limit:
+                raise ValueError(f"报价 {p} 超过最高限价 {limit} 万元")
+            if _strategy == "limit" and abs(a2 - limit) > 0.15:
+                raise ValueError(
+                    f"客户口径为「限价锚定」：A2 估计应=最高限价原值 {limit}，"
+                    f"但说明中 A2={a2}——请按限价锚定重算后重新打包"
+                )
         break
     audit = {
         "checked": len(item_arts),
