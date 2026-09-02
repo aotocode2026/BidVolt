@@ -40,11 +40,14 @@ Hermes Agent 工具调用，以及用于验证的 Demo 前端。
   旧任务类型/旧页面完全隔离保留。详见 [docs/Agent新方案README.md](docs/Agent新方案README.md)
 - **交付硬验收门**（主会话包内自查 + 服务端打包兜底，一次跑出金标准厚度）：
   深度门（技术专项响应文件正文 ≥10 万字/大纲 ≥600 条/图 ≥400 张/表 ≥50 个，
-  商务补充 ≥3.5 万字/图 ≥300 张）、报价反算门（三步反算表「样本中位→基准价→最优报价」、
-  报价=反算表结果、规模修正只下修不上修、禁止成本加成定价）、编号逐字 diff、
+  商务补充 ≥3.5 万字/图 ≥300 张；结构按本项目技术规范书与评分标准成文，不预设项目专属结构）、
+  报价反算门（**客户策略口径驱动**：A2 估计口径由客户在提问关选择——限价锚定/样本锚定/保守取低，
+  未答默认限价优先；测算说明单行列明限价/A2/基准价 B=A2×0.98/报价四行数字；服务端校验
+  B=A2×0.98 算术与边界，禁止成本加成定价）、编号逐字 diff（vision 误读变体不得入件，含复述）、
   打包内容门（最终 zip 12 条目：9 份正式文件 + 内部管理×3
   [报价测算工作簿.xlsx/报价测算说明.docx/编制逻辑与评分响应记录.docx]）、
-  **服务端打包硬门禁**（竖线假表格/字体违规直接 409 拒绝，audit 带 docx_quality 逐文件计数）
+  **服务端打包硬门禁**（竖线假表格/字体违规/编号冲突值/17 位信用代码变体/「上修」字样
+  直接 409 拒绝，audit 带 docx_quality 逐文件计数）
 - **图片描述缓存**：企业资料/项目材料内嵌图片入库后台自动调视觉模型生成结构化描述
   （doc_type/编号/日期/金额/主体/印章/摘要），sha256 全局缓存每张图只描述一次；
   **关键编号二次识别**：编号密集类图片（证件/证书/发票等）入库时自动二次重读——
@@ -250,7 +253,11 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
   （`DASHSCOPE_VL_VERIFY_MODEL`，支持 vl_high_resolution_images 高分辨率自切块，形近字符读数更稳）
 - MCP：`bidvolt`（45 工具，stdio），调用后端需 `BIDVOLT_INTERNAL_TOKEN` + 任务级 capability token
 - Skills：`bidvolt-agent-pipeline`（主会话端到端，默认产品流程）+
-  `bidvolt-tender-parse / material-match / bid-generate / mock-evaluate / targeted-edit`（旧方案，隔离保留）
+  `asset-inventory / deliverable-acceptance / evidence-extract / gap-report / pipeline-mechanics`
+  （流程子技能）+ `tender-parse / material-match / bid-generate / mock-evaluate / targeted-edit`
+  （旧方案，隔离保留）。全部技能已**去项目坐标化**（无项目/任务/分包/资产/人名/成交人/历史报价
+  坐标、金标数据零泄漏）；历史 pitfalls 批次归档于 `skills/bidvolt/archived-2026-09/`，
+  仓库同步副本见 `docs/hermes/skills/`。
 - 常用命令（容器内，`export HERMES_HOME=/data/hermes`）：
 
 ```bash
@@ -338,7 +345,18 @@ Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
 - 证据红线：发票方向核验 61 张方向反/无关发票 0 残留；业绩 19 组三件套/人员 5 人证件/三年审计整本装订；
 - 基建：任务一次跑完（retry=0、零人工干预），终态自然落库——R9 六次复发的泵冻死/终态悬挂
   由「全路径超时 + 独立锁链破坏器 + 短命会话」根治；
-- 对照工具与报告：`output/agent-notes/真题分析/compare_responses.py`（金标准仅本地对照，不进生成侧）。
+- 对照工具与报告：`output/agent-notes/真题分析/compare_responses.py`（金标准仅本地对照，不进生成侧；
+  支持 PDF 金标体量统计）。
+
+**双真题最新基线（2026-09-02，零续跑单任务）**：
+- 风光场站（任务 3482）：技术卷 160,888 字（金标 129%）/ 108 表 / 479 图；报价 66.00 万
+  （无最高限价 → 样本锚口径，金标 58 万的 1.14×）；retry=0 一次通过；
+- 福建调控云（任务 3485）：技术卷 145,677 字（金标 114%）/ 表 76 / 图 339；报价 66.00 万
+  （最高限价 68 万 → 限价锚定口径 A2=68→B=66.64→取整 66，金标 67.5 万的 **0.98×**）；retry=0 一次通过；
+- 报价口径机制：客户在提问关选择（限价锚定/样本锚定/保守取低，未答默认限价优先），
+  服务端读客户答案并校验反算表算术与边界——不钉死任何数值；
+- 全链路体检（2026-09-02）：prompt/SKILL/工具/门禁无项目写死、无金标泄漏（58/67.5/209 万、
+  1278 条目、业绩组名单均为零）、无凭据入库；技能全部去项目坐标化。
 
 ## 11. 已知限制 / 路线图
 
