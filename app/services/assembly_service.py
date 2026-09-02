@@ -950,12 +950,14 @@ async def package_zip(
             "请重跑三步反算（锚点=同规模最相近样本原值）后重新打包："
             + "；".join(upadjust_hits[:8])
         )
-    # 限价锚定硬门禁（福建 R7 教训：项目有最高限价时，模型仍按样本/A2 估计报价绕过限价锚定纪律——
-    # 服务端按测算说明自述的限价与报价校验：报价必须在 [限价×0.95, 限价] 带内）。
+    # 限价锚定一致性硬门禁（福建 R7 教训：项目有最高限价时，模型按样本/A2 估计报价绕过限价锚定纪律）。
+    # 只验证「锚点纪律」本身，不设任意报价带：①有最高限价时测算说明必须写明锚点金额；
+    # ②锚点必须=限价原值；③报价≈锚点×0.98（±1 万取整/微调容差）。无最高限价（「无最高限价」）不校验。
     _limit_re = _re.compile(r"(?<!无)最高限价\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*万")
     _quote_re = _re.compile(
         r"(?:响应总价|报价（含税总价）|含税总价)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*万元"
     )
+    _anchor_re = _re.compile(r"锚点[^\d]{0,14}([0-9]+(?:\.[0-9]+)?)\s*万")
     for a in arts:
         if a.name != "内部管理文件/报价测算说明.docx":
             continue
@@ -969,12 +971,24 @@ async def package_zip(
         if not lm:
             continue
         limit = float(lm.group(1))
+        am = _anchor_re.search(full)
         qm = _quote_re.search(full)
-        if qm and not (limit * 0.95 - 0.01 <= float(qm.group(1)) <= limit + 0.01):
+        if not am:
             raise ValueError(
-                f"本项目有最高限价 {limit} 万元，按限价锚定纪律报价应在 "
-                f"{limit * 0.95:.2f}–{limit} 万元带内，但报价为 {qm.group(1)} 万元——"
-                "请以锚点=限价原值重新反算（报价=限价×0.98 附近取整）后重新打包"
+                f"本项目有最高限价 {limit} 万元：按限价锚定纪律，测算说明必须写明锚点金额"
+                f"（锚点=最高限价原值，如「锚点={limit:.2f} 万元」），当前未解析到锚点——请补写后重新打包"
+            )
+        anchor = float(am.group(1))
+        if abs(anchor - limit) > 0.01:
+            raise ValueError(
+                f"本项目有最高限价 {limit} 万元：锚点必须=最高限价原值，但说明中锚点为 {anchor} 万元"
+                "（限价优先纪律：有最高限价时样本不得充当锚点）——请以锚点=限价重新反算后打包"
+            )
+        target = limit * 0.98
+        if qm and abs(float(qm.group(1)) - target) > 1.0:
+            raise ValueError(
+                f"锚点={limit} 万元时，报价应=锚点×0.98≈{target:.2f} 万元附近取整（±1 万），"
+                f"当前报价为 {qm.group(1)} 万元——请按锚点×0.98 重新取整后打包"
             )
         break
     audit = {
