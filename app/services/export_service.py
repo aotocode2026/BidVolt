@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from datetime import datetime, timezone
@@ -1315,7 +1316,14 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                     )
                     name = f"{dir_name}/{_safe_filename(_clean_item_name(heading))}.docx"
                     zf.writestr(name, data)
-                    files_manifest.append({"dir": dir_name, "name": name, "bytes": len(data)})
+                    files_manifest.append(
+                        {
+                            "dir": dir_name,
+                            "name": name,
+                            "bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest(),
+                        }
+                    )
             else:
                 # 兜底：按行级清单逐份（底稿无大纲信号时）
                 rows = items_by_role[role]
@@ -1333,7 +1341,14 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                     )
                     name = f"{dir_name}/{_safe_filename(r.content)}.docx"
                     zf.writestr(name, data)
-                    files_manifest.append({"dir": dir_name, "name": name, "bytes": len(data)})
+                    files_manifest.append(
+                        {
+                            "dir": dir_name,
+                            "name": name,
+                            "bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest(),
+                        }
+                    )
             if rest_nodes:
                 data = _assemble_item_docx(
                     source_path, None, None,
@@ -1343,12 +1358,26 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                 )
                 name = f"{dir_name}/补充响应内容.docx"
                 zf.writestr(name, data)
-                files_manifest.append({"dir": dir_name, "name": name, "bytes": len(data)})
+                files_manifest.append(
+                    {
+                        "dir": dir_name,
+                        "name": name,
+                        "bytes": len(data),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                    }
+                )
             if role == "price" and quote_model is not None:
                 xlsx = xlsx_bytes(quote_model)
                 name = f"{dir_name}/报价单.xlsx"
                 zf.writestr(name, xlsx)
-                files_manifest.append({"dir": dir_name, "name": name, "bytes": len(xlsx)})
+                files_manifest.append(
+                    {
+                        "dir": dir_name,
+                        "name": name,
+                        "bytes": len(xlsx),
+                        "sha256": hashlib.sha256(xlsx).hexdigest(),
+                    }
+                )
         manifest = {
             "project_id": int(project_id),
             "draft": fobj.original_name,
@@ -1378,7 +1407,14 @@ async def build_response_package(session, enterprise_id: int, project_id: int) -
                 record = await session_record_markdown(session, pipe_task)
                 name = "会话记录/主会话记录.md"
                 zf.writestr(name, record.encode("utf-8"))
-                files_manifest.append({"dir": "会话记录", "name": name, "bytes": len(record.encode("utf-8"))})
+                files_manifest.append(
+                    {
+                        "dir": "会话记录",
+                        "name": name,
+                        "bytes": len(record.encode("utf-8")),
+                        "sha256": hashlib.sha256(record.encode("utf-8")).hexdigest(),
+                    }
+                )
                 manifest["files"] = files_manifest
         except Exception:  # noqa: BLE001 会话记录缺失不影响交付包主体
             logger.warning("响应文件包附加主会话记录失败", exc_info=True)
