@@ -241,6 +241,41 @@ async def replace_deliverable_file(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.post("/{project_id}/assembly/artifacts/{artifact_id}/save", status_code=status.HTTP_201_CREATED)
+async def save_deliverable_file(
+    project_id: int,
+    artifact_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    mode: str = Form("overwrite"),
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.DELIVERABLE_EDIT)),
+) -> dict:
+    """远端 Office 文件保存：
+    mode=overwrite 覆盖当前文件（artifact_id 不变，version_no 递增）；
+    mode=new 另存为新版本（旧版本保留）。"""
+    if mode not in ("overwrite", "new"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="mode 必须是 overwrite 或 new")
+    await _ensure_project(session, user.enterprise_id, project_id)
+    data = await file.read(60 * 1024 * 1024 + 1)
+    try:
+        result = await assembly_service.save_artifact_file(
+            session,
+            user.enterprise_id,
+            project_id,
+            _cap_task_or_none(request),
+            artifact_id,
+            data,
+            mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    result["download_url"] = (
+        f"/api/v1/projects/{project_id}/agent-artifact/{result['artifact_id']}/download"
+    )
+    return result
+
+
 @router.post("/{project_id}/assembly/artifacts/{artifact_id}/render-qa")
 async def render_qa_artifact(
     project_id: int,
