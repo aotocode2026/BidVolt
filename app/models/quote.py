@@ -51,6 +51,7 @@ class QuoteCalc(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInt, primary_key=True)
     enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     project_id: Mapped[int] = mapped_column(BigInt, nullable=False)
+    deliverable_id: Mapped[int | None] = mapped_column(BigInt)
     params: Mapped[dict] = mapped_column(JSONType, nullable=False)
     result: Mapped[dict] = mapped_column(JSONType, nullable=False)
     strategy_results: Mapped[dict | None] = mapped_column(JSONType)
