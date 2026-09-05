@@ -13,7 +13,7 @@ from app.constants import Permission
 from app.db import get_session
 from app.models.doc import DocBlock
 from app.models.enterprise_domain import EnterpriseAsset, EnterpriseFact
-from app.models.file import FileObject
+from app.models.file import FileObject, UploadBatch, UploadBatchItem
 from app.models.project_material import ProjectMaterial
 from app.schemas.project import Page
 from app.services import file_service
@@ -146,8 +146,90 @@ async def upload_files(
         from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
         await _set_rls_context(session, user.enterprise_id)
+    batch = UploadBatch(
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        project_id=project_id,
+        target=target,
+    )
+    session.add(batch)
+    await session.flush()
+    for item in results:
+        if item.get("error"):
+            batch_status = "error"
+            message = item["error"]
+            file_id = None
+            asset_id = None
+        elif item.get("duplicate"):
+            batch_status = "duplicate"
+            message = item.get("message")
+            file_id = item.get("file_id")
+            asset_id = item.get("asset_id")
+        else:
+            batch_status = "accepted"
+            message = None
+            file_id = item.get("file_id")
+            asset_id = item.get("asset_id")
+        session.add(
+            UploadBatchItem(
+                batch_id=batch.id,
+                enterprise_id=user.enterprise_id,
+                filename=item.get("name") or "",
+                file_id=file_id,
+                asset_id=asset_id,
+                status=batch_status,
+                message=message,
+                document_role=document_role,
+            )
+        )
+        item["item_id"] = None
+    await session.flush()
+    # 刷新后再查批次时返回的 item_id；这里无法逐个同步，因为需要再 flush 后获取。
+    # 兼容现有响应：前端可用 batch_id 查询权威状态。
     await session.commit()
-    return {"files": results}
+    return {"batch_id": batch.id, "files": results}
+
+
+@router.get("/batches/{batch_id}")
+async def upload_batch(
+    batch_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """查询一次上传批次的逐文件处理结果。"""
+    batch = await session.scalar(
+        select(UploadBatch).where(
+            UploadBatch.id == batch_id,
+            UploadBatch.enterprise_id == user.enterprise_id,
+        )
+    )
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传批次不存在")
+    rows = (
+        await session.scalars(
+            select(UploadBatchItem)
+            .where(UploadBatchItem.batch_id == batch_id)
+            .order_by(UploadBatchItem.id)
+        )
+    ).all()
+    return {
+        "batch_id": batch.id,
+        "target": batch.target,
+        "project_id": batch.project_id,
+        "created_at": batch.created_at.isoformat() if batch.created_at else None,
+        "items": [
+            {
+                "item_id": i.id,
+                "filename": i.filename,
+                "file_id": i.file_id,
+                "asset_id": i.asset_id,
+                "status": i.status,
+                "message": i.message,
+                "document_role": i.document_role,
+            }
+            for i in rows
+        ],
+    }
 
 
 @router.get("", response_model=Page)
