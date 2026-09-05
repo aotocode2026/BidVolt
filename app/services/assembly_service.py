@@ -599,7 +599,97 @@ async def replace_artifact_file(
     art.version_no = int(art.version_no or 0) + 1
     await session.commit()
     await _set_rls_context(session, enterprise_id)
-    return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "replaced": True}
+    return {
+        "artifact_id": art.id,
+        "name": art.name,
+        "bytes": len(data),
+        "replaced": True,
+        "version_no": int(art.version_no or 0),
+    }
+
+
+async def save_artifact_file(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    task_id: int | None,
+    artifact_id: int,
+    data: bytes,
+    mode: str = "overwrite",
+) -> dict:
+    """远端 Office 文件保存：
+    mode=overwrite 覆盖当前 artifact（artifact_id 不变，version_no 递增）；
+    mode=new 另存为新 artifact（旧版本保留，新 artifact_id + version_no=1）。
+    """
+    import io as _io
+    import zipfile as _zip
+
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentArtifact
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    if len(data) > 60 * 1024 * 1024:
+        raise ValueError("文件超过 60MB 上限")
+    await _set_rls_context(session, enterprise_id)
+    art = await session.scalar(
+        _sa_select(AgentArtifact).where(
+            AgentArtifact.id == int(artifact_id),
+            AgentArtifact.enterprise_id == enterprise_id,
+            AgentArtifact.project_id == int(project_id),
+        )
+    )
+    if art is None:
+        raise ValueError("产物不存在或不属于本项目")
+    stem = (art.name or "").rsplit("/", 1)[-1]
+    ext = stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
+    if ext == "docx":
+        try:
+            with _zip.ZipFile(_io.BytesIO(data)) as zf:
+                if "word/document.xml" not in zf.namelist():
+                    raise ValueError
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("docx 结构无效（不是有效的 Word 文件）") from exc
+    elif ext == "xlsx":
+        pass
+    elif ext == "pdf":
+        if not data.startswith(b"%PDF-"):
+            raise ValueError("pdf 文件头无效")
+    else:
+        raise ValueError("仅支持 docx/xlsx/pdf 产物保存")
+
+    if mode == "new":
+        new_art = AgentArtifact(
+            enterprise_id=enterprise_id,
+            project_id=int(project_id),
+            task_id=int(task_id) if task_id is not None else int(art.task_id),
+            kind=art.kind,
+            name=art.name,
+            mime=art.mime,
+            content=data,
+        )
+        session.add(new_art)
+        await session.commit()
+        await _set_rls_context(session, enterprise_id)
+        return {
+            "artifact_id": int(new_art.id),
+            "name": new_art.name,
+            "bytes": len(data),
+            "version_no": 1,
+            "mode": "new",
+        }
+
+    art.content = data
+    art.version_no = int(art.version_no or 0) + 1
+    await session.commit()
+    await _set_rls_context(session, enterprise_id)
+    return {
+        "artifact_id": int(art.id),
+        "name": art.name,
+        "bytes": len(data),
+        "version_no": int(art.version_no or 0),
+        "mode": "overwrite",
+    }
 
 
 async def render_qa_artifact(

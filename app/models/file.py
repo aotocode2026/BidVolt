@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, BigInt, JSONType, TimestampMixin
@@ -46,6 +46,36 @@ class ArchiveJob(Base, TimestampMixin):
     )
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     result: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class UploadBatch(Base, TimestampMixin):
+    """一次上传/导入的批次：刷新后可查询逐文件结果。"""
+
+    __tablename__ = "upload_batch"
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(BigInt, nullable=False)
+    project_id: Mapped[int | None] = mapped_column(BigInt)
+    target: Mapped[str] = mapped_column(String(20), nullable=False)
+
+
+class UploadBatchItem(Base, TimestampMixin):
+    """批次内的单文件处理结果。"""
+
+    __tablename__ = "upload_batch_item"
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        BigInt, ForeignKey("upload_batch.id"), nullable=False, index=True
+    )
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_id: Mapped[int | None] = mapped_column(BigInt)
+    asset_id: Mapped[int | None] = mapped_column(BigInt)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)  # accepted/duplicate/error/expanded
+    message: Mapped[str | None] = mapped_column(Text)
+    document_role: Mapped[str | None] = mapped_column(String(50))
 
 
 class FileImage(Base, TimestampMixin):

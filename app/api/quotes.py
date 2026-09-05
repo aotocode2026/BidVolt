@@ -192,6 +192,7 @@ async def calculate_quote(
     calc = QuoteCalc(
         enterprise_id=user.enterprise_id,
         project_id=body.get("project_id", 0),
+        deliverable_id=body.get("deliverable_id"),
         params=body,
         result=result,
         snapshot_refs=snapshot_ids,
@@ -407,6 +408,7 @@ async def apply_quote(
     except VersionConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     calc.status = 2
+    calc.deliverable_id = deliverable.id
     calc.applied_version_no = version.version_no
     calc.applied_at = datetime.now(timezone.utc)
     await write_audit(
@@ -444,6 +446,7 @@ async def list_calculations(
             {
                 "calc_id": c.id,
                 "project_id": c.project_id,
+                "deliverable_id": c.deliverable_id,
                 "params": c.params,
                 "result": c.result,
                 "status": c.status,
@@ -500,6 +503,7 @@ async def calculation_detail(
     return {
         "calc_id": calc.id,
         "project_id": calc.project_id,
+        "deliverable_id": calc.deliverable_id,
         "params": calc.params,
         "result": calc.result,
         "strategy_results": calc.strategy_results or {},

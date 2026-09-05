@@ -21,6 +21,10 @@ class AgentSessionEvent(Base, TimestampMixin):
     # service=服务发给主会话的消息 / hermes=主会话输出 / tool=工具调用与委派 / error=错误 / user=客户消息
     kind: Mapped[str] = mapped_column(String(20), nullable=False, default="hermes")
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 客户端消息幂等标识；同一 client_message_id 只产生一条 user 事件
+    client_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    # 回复关联：hermes 事件指向其回应的 user 事件 seq
+    reply_to_seq: Mapped[int | None] = mapped_column(BigInt, nullable=True)
 
 
 class AgentArtifact(Base, TimestampMixin):

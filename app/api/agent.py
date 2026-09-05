@@ -420,7 +420,7 @@ async def agent_run_chat(
         # 长驻 REPL 抢同一会话。mode=queue（默认）排队下一轮处理；mode=steer 插话——
         # 下一个工具调用后注入改方向提示，不打断当前步骤。
         mode = "steer" if str(body.get("mode") or "") == "steer" else "queue"
-        await queue_chat_message(session, task, message, mode)
+        queue_result = await queue_chat_message(session, task, message, mode)
         if mode == "steer":
             hint = "插话已注入：主会话在下一步工具调用后会看到并调整方向（不打断当前步骤）。"
         else:
@@ -430,6 +430,8 @@ async def agent_run_chat(
             "mode": mode,
             "reply": None,
             "session_id": (task.result or {}).get("session_id"),
+            "message_id": queue_result.get("message_id"),
+            "status": "queued",
             "message": hint,
         }
     try:

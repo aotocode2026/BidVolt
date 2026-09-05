@@ -73,6 +73,23 @@ async def latest_score(
     if score is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="尚未评标")
     run = await session.get(ReviewRun, score.review_run_id) if score.review_run_id else None
+    from app.models.deliverable import Deliverable
+
+    current_deliverables = (
+        await session.scalars(
+            select(Deliverable).where(
+                Deliverable.enterprise_id == user.enterprise_id,
+                Deliverable.project_id == project_id,
+            )
+        )
+    ).all()
+    current_versions = {d.id: d.current_version_no for d in current_deliverables}
+    frozen_versions = score.deliverable_versions or {}
+    stale_reasons = [
+        {"deliverable_id": did, "scored_version": scored, "current_version": current_versions.get(did)}
+        for did, scored in frozen_versions.items()
+        if current_versions.get(did) is not None and current_versions.get(did) != scored
+    ]
     return {
         "score_id": score.id,
         "review_run_id": score.review_run_id,
@@ -81,6 +98,9 @@ async def latest_score(
         "missing_count": score.missing_count,
         "improvable": float(score.improvable) if score.improvable is not None else None,
         "detail": score.detail,
+        "deliverable_versions": frozen_versions,
+        "is_stale": bool(stale_reasons),
+        "stale_reasons": stale_reasons,
         # 评分基准（Issue #8）：scale=score_rules 按招标评分细则打分；builtin=内置完整性规则
         "scale": (score.detail or {}).get("scale", "builtin"),
         "full_marks": (score.detail or {}).get("full_marks"),
