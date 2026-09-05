@@ -70,6 +70,7 @@ class ScoreRecord(Base, TimestampMixin):
     missing_count: Mapped[int] = mapped_column(BigInt, nullable=False, default=0)
     improvable: Mapped[float | None] = mapped_column(Numeric(6, 2))
     detail: Mapped[dict | None] = mapped_column(JSONType)
+    deliverable_versions: Mapped[dict | None] = mapped_column(JSONType)
 
 
 class ReviewItem(Base, TimestampMixin):
