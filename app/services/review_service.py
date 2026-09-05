@@ -275,6 +275,7 @@ async def run_evaluation(
         total_score=overall,
         missing_count=missing_count,
         improvable=round(sum(d["improvable"] for d in items_data), 2),
+        deliverable_versions=input_refs["deliverable_versions"],
         detail={
             "items_count": len(items_data),
             "score_rules": score_rule_stats,
