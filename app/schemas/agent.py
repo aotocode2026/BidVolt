@@ -21,6 +21,7 @@ class AgentArtifactSummary(BaseModel):
     bytes: int
     version_no: int
     is_internal: bool
+    status: str
     created_at: datetime
     updated_at: datetime
     download_url: str
@@ -51,6 +52,7 @@ class AgentArtifactInspect(BaseModel):
     bytes: int
     version_no: int
     is_internal: bool
+    status: str
     created_at: datetime
     updated_at: datetime
     download_url: str
