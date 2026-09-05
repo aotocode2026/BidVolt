@@ -595,6 +595,7 @@ async def replace_artifact_file(
     else:
         raise ValueError("仅支持 docx/xlsx/pdf 产物覆盖")
     art.content = data
+    art.version_no = int(art.version_no or 0) + 1
     await session.commit()
     await _set_rls_context(session, enterprise_id)
     return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "replaced": True}
@@ -1112,41 +1113,66 @@ async def package_zip(
     }
 
 
+def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
+    """生成产物清单/详情共用的稳定元数据。"""
+    name = str(art.name or "")
+    parts = name.split("/", 1)
+    group = parts[0] if len(parts) > 1 else ""
+    filename = parts[-1]
+    return {
+        "artifact_id": int(art.id),
+        "project_id": int(project_id),
+        "task_id": int(art.task_id),
+        "kind": art.kind,
+        "name": name,
+        "group": group,
+        "filename": filename,
+        "mime": art.mime,
+        "bytes": len(art.content or b""),
+        "version_no": int(art.version_no or 0) or 1,
+        "is_internal": group.startswith("内部管理文件"),
+        "created_at": art.created_at.isoformat() if art.created_at else None,
+        "updated_at": art.updated_at.isoformat() if art.updated_at else None,
+        "download_url": f"/api/v1/projects/{int(project_id)}/agent-artifact/{int(art.id)}/download",
+    }
+
+
 async def list_artifacts(
     session: AsyncSession,
     enterprise_id: int,
     project_id: int,
-    task_id: int,
+    task_id: int | None = None,
+    page: int = 1,
+    size: int = 100,
 ) -> dict:
-    """产物清单（产物自检）：本任务已封存的全部产物（条目 docx/报价单 xlsx/响应包 zip）。"""
+    """产物清单（产物自检/正式成果目录）：可按任务过滤并分页。
+
+    task_id 为空时列出项目全部产物，供普通用户渲染正式成果目录；
+    主会话/MCP 调用时按 capability 中的 task_id 继续查看本任务产物。
+    """
     from sqlalchemy import select as sa_select
 
     from app.models.agent import AgentArtifact
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     await _set_rls_context(session, enterprise_id)
-    rows = (
-        await session.scalars(
-            sa_select(AgentArtifact)
-            .where(
-                AgentArtifact.enterprise_id == enterprise_id,
-                AgentArtifact.project_id == int(project_id),
-                AgentArtifact.task_id == int(task_id),
-            )
-            .order_by(AgentArtifact.id)
-        )
-    ).all()
+    stmt = sa_select(AgentArtifact).where(
+        AgentArtifact.enterprise_id == enterprise_id,
+        AgentArtifact.project_id == int(project_id),
+    )
+    if task_id is not None:
+        stmt = stmt.where(AgentArtifact.task_id == int(task_id))
+    stmt = stmt.order_by(AgentArtifact.id.desc())
+    rows = (await session.scalars(stmt)).all()
+    total = len(rows)
+    start = max((int(page) - 1) * int(size), 0)
+    end = start + int(size)
+    page_rows = rows[start:end]
     return {
-        "artifacts": [
-            {
-                "artifact_id": a.id,
-                "kind": a.kind,
-                "name": a.name,
-                "bytes": len(a.content or b""),
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-            }
-            for a in rows
-        ]
+        "artifacts": [_artifact_meta(a, project_id) for a in page_rows],
+        "total": total,
+        "page": int(page),
+        "size": int(size),
     }
 
 
@@ -1154,7 +1180,7 @@ async def inspect_artifact(
     session: AsyncSession,
     enterprise_id: int,
     project_id: int,
-    task_id: int,
+    task_id: int | None,
     artifact_id: int,
 ) -> dict:
     """产物自检：预览已封存产物的内容（docx 文本/修订残留计数/待补充计数；xlsx 表格预览；zip 文件清单），
@@ -1168,22 +1194,17 @@ async def inspect_artifact(
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     await _set_rls_context(session, enterprise_id)
-    art = await session.scalar(
-        sa_select(AgentArtifact).where(
-            AgentArtifact.id == int(artifact_id),
-            AgentArtifact.enterprise_id == enterprise_id,
-            AgentArtifact.project_id == int(project_id),
-            AgentArtifact.task_id == int(task_id),
-        )
+    stmt = sa_select(AgentArtifact).where(
+        AgentArtifact.id == int(artifact_id),
+        AgentArtifact.enterprise_id == enterprise_id,
+        AgentArtifact.project_id == int(project_id),
     )
+    if task_id is not None:
+        stmt = stmt.where(AgentArtifact.task_id == int(task_id))
+    art = await session.scalar(stmt)
     if art is None:
         raise ValueError("产物不存在或不属于本任务")
-    base = {
-        "artifact_id": art.id,
-        "kind": art.kind,
-        "name": art.name,
-        "bytes": len(art.content or b""),
-    }
+    base = _artifact_meta(art, project_id)
     if art.kind == "item_docx":
         import re as _re
 

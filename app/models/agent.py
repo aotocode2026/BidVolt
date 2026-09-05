@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, LargeBinary, SmallInteger, String, Text
+from datetime import datetime
+
+from sqlalchemy import JSON, DateTime, LargeBinary, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, BigInt, TimestampMixin
@@ -36,6 +38,14 @@ class AgentArtifact(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     mime: Mapped[str] = mapped_column(String(120), nullable=False, default="application/octet-stream")
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, default=b"")
+    # 覆盖修改时递增；初次封存为 1。artifact_id 保持稳定，版本号用于前端识别内容变化。
+    version_no: Mapped[int] = mapped_column(BigInt, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 class AgentCustomerAsk(Base, TimestampMixin):
