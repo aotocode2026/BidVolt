@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
@@ -1063,17 +1064,47 @@ async def package_zip(
                 k += 1
             seen.add(name)
             zf.writestr(name, a.content)
-            files_manifest.append({"name": name, "bytes": len(a.content)})
+            files_manifest.append(
+                {
+                    "name": name,
+                    "source_artifact_id": int(a.id),
+                    "source_kind": a.kind,
+                    "version_no": int(a.version_no or 0) or 1,
+                    "mime": a.mime,
+                    "bytes": len(a.content),
+                    "sha256": _sha256(a.content),
+                }
+            )
         # 主会话全程记录（纯代码生成：完整版 + 精简版都由服务端从事件库渲染，主会话不感知）
         task = await session.scalar(sa_select(Task).where(Task.id == int(task_id)))
         if task is not None:
             try:
                 record = await agent_pipeline.session_record_markdown(session, task)
                 zf.writestr("会话记录/主会话记录.md", record.encode("utf-8"))
-                files_manifest.append({"name": "会话记录/主会话记录.md", "bytes": len(record.encode("utf-8"))})
+                files_manifest.append(
+                    {
+                        "name": "会话记录/主会话记录.md",
+                        "source_artifact_id": None,
+                        "source_kind": "session_record",
+                        "version_no": 1,
+                        "mime": "text/markdown",
+                        "bytes": len(record.encode("utf-8")),
+                        "sha256": _sha256(record.encode("utf-8")),
+                    }
+                )
                 condensed = agent_pipeline.condense_session_markdown(record)
                 zf.writestr("会话记录/主会话记录-精简版.md", condensed.encode("utf-8"))
-                files_manifest.append({"name": "会话记录/主会话记录-精简版.md", "bytes": len(condensed.encode("utf-8"))})
+                files_manifest.append(
+                    {
+                        "name": "会话记录/主会话记录-精简版.md",
+                        "source_artifact_id": None,
+                        "source_kind": "session_record",
+                        "version_no": 1,
+                        "mime": "text/markdown",
+                        "bytes": len(condensed.encode("utf-8")),
+                        "sha256": _sha256(condensed.encode("utf-8")),
+                    }
+                )
             except Exception:  # noqa: BLE001 会话记录缺失不影响打包主体
                 logger.warning("打包附会话记录失败", exc_info=True)
 
@@ -1113,6 +1144,10 @@ async def package_zip(
     }
 
 
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
     """生成产物清单/详情共用的稳定元数据。"""
     name = str(art.name or "")
@@ -1133,6 +1168,7 @@ def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
         "is_internal": group.startswith("内部管理文件"),
         "created_at": art.created_at.isoformat() if art.created_at else None,
         "updated_at": art.updated_at.isoformat() if art.updated_at else None,
+        "status": "packaged" if art.kind == "zip" else "ready",
         "download_url": f"/api/v1/projects/{int(project_id)}/agent-artifact/{int(art.id)}/download",
     }
 
@@ -1265,6 +1301,13 @@ async def inspect_artifact(
     elif art.kind == "zip":
         with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
             base["entries"] = [{"name": n, "bytes": zf.getinfo(n).file_size} for n in zf.namelist()]
+            if "manifest.json" in zf.namelist():
+                import json as _json
+
+                try:
+                    base["manifest"] = _json.loads(zf.read("manifest.json").decode("utf-8"))
+                except Exception as exc:  # noqa: BLE001
+                    base["manifest_error"] = f"manifest.json 解析失败：{exc}"
     else:
         base["note"] = "该产物类型无结构化预览"
     return base
