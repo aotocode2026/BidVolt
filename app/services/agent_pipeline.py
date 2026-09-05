@@ -24,6 +24,7 @@ import asyncio
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1602,7 +1603,7 @@ async def _event_tail(session: AsyncSession, task: Task, limit: int) -> str:
     return "\n".join(r.content or "" for r in reversed(rows))[-limit:]
 
 
-async def queue_chat_message(session: AsyncSession, task: Task, message: str, mode: str = "queue") -> None:
+async def queue_chat_message(session: AsyncSession, task: Task, message: str, mode: str = "queue") -> dict:
     """运行中的任务：把客户消息追加进任务字段 + 事件流（runner 泵循环取出后经 PTY 注入）。
 
     mode：queue=排队（下一轮处理，/queue 注入）；steer=插话（下一个工具调用后注入
@@ -1627,6 +1628,11 @@ async def queue_chat_message(session: AsyncSession, task: Task, message: str, mo
     seq = [await _next_seq(session, task)]
     await _append_events(session, task, seq, [("user", message)])
     await session.commit()
+    return {
+        "message_id": seq[0],
+        "status": "queued",
+        "mode": mode,
+    }
 
 
 async def chat_with_session(session: AsyncSession, task: Task, message: str) -> dict:
@@ -1681,7 +1687,14 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
             await _refresh_zip_record(session, task)
         except Exception:  # noqa: BLE001
             logger.warning("chat 后刷新会话记录失败（task=%s）", task.id, exc_info=True)
-        return {"reply": reply, "session_id": sid, "returncode": proc.returncode}
+        return {
+            "reply": reply,
+            "session_id": sid,
+            "returncode": proc.returncode,
+            "message_id": seq[0],
+            "reply_to_message_id": seq[0],
+            "status": "processed",
+        }
 
 
 def _strip_session_trailer(raw: str) -> str:
@@ -1755,7 +1768,13 @@ async def pre_chat(session: AsyncSession, project, message: str) -> dict:
             sid = m.group(1)
             project.pre_chat_session_id = sid
             await session.commit()
-        return {"reply": reply, "session_id": sid, "returncode": proc.returncode}
+        return {
+            "reply": reply,
+            "session_id": sid,
+            "returncode": proc.returncode,
+            "message_id": str(uuid.uuid4()),
+            "status": "processed",
+        }
 
 
 _KIND_TITLES = {
