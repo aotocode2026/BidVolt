@@ -21,17 +21,7 @@ def upgrade() -> None:
         "agent_artifact",
         sa.Column("version_no", sa.BigInteger(), nullable=False, server_default="1"),
     )
-    op.add_column(
-        "agent_artifact",
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-    )
 
 
 def downgrade() -> None:
-    op.drop_column("agent_artifact", "updated_at")
     op.drop_column("agent_artifact", "version_no")
