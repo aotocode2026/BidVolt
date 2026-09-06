@@ -25,6 +25,7 @@ from app.services.enterprise_service import (
 from app.services.enterprise_service import (
     ensure_asset_categories as _ensure_categories,
 )
+from app.services.asset_classification_service import classify_asset_with_ai
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 
@@ -207,7 +208,9 @@ async def trigger_ingest(
         asset = await session.get(EnterpriseAsset, asset_id)
         if asset is None or asset.enterprise_id != user.enterprise_id:
             continue
-        category, facts = _classify(asset.name)
+        ai = await classify_asset_with_ai(session, asset)
+        category = ai["category"]
+        _, facts = _classify(asset.name)
         asset.category_id = categories.get(category)
         asset.asset_type = category
         asset.status = 2  # 待确认
@@ -229,7 +232,15 @@ async def trigger_ingest(
                     status=1,
                 )
             )
-        classified.append({"asset_id": asset.id, "category": category, "confidence": 0.8})
+        classified.append(
+            {
+                "asset_id": asset.id,
+                "category": category,
+                "confidence": ai.get("confidence", 0.8),
+                "source": ai.get("source", "unknown"),
+                "evidence": ai.get("evidence"),
+            }
+        )
 
     task.status = int(TaskStatus.DONE)
     task.result = {"classified": classified}
@@ -276,7 +287,9 @@ async def classify_enterprise_asset(
     if task is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非企业资料导入任务，拒绝分类")
 
-    category, facts = _classify(asset.name)
+    ai = await classify_asset_with_ai(session, asset)
+    category = ai["category"]
+    _, facts = _classify(asset.name)
     categories = await _ensure_categories(session, user.enterprise_id)
     asset.category_id = categories.get(category)
     asset.asset_type = category
@@ -302,7 +315,14 @@ async def classify_enterprise_asset(
         payload={"task_id": task.id, "category": category},
     )
     await session.commit()
-    return {"asset_id": asset.id, "category": category, "confidence": 0.8, "status": 2}
+    return {
+        "asset_id": asset.id,
+        "category": category,
+        "confidence": ai.get("confidence", 0.8),
+        "source": ai.get("source", "unknown"),
+        "evidence": ai.get("evidence"),
+        "status": 2,
+    }
 
 
 @router.post("/assets/{asset_id}/facts", status_code=status.HTTP_201_CREATED)
