@@ -3,6 +3,49 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2345-fix-worker-greenlet-hardening"></a>
+
+## 2026-09-07 23:45 · fix · worker 泵循环 MissingGreenlet 自愈与悬挂事务加固
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2345-fix-worker-greenlet-hardening |
+| datetime | 2026-09-07T23:45:28+08:00 |
+| type | fix |
+| status | in_progress |
+| scope | worker, agent |
+| related | issue #25, discussion #15 |
+
+### 为什么做这次更新
+
+服务器日志显示两类问题：worker 循环出现 `MissingGreenlet("greenlet_spawn has not been called…")`（主泵会话被取消/毒化后，错误处理路径继续在同一会话上回滚/读取而二次抛出）；锁链破坏器反复观察到一个 `idle in transaction` 的悬挂事务（最后语句 `SELECT max(agent_session_event.seq)`，即事件冲刷超时取消提交后遗留的悬挂行锁），观察日志每 60 秒刷屏。
+
+### 具体做了什么
+
+- `worker_loop` 捕获 `MissingGreenlet` 时 `engine.dispose()` 重置连接池自愈，避免坏连接逐轮复现。
+- `run_task` 错误/中断路径：主会话回滚失败时改用独立短命会话直写失败/重试状态（状态机确定性落库），不再二次抛出 MissingGreenlet。
+- 事件冲刷（`_flush`）超时取消后显式 `rollback` + `close`，杜绝 `idle in transaction` 悬挂行锁。
+- 锁链破坏器：终止持有 `task` 或 `agent_session_event` 行锁且 `idle in transaction` 超 3 分钟的会话；悬挂观察日志按变化去重，不再每轮刷屏。
+- 新增回归测试：handler 抛 `MissingGreenlet` 时任务正确重新入队、worker 不崩。
+
+### 影响范围
+
+- worker 主循环、任务执行错误路径、事件冲刷与会话锁链自愈。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；纯运行时加固。
+
+### 验证方式
+
+- 新增 1 个回归测试通过；全量测试 324 passed（3 个失败为既有环境问题，与本次无关）。
+- 服务器部署后重启 app/worker；worker 日志无新 MissingGreenlet，锁链观察日志不再刷屏。
+- GitHub 提交：`4f0df2e`。
+
+### 回滚方式
+
+回退提交 `4f0df2e`，重启 worker。
+
 <a id="2026-09-07-2332-feat-artifact-file-health"></a>
 
 ## 2026-09-07 23:32 · feat · 产物详情增加文件健康信号并优雅降级损坏文件
