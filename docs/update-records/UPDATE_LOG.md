@@ -3,6 +3,47 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2332-feat-artifact-file-health"></a>
+
+## 2026-09-07 23:32 · feat · 产物详情增加文件健康信号并优雅降级损坏文件
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2332-feat-artifact-file-health |
+| datetime | 2026-09-07T23:32:03+08:00 |
+| type | feat |
+| status | in_progress |
+| scope | assembly, artifacts |
+| related | issue #24, discussion #1 |
+
+### 为什么做这次更新
+
+用户反馈“编制逻辑与评分响应记录.docx”在成果目录中打开报错。核验确认该文件（项目 207 artifact 938）本身完全有效：正确 MIME、zip 17 条目无损、`word/document.xml` 正常、3017 字符正文，LibreOffice 可直接渲染为 PDF——预览失败属于前端预览层问题，不是后端文件问题。为了让这类问题今后可自证并让前端能区分“文件损坏”与“预览失败”，产物详情接口增加文件健康信号，损坏文件优雅降级。
+
+### 具体做了什么
+
+- `inspect_agent_artifact` 返回 `file_health`：`bytes/mime/kind/readable/zip_ok/document_xml_ok/text_chars/sheets/entries/error`。
+- 文件损坏时如实返回 `readable=false` 与错误原因，不再抛 500；前端可据此决定“下载原文件兜底”还是“预览层问题”。
+- 新增 2 个回归测试：正常 docx 健康信号、损坏 docx 优雅降级。
+
+### 影响范围
+
+- `GET /projects/{project_id}/assembly/artifacts/{artifact_id}/inspect` 响应契约（新增 `file_health`）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；纯响应增量字段。
+
+### 验证方式
+
+- 新增 2 个回归测试通过；全量测试 323 passed（3 个失败为既有环境问题，与本次无关）。
+- 服务器部署后重启 app/worker；项目 207 artifact 938 详情返回 `file_health.readable=true`。
+- GitHub 提交：`5fa1061`。
+
+### 回滚方式
+
+回退提交 `5fa1061`，重启 app、worker。
+
 <a id="2026-09-07-2322-fix-upload-batch-subfiles"></a>
 
 ## 2026-09-07 23:22 · fix · 上传批次补齐 ZIP 子文件关联与逐文件解析状态

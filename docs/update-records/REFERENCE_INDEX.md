@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-07 23:32 | #1 | discussion | [产物详情增加文件健康信号并优雅降级损坏文件](UPDATE_LOG.md#2026-09-07-2332-feat-artifact-file-health) |
+| 2026-09-07 23:32 | #24 | issue | [产物详情增加文件健康信号并优雅降级损坏文件](UPDATE_LOG.md#2026-09-07-2332-feat-artifact-file-health) |
 | 2026-09-07 23:22 | #1 | discussion | [上传批次补齐 ZIP 子文件关联与逐文件解析状态](UPDATE_LOG.md#2026-09-07-2322-fix-upload-batch-subfiles) |
 | 2026-09-07 23:22 | #16 | discussion | [上传批次补齐 ZIP 子文件关联与逐文件解析状态](UPDATE_LOG.md#2026-09-07-2322-fix-upload-batch-subfiles) |
 | 2026-09-07 23:22 | #23 | issue | [上传批次补齐 ZIP 子文件关联与逐文件解析状态](UPDATE_LOG.md#2026-09-07-2322-fix-upload-batch-subfiles) |
