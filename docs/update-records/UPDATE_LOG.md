@@ -3,6 +3,53 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2300-feat-artifact-logical-versions"></a>
+
+## 2026-09-07 23:00 · feat · 正式文件逻辑版本链与覆盖历史
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2300-feat-artifact-logical-versions |
+| datetime | 2026-09-07T23:00:42+08:00 |
+| type | feat |
+| status | in_progress |
+| scope | assembly, artifacts |
+| related | issue #21, discussion #13, discussion #16 |
+
+### 为什么做这次更新
+
+`POST /assembly/artifacts/{id}/save` 的 `mode=new` 只新建一个独立 artifact 并从 V1 开始，无法表达“同一逻辑文件的历史版本链”；`mode=overwrite` 直接替换内容，覆盖前内容没有任何接口可读。前端无法确认“另存后的旧版在哪、覆盖前的内容能否找回”。
+
+### 具体做了什么
+
+- `agent_artifact` 增加 `logical_file_id`（同一逻辑文件不变）、`parent_artifact_id`（另存自哪个 artifact）、`logical_version_no`（逻辑文件下递增）。
+- 新增 `agent_artifact_content_version` 归档表（迁移 `0030`，含 RLS）：覆盖保存前把当前版本内容落历史，覆盖后可回读。
+- `save` 接口：`mode=new` 继承逻辑文件身份（`logical_version_no=原版本+1`，`parent_artifact_id=原 artifact`），旧版保留可下载；`mode=overwrite` 归档当前内容后递增 `version_no`，并初始化逻辑文件根身份。
+- 新增 `GET /assembly/artifacts/{id}/versions`（同一逻辑文件版本链列表）与 `GET /agent-artifact/{id}/versions/{n}/download`（指定版本内容下载）。
+- 产物清单/详情响应增加 `logical_file_id`、`logical_version_no`、`parent_artifact_id`。
+- 下载响应头改用 RFC 5987 `filename*`（修复中文文件名撞 latin-1 头编码导致 500 的问题，`download_artifact` 同步修复）。
+
+### 影响范围
+
+- `POST /assembly/artifacts/{id}/save` 响应契约（新增逻辑版本字段）。
+- 产物清单/详情契约；新增两个版本查询接口。
+- `agent_artifact`、`agent_artifact_content_version` 表与迁移 `0030`。
+
+### 迁移 / 破坏性变更
+
+- 新增迁移 `0030`（3 个字段 + 归档表 + RLS）；存量产物逻辑字段为空，代码按“自身为根、逻辑版本 1”解释，无需回填。
+- 所有新增字段/接口为增量，旧字段保持不变。
+
+### 验证方式
+
+- 新增 3 个回归测试通过；全量测试 318 passed（3 个失败为既有环境问题，与本次无关）。
+- 服务器部署后：`alembic upgrade head` 到 `0030`，重启 app/worker；另存/覆盖/历史下载流程可复验。
+- GitHub 提交：`aae2676`。
+
+### 回滚方式
+
+回退提交 `aae2676`，`alembic downgrade 0029`（如需移除归档表与字段），重启 app、worker。
+
 <a id="2026-09-07-2246-fix-stream-replay-prechat"></a>
 
 ## 2026-09-07 22:46 · fix · 修复长历史补读截断并持久化 pre_chat 消息

@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-07 23:00 | #13 | discussion | [正式文件逻辑版本链与覆盖历史](UPDATE_LOG.md#2026-09-07-2300-feat-artifact-logical-versions) |
+| 2026-09-07 23:00 | #16 | discussion | [正式文件逻辑版本链与覆盖历史](UPDATE_LOG.md#2026-09-07-2300-feat-artifact-logical-versions) |
+| 2026-09-07 23:00 | #21 | issue | [正式文件逻辑版本链与覆盖历史](UPDATE_LOG.md#2026-09-07-2300-feat-artifact-logical-versions) |
 | 2026-09-07 22:46 | #1 | discussion | [修复长历史补读截断并持久化 pre_chat 消息](UPDATE_LOG.md#2026-09-07-2246-fix-stream-replay-prechat) |
 | 2026-09-07 22:46 | #15 | discussion | [修复长历史补读截断并持久化 pre_chat 消息](UPDATE_LOG.md#2026-09-07-2246-fix-stream-replay-prechat) |
 | 2026-09-07 22:46 | #20 | issue | [修复长历史补读截断并持久化 pre_chat 消息](UPDATE_LOG.md#2026-09-07-2246-fix-stream-replay-prechat) |
