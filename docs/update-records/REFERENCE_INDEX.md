@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-07 21:57 | #1 | discussion | [补齐聊天消息关联、幂等与异常处理](UPDATE_LOG.md#2026-09-07-2157-fix-agent-chat-contract) |
+| 2026-09-07 21:57 | #15 | discussion | [补齐聊天消息关联、幂等与异常处理](UPDATE_LOG.md#2026-09-07-2157-fix-agent-chat-contract) |
+| 2026-09-07 21:57 | #19 | issue | [补齐聊天消息关联、幂等与异常处理](UPDATE_LOG.md#2026-09-07-2157-fix-agent-chat-contract) |
 | 2026-09-07 16:40 | #18 | issue | [AI 企业资产分类与人工确认闭环](UPDATE_LOG.md#2026-09-07-1640-feat-ai-enterprise-asset-classification) |
 | 2026-09-05 20:19 | #1 | discussion | [实现 Office 正式文件远端保存与版本管理](UPDATE_LOG.md#2026-09-05-2019-fix-office-remote-save) |
 | 2026-09-05 20:19 | #1 | discussion | [补齐 Agent 聊天消息状态与回复关联契约](UPDATE_LOG.md#2026-09-05-2019-fix-chat-message-contract) |

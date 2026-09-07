@@ -3,6 +3,53 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2157-fix-agent-chat-contract"></a>
+
+## 2026-09-07 21:57 · fix · 补齐聊天消息关联、幂等与异常处理
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2157-fix-agent-chat-contract |
+| datetime | 2026-09-07T21:57:33+08:00 |
+| type | fix |
+| status | in_progress |
+| scope | agent, chat |
+| related | issue #19, discussion #1, discussion #15 |
+
+### 为什么做这次更新
+
+项目 207 用户在任务完成后隔两天重进并发消息，出现长时间等待；最终回复是原始 Hermes 控制台输出（含 Reasoning 思考过程与 resume 横幅），而不是业务答复。数据库核对显示全部聊天事件 `reply_to_seq` / `client_message_id` 均为空，`message_id` 与 `reply_to_message_id` 同值，前端无法可靠关联消息与回复，重试也无法去重。
+
+### 具体做了什么
+
+- `chat_with_session`：user 事件与 hermes 回复事件分别取 seq，返回 `message_id=user_seq`、`reply_to_message_id=reply_seq`；回复事件写入 `reply_to_seq`。
+- `POST /agent-run/{task_id}/chat` 与排队消息支持 `client_message_id`（≤100 字符）：同一标识只写入一条 user 事件；重试直接回放已有回复/失败结果，不重复执行（`duplicate=true`）。
+- 运行异常不再冒充正常回复：Hermes 退出码非 0 返回 `status=failed`；输出为空或仅剩运行提示返回 `status=no_valid_reply`；超时写入 error 事件（`reply_to_seq` 关联本消息）后仍返回 409。
+- `_clean_reply` 统一清洗回复：去 ANSI、Reasoning 框、会话尾注、框线与状态条噪音。
+- `deploy/install-hermes.sh` 默认 `display.show_reasoning=false`，从源头关闭 Reasoning 复盘框。
+- 新增 `tests/unit/test_agent_chat.py`（7 个用例）：回复清洗、`client_message_id` 去重、结果/失败回放。
+
+### 影响范围
+
+- `POST /projects/{project_id}/agent-run/{task_id}/chat` 请求/响应契约。
+- 聊天事件表写入语义（`client_message_id`、`reply_to_seq`）。
+- Hermes 配置（`display.show_reasoning`，需执行 `deploy/install-hermes.sh` 或 `hermes config set` 后生效）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移（`0028` 已含 `client_message_id` / `reply_to_seq` 字段）。
+- 响应新增 `status`（queued/processing/processed/failed/no_valid_reply）、`error`、`duplicate` 字段；原有 `message`/`reply`/`session_id`/`message_id` 字段保留，前端旧逻辑不受影响。
+
+### 验证方式
+
+- 新增 7 个单元测试通过；全量测试 312 passed（3 个失败为既有环境问题：SQLite 全新迁移链缺 `agent_artifact` 建表、LibreOffice 容器转换失败，原始代码同样失败，与本次改动无关）。
+- 服务器部署后：重启 app、worker，设置 Hermes `display.show_reasoning=false`；项目 207 续聊回复不再含 Reasoning/横幅，且 `message_id ≠ reply_to_message_id`。
+- GitHub 提交：`731e26e`（行尾规范化）、`1bc8da0`（本修复）。
+
+### 回滚方式
+
+回退提交 `1bc8da0`（若需一并恢复行尾则回退 `731e26e`），重启 app、worker。
+
 <a id="2026-09-07-1640-feat-ai-enterprise-asset-classification"></a>
 
 ## 2026-09-07 16:40 · feat · AI 企业资产分类与人工确认闭环
