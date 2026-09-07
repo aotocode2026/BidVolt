@@ -12,7 +12,7 @@
 | id | 2026-09-07-2345-fix-worker-greenlet-hardening |
 | datetime | 2026-09-07T23:45:28+08:00 |
 | type | fix |
-| status | in_progress |
+| status | released |
 | scope | worker, agent |
 | related | issue #25, discussion #15 |
 
@@ -39,8 +39,8 @@
 ### 验证方式
 
 - 新增 1 个回归测试通过；全量测试 324 passed（3 个失败为既有环境问题，与本次无关）。
-- 服务器部署后重启 app/worker；worker 日志无新 MissingGreenlet，锁链观察日志不再刷屏。
-- GitHub 提交：`4f0df2e`。
+- 服务器已部署（2026-09-07）：HEAD `4c0f32f`，无迁移（`alembic current=0032 (head)`），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok；worker 日志无新 MissingGreenlet，锁链观察日志不再刷屏。
+- GitHub 提交：`4f0df2e`（代码）、`4c0f32f`（文档）。
 
 ### 回滚方式
 
