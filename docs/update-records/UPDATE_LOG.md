@@ -3,6 +3,49 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2322-fix-upload-batch-subfiles"></a>
+
+## 2026-09-07 23:22 · fix · 上传批次补齐 ZIP 子文件关联与逐文件解析状态
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2322-fix-upload-batch-subfiles |
+| datetime | 2026-09-07T23:22:44+08:00 |
+| type | fix |
+| status | in_progress |
+| scope | files, upload |
+| related | issue #23, discussion #1, discussion #16 |
+
+### 为什么做这次更新
+
+`GET /files/batches/{batch_id}` 只有“本次上传的原件”条目，ZIP 自动解包出的子文件没有对应批次条目，前端无法逐个看到子文件的来源压缩包、包内路径与解析状态；失败项只有汇总数量，没有可读原因。
+
+### 具体做了什么
+
+- `upload_batch_item` 增加 `source_archive_file_id`（来源压缩包）、`archive_path`（包内相对路径）、`parse_status`（parsing/done/failed），迁移 `0032`。
+- 上传 zip 自动解包后，为每个成功子文件、失败项、重复项各写一条批次条目；子文件条目带来源压缩包与包内路径，失败项带可读原因。
+- 普通上传文件条目也记录解析状态；`GET /files/batches/{batch_id}` 按当前 `FileObject.status` 实时回读解析状态（刷新后反映最新进度）。
+- 新增回归测试：zip 解包批次含原件与子文件条目，来源与解析状态正确。
+
+### 影响范围
+
+- `GET /files/batches/{batch_id}` 响应契约（items 新增 `source_archive_file_id`/`archive_path`/`parse_status`）。
+- `upload_batch_item` 表与迁移 `0032`。
+
+### 迁移 / 破坏性变更
+
+- 新增迁移 `0032`（3 个字段）；全部为增量字段，旧条目无值即为空，前端可兼容。
+
+### 验证方式
+
+- 新增 1 个回归测试通过；全量测试 321 passed（3 个失败为既有环境问题，与本次无关）。
+- 服务器部署后：`alembic upgrade head` 到 `0032`，重启 app/worker；上传含多个文件的 zip 后批次可逐个看到子文件状态。
+- GitHub 提交：`362fae4`。
+
+### 回滚方式
+
+回退提交 `362fae4`，`alembic downgrade 0031`（如需移除字段），重启 app、worker。
+
 <a id="2026-09-07-2312-fix-score-artifact-binding"></a>
 
 ## 2026-09-07 23:12 · fix · 评分与报价绑定正式 artifact 版本并修复键类型比对
