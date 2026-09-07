@@ -285,13 +285,14 @@ async def _lock_breaker_loop(task_id: int) -> None:
     主循环里任何一处无超时的数据库等待（FOR UPDATE 等锁/连接获取）都会让
     整轮永久冻结——若破坏器也写在主循环里，冻结时它永远轮不到执行，锁链
     就成死锁。因此独立成 task：每 60s 自检一次，任务离开 RUNNING 即自退。
-    只杀「idle in transaction 超 3 分钟且持有 task 行锁」的后端（挂起事务
-    持锁者）；无锁滞留事务仅记录不杀（R9 误杀自身连接六连崩教训）。
+    只杀「idle in transaction 超 3 分钟且持有 task / agent_session_event 行锁」
+    的后端（挂起事务持锁者）；无锁滞留事务仅记录不杀（R9 误杀自身连接六连崩教训）。
     全部 DB 操作带超时，自身故障静默自愈。"""
     from sqlalchemy import text as _sa_text
 
     from app.db import SessionLocal as _WD  # noqa: PLC0415
 
+    _last_idle_pids: set[int] = set()
     while True:
         await asyncio.sleep(60)
         try:
@@ -316,17 +317,22 @@ async def _lock_breaker_loop(task_id: int) -> None:
                     timeout=20,
                 )
                 _idle_rows = _idle.fetchall()
-                if _idle_rows:
+                _idle_pids = {int(p) for (p, _a, _q) in _idle_rows}
+                if _idle_rows and _idle_pids != _last_idle_pids:
+                    _last_idle_pids = _idle_pids
                     logger.warning(
                         "悬挂事务观察（task=%s，独立破坏器）：%s",
                         task_id,
                         [(int(p), str(a), str(q)) for (p, a, q) in _idle_rows],
                     )
+                elif not _idle_rows:
+                    _last_idle_pids = set()
                 _blocked = await asyncio.wait_for(
                     _w.execute(
                         _sa_text(
                             "SELECT DISTINCT l.pid FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
-                            "WHERE l.relation = 'task'::regclass AND l.granted "
+                            "WHERE l.relation IN ('task'::regclass, 'agent_session_event'::regclass) "
+                            "AND l.granted "
                             "AND a.state = 'idle in transaction' "
                             "AND a.xact_start < now() - interval '3 minutes' "
                             "AND a.pid <> pg_backend_pid()"
@@ -912,13 +918,25 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 # 锁链破坏器——超时后放弃本次冲刷（batch 丢回 pending 下轮重试）。
                 from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
 
+                _sf = _PumpSessionLocal()
                 try:
-                    async with _PumpSessionLocal() as _sf:
+                    try:
                         await asyncio.wait_for(_append_events(_sf, task, seq, batch), timeout=30)
-                except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
-                    pending[:0] = batch  # 未确认写入：放回队首下轮重试
-                    logger.warning("事件冲刷超时（task=%s），batch 放回重试", task.id)
-                    raise
+                    except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
+                        pending[:0] = batch  # 未确认写入：放回队首下轮重试
+                        logger.warning("事件冲刷超时（task=%s），batch 放回重试", task.id)
+                        raise
+                finally:
+                    # 超时取消可能把提交留在 idle in transaction：显式回滚并关闭，
+                    # 绝不留悬挂行锁（独立破坏器观察到的 max(seq) 悬挂事务即此类）
+                    try:
+                        await _sf.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        await _sf.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
         try:
             while True:

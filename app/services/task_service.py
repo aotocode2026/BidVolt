@@ -226,17 +226,50 @@ async def run_task(
         task.finished_at = datetime.now(timezone.utc)
     except Exception as exc:  # noqa: BLE001
         # 回滚 handler 的部分写入，避免失败任务产生副作用（A-4 单事务原子性）
-        await session.rollback()
-        await session.refresh(task)
-        task.retry_count += 1
-        if task.retry_count >= MAX_RETRIES:
-            task.status = int(TaskStatus.FAILED_TERMINAL)
-            task.error = {"message": str(exc)}
-            task.finished_at = datetime.now(timezone.utc)
-            task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
-        else:
-            task.status = int(TaskStatus.QUEUED)
-            task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
+        _bookkeeping_ok = False
+        try:
+            await session.rollback()
+            await session.refresh(task)
+            _bookkeeping_ok = True
+        except Exception:  # noqa: BLE001 主会话被取消/毒化（MissingGreenlet）时回滚也失败
+            _bookkeeping_ok = False
+        if _bookkeeping_ok:
+            task.retry_count += 1
+            if task.retry_count >= MAX_RETRIES:
+                task.status = int(TaskStatus.FAILED_TERMINAL)
+                task.error = {"message": str(exc)}
+                task.finished_at = datetime.now(timezone.utc)
+                task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
+            else:
+                task.status = int(TaskStatus.QUEUED)
+                task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
+        elif session_factory is not None:
+            # 主会话毒化兜底：失败/重试状态经独立短命会话直写，状态机确定性落库
+            try:
+                async with session_factory() as _fs:
+                    await _set_rls_context(_fs, task.enterprise_id)
+                    _row = (
+                        await asyncio.wait_for(
+                            _fs.execute(
+                                select(Task).where(Task.id == task.id).with_for_update()
+                            ),
+                            timeout=30,
+                        )
+                    ).scalar_one()
+                    _row.retry_count = int(_row.retry_count or 0) + 1
+                    if _row.retry_count >= MAX_RETRIES:
+                        _row.status = int(TaskStatus.FAILED_TERMINAL)
+                        _row.error = {"message": str(exc)}
+                        _row.finished_at = datetime.now(timezone.utc)
+                        _row.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
+                    else:
+                        _row.status = int(TaskStatus.QUEUED)
+                        _row.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {_row.retry_count}/{MAX_RETRIES}"}
+                    _row.lease_owner = None
+                    _row.lease_expires_at = None
+                    await asyncio.wait_for(_fs.commit(), timeout=30)
+            except Exception:  # noqa: BLE001
+                logger_.exception("任务失败状态兜底写入也失败（task=%s）", task.id)
     finally:
         if heartbeat is not None:
             heartbeat.cancel()
@@ -244,17 +277,21 @@ async def run_task(
                 await heartbeat
         if task.status == int(TaskStatus.RUNNING) and lease_owner is not None:
             # 执行被中断（取消/停机），未走成功/失败路径：按失败计次，避免永久卡 RUNNING
-            await session.rollback()
-            task.retry_count += 1
-            now = datetime.now(timezone.utc)
-            if task.retry_count >= MAX_RETRIES:
-                task.status = int(TaskStatus.FAILED_TERMINAL)
-                task.error = {"message": "执行被中断且重试耗尽"}
-                task.finished_at = now
-                task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "执行被中断且重试耗尽，请人工处理"}
-            else:
+            try:
+                await session.rollback()
+                task.retry_count += 1
+                now = datetime.now(timezone.utc)
+                if task.retry_count >= MAX_RETRIES:
+                    task.status = int(TaskStatus.FAILED_TERMINAL)
+                    task.error = {"message": "执行被中断且重试耗尽"}
+                    task.finished_at = now
+                    task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "执行被中断且重试耗尽，请人工处理"}
+                else:
+                    task.status = int(TaskStatus.QUEUED)
+                    task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"执行被中断，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
+            except Exception:  # noqa: BLE001 主会话毒化时中断计次改由下方短命会话兜底
+                task.retry_count += 1
                 task.status = int(TaskStatus.QUEUED)
-                task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"执行被中断，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
         # 终态/重新入队后释放租约，避免过期后被重复回收
         if lease_owner is not None and task.lease_owner == lease_owner:
             task.lease_owner = None

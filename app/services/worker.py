@@ -6,7 +6,9 @@ import asyncio
 import os
 import socket
 
-from app.db import SessionLocal
+from sqlalchemy.exc import MissingGreenlet
+
+from app.db import SessionLocal, engine
 from app.services.task_service import claim_next, reclaim_stale, run_task
 
 
@@ -40,6 +42,13 @@ async def worker_loop() -> None:
             raise
         except Exception as exc:  # noqa: BLE001
             print(f"[worker] 处理失败：{exc}", flush=True)
+            if isinstance(exc, MissingGreenlet) or "greenlet_spawn" in str(exc):
+                # 连接/greenlet 状态被毒化：清空连接池自愈，避免下一轮继续在坏连接上复现
+                try:
+                    await engine.dispose()
+                    print("[worker] 连接池已重置（MissingGreenlet 自愈）", flush=True)
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 # 落盘诊断日志（生产定位用；supervisor 子进程 stdout 可能不可见）
                 with open("/data/logs/bidvolt/worker.log", "a", encoding="utf-8") as f:
