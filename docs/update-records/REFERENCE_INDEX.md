@@ -7,6 +7,10 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-07 23:12 | #1 | discussion | [评分与报价绑定正式 artifact 版本并修复键类型比对](UPDATE_LOG.md#2026-09-07-2312-fix-score-artifact-binding) |
+| 2026-09-07 23:12 | #14 | discussion | [评分与报价绑定正式 artifact 版本并修复键类型比对](UPDATE_LOG.md#2026-09-07-2312-fix-score-artifact-binding) |
+| 2026-09-07 23:12 | #16 | discussion | [评分与报价绑定正式 artifact 版本并修复键类型比对](UPDATE_LOG.md#2026-09-07-2312-fix-score-artifact-binding) |
+| 2026-09-07 23:12 | #22 | issue | [评分与报价绑定正式 artifact 版本并修复键类型比对](UPDATE_LOG.md#2026-09-07-2312-fix-score-artifact-binding) |
 | 2026-09-07 23:00 | #13 | discussion | [正式文件逻辑版本链与覆盖历史](UPDATE_LOG.md#2026-09-07-2300-feat-artifact-logical-versions) |
 | 2026-09-07 23:00 | #16 | discussion | [正式文件逻辑版本链与覆盖历史](UPDATE_LOG.md#2026-09-07-2300-feat-artifact-logical-versions) |
 | 2026-09-07 23:00 | #21 | issue | [正式文件逻辑版本链与覆盖历史](UPDATE_LOG.md#2026-09-07-2300-feat-artifact-logical-versions) |

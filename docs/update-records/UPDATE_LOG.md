@@ -3,6 +3,52 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2312-fix-score-artifact-binding"></a>
+
+## 2026-09-07 23:12 · fix · 评分与报价绑定正式 artifact 版本并修复键类型比对
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2312-fix-score-artifact-binding |
+| datetime | 2026-09-07T23:12:15+08:00 |
+| type | fix |
+| status | in_progress |
+| scope | review, quotes |
+| related | issue #22, discussion #1, discussion #14, discussion #16 |
+
+### 为什么做这次更新
+
+`deliverable_versions` 经 JSON 序列化后键变成字符串，`stale_reasons` 用字符串键与整数 `Deliverable.id` 比较，版本变化后旧评分永远不会被判过期；且该映射只指向结构化 deliverable，无法证明评分对应用户打开的那个正式 artifact 版本。报价同样只绑定结构化 deliverable，缺正式文件绑定。
+
+### 具体做了什么
+
+- `evaluate` / `re_evaluate` 冻结 `artifact_versions`（`artifact_id -> version_no`）入评分快照与 `ScoreRecord`。
+- `GET /projects/{project_id}/scores`：键归一化为整数后比较，`deliverable_versions` 与 `artifact_versions` 任一变化都正确判定过期；新增返回 `has_score`、`artifact_versions`、`scored_artifacts`（含名称/版本）。
+- `quote_calc` 增加 `artifact_id` / `artifact_version_no`：`calculate`/`apply` 可写入，详情与列表返回。
+- 迁移 `0031`：`score_record.artifact_versions` + `quote_calc` 两个绑定字段。
+- 新增 2 个回归测试：artifact/结构化成果版本变化过期判定、报价 artifact 绑定读回。
+
+### 影响范围
+
+- `GET /projects/{project_id}/scores` 响应契约（新增 `has_score`/`artifact_versions`/`scored_artifacts`，`stale_reasons` 现在会包含 artifact 维度）。
+- 报价测算 `calculate`/`apply`/详情/列表契约（新增 `artifact_id`/`artifact_version_no`）。
+- `score_record`、`quote_calc` 表与迁移 `0031`。
+
+### 迁移 / 破坏性变更
+
+- 新增迁移 `0031`（3 个字段）；存量评分 `artifact_versions` 为空，此时只按 `deliverable_versions` 判过期，行为向后兼容。
+- 所有新增字段/返回为增量，旧字段保持不变。
+
+### 验证方式
+
+- 新增 2 个回归测试通过；全量测试 320 passed（3 个失败为既有环境问题，与本次无关）。
+- 服务器部署后：`alembic upgrade head` 到 `0031`，重启 app/worker；项目 207 最新评分返回 `scored_artifacts` 并能在文件版本变化后判过期。
+- GitHub 提交：`1084841`。
+
+### 回滚方式
+
+回退提交 `1084841`，`alembic downgrade 0030`（如需移除字段），重启 app、worker。
+
 <a id="2026-09-07-2300-feat-artifact-logical-versions"></a>
 
 ## 2026-09-07 23:00 · feat · 正式文件逻辑版本链与覆盖历史
