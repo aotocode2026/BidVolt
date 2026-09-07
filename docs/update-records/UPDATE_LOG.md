@@ -12,7 +12,7 @@
 | id | 2026-09-07-2246-fix-stream-replay-prechat |
 | datetime | 2026-09-07T22:46:26+08:00 |
 | type | fix |
-| status | in_progress |
+| status | released |
 | scope | agent, chat, pre_chat |
 | related | issue #20, discussion #1, discussion #15 |
 
@@ -42,8 +42,9 @@
 ### 验证方式
 
 - 新增 3 个用例通过；全量测试 315 passed（3 个失败为既有环境问题：SQLite 全新迁移链缺 `agent_artifact` 建表、LibreOffice 容器转换，与本次无关）。
-- 服务器部署后：`alembic upgrade head` 到 `0029`，重启 app/worker；长历史事件流不漏尾部消息，pre_chat 消息刷新可恢复。
-- GitHub 提交：`819796d`。
+- 服务器已部署（2026-09-07）：HEAD `09cfcbe`，`alembic upgrade` 已执行 `0028 → 0029`（`pre_chat_message` 表 + RLS 落库），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok，`alembic current=0029 (head)`。
+- 前端联调项：长历史事件流不漏尾部消息（`end` 带 `last_seq`）；pre_chat 消息刷新可恢复（`GET /pre-chat/messages`）。
+- GitHub 提交：`819796d`（代码）、`09cfcbe`（文档）。
 
 ### 回滚方式
 
