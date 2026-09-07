@@ -1,4 +1,4 @@
-# bidvolt MCP 工具契约
+﻿# bidvolt MCP 工具契约
 
 > 后端业务服务暴露给 Hermes 的能力接口。实现为 stdio MCP server（`bidvolt_mcp` 包），
 > 内部调用 BidVolt API。租户与授权上下文由服务端按任务级授权注入（产品决策 D-B）。
@@ -56,6 +56,9 @@
 - 描述：**企业资料导入任务专属**：识别资料类型、抽取结构化字段、建议归档目录。
 - 参数：`asset_id: string`、`task_id: string`
 - 约束：仅企业资料导入任务授权上下文可调用（产品决策 D-B）；结果写入等待用户确认。
+- 说明：该工具写入 AI 建议分类后，用户可在前端使用 `POST /enterprise/assets/{asset_id}/confirm-category`
+  确认分类，或使用 `PATCH /enterprise/assets/{asset_id}/category` 人工修改分类。
+  人工修改后以前端口径为准。完整 HTTP 接口见 `docs/前端对接接口文档.md`。
 
 ### upsert_enterprise_facts
 - 描述：**企业资料导入任务专属**：写入/更新企业事实（结构化字段 + 证据引用）。
