@@ -12,7 +12,7 @@
 | id | 2026-09-07-2300-feat-artifact-logical-versions |
 | datetime | 2026-09-07T23:00:42+08:00 |
 | type | feat |
-| status | in_progress |
+| status | released |
 | scope | assembly, artifacts |
 | related | issue #21, discussion #13, discussion #16 |
 
@@ -43,8 +43,9 @@
 ### 验证方式
 
 - 新增 3 个回归测试通过；全量测试 318 passed（3 个失败为既有环境问题，与本次无关）。
-- 服务器部署后：`alembic upgrade head` 到 `0030`，重启 app/worker；另存/覆盖/历史下载流程可复验。
-- GitHub 提交：`aae2676`。
+- 服务器已部署（2026-09-07）：HEAD `76eb625`，迁移已执行 `0029 → 0030`（3 个字段 + `agent_artifact_content_version` 表 + RLS 落库），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok，`alembic current=0030 (head)`。
+- 前端联调项：另存后新旧版本都可下载；覆盖后历史版本可回读；清单/详情可见 `logical_*` 字段。
+- GitHub 提交：`aae2676`（代码）、`76eb625`（文档）。
 
 ### 回滚方式
 
