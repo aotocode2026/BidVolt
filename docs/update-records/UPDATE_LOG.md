@@ -12,7 +12,7 @@
 | id | 2026-09-07-2322-fix-upload-batch-subfiles |
 | datetime | 2026-09-07T23:22:44+08:00 |
 | type | fix |
-| status | in_progress |
+| status | released |
 | scope | files, upload |
 | related | issue #23, discussion #1, discussion #16 |
 
@@ -39,8 +39,9 @@
 ### 验证方式
 
 - 新增 1 个回归测试通过；全量测试 321 passed（3 个失败为既有环境问题，与本次无关）。
-- 服务器部署后：`alembic upgrade head` 到 `0032`，重启 app/worker；上传含多个文件的 zip 后批次可逐个看到子文件状态。
-- GitHub 提交：`362fae4`。
+- 服务器已部署（2026-09-07）：HEAD `4e2762b`，迁移已执行 `0031 → 0032`（`upload_batch_item` 3 个字段落库），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok，`alembic current=0032 (head)`。
+- 前端联调项：上传含多个文件的 zip 后，批次查询可逐个看到子文件的来源压缩包、包内路径与解析状态。
+- GitHub 提交：`362fae4`（代码）、`4e2762b`（文档）。
 
 ### 回滚方式
 
