@@ -12,7 +12,7 @@
 | id | 2026-09-07-2332-feat-artifact-file-health |
 | datetime | 2026-09-07T23:32:03+08:00 |
 | type | feat |
-| status | in_progress |
+| status | released |
 | scope | assembly, artifacts |
 | related | issue #24, discussion #1 |
 
@@ -37,8 +37,8 @@
 ### 验证方式
 
 - 新增 2 个回归测试通过；全量测试 323 passed（3 个失败为既有环境问题，与本次无关）。
-- 服务器部署后重启 app/worker；项目 207 artifact 938 详情返回 `file_health.readable=true`。
-- GitHub 提交：`5fa1061`。
+- 服务器已部署（2026-09-07）：HEAD `8e6bef2`，无迁移（`alembic current=0032 (head)`），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok；项目 207 artifact 938 详情返回 `file_health.readable=true`。
+- GitHub 提交：`5fa1061`（代码）、`8e6bef2`（文档）。
 
 ### 回滚方式
 
