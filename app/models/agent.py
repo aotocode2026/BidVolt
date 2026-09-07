@@ -73,3 +73,23 @@ class AgentCustomerAsk(Base, TimestampMixin):
     timeout_notified: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     # 客户回答（question 用）：[str]（与 items 逐条对应；客户未逐条时整体一条）
     answer: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class PreChatMessage(Base, TimestampMixin):
+    """任务前对话（pre-chat）消息记录：项目尚无主会话任务时的对话，刷新后可恢复。"""
+
+    __tablename__ = "pre_chat_message"
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    project_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(BigInt, nullable=False)
+    # user=客户消息 / hermes=主会话回复 / error=处理失败
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Hermes 会话 id：首轮建立后写入，用于后续 --resume 与排查关联
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 客户端幂等标识；同一 client_message_id 只产生一条 user 记录
+    client_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    # 回复关联：hermes/error 事件指向其回应的 user 事件 seq
+    reply_to_seq: Mapped[int | None] = mapped_column(BigInt, nullable=True)

@@ -341,6 +341,25 @@ async def agent_run_stream(
                 yield f"event: message\ndata: {json.dumps({'seq': r.seq, 'kind': r.kind, 'content': r.content}, ensure_ascii=False)}\n\n"
             await session.refresh(task)
             if task.status in terminal:
+                # 终态任务：按 seq 游标持续补读，直到某一批为空才发 end，
+                # 避免长历史（>200 条）被截断漏发尾部消息
+                while True:
+                    more = (
+                        await session.scalars(
+                            select(AgentSessionEvent)
+                            .where(
+                                AgentSessionEvent.task_id == task_id,
+                                AgentSessionEvent.seq > last_seq,
+                            )
+                            .order_by(AgentSessionEvent.seq)
+                            .limit(200)
+                        )
+                    ).all()
+                    if not more:
+                        break
+                    for r in more:
+                        last_seq = max(last_seq, r.seq)
+                        yield f"event: message\ndata: {json.dumps({'seq': r.seq, 'kind': r.kind, 'content': r.content}, ensure_ascii=False)}\n\n"
                 r = task.result or {}
                 yield (
                     "event: end\ndata: "
@@ -352,6 +371,7 @@ async def agent_run_stream(
                             "reason": r.get("reason"),
                             "action_list": r.get("action_list") or [],
                             "error": task.error,
+                            "last_seq": last_seq,
                         },
                         ensure_ascii=False,
                     )
@@ -390,12 +410,69 @@ async def project_pre_chat(
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message 不能为空")
+    client_message_id = str(body.get("client_message_id") or "").strip() or None
+    if client_message_id is not None and len(client_message_id) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="client_message_id 过长（最多 100 字符）",
+        )
     from app.services.agent_pipeline import pre_chat
 
     try:
-        return await pre_chat(session, project, message)
+        return await pre_chat(session, project, message, client_message_id=client_message_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/pre-chat/messages")
+async def project_pre_chat_messages(
+    project_id: int,
+    since: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """任务前对话历史：按 seq 游标增量/补读，刷新后恢复完整记录（issue #20）。"""
+    if not settings.agent_pipeline_enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent 主会话流程未启用")
+    project = await session.scalar(
+        select(Project).where(
+            Project.id == project_id,
+            Project.enterprise_id == user.enterprise_id,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    from app.models.agent import PreChatMessage
+
+    rows = (
+        await session.scalars(
+            select(PreChatMessage)
+            .where(
+                PreChatMessage.project_id == project_id,
+                PreChatMessage.seq > since,
+            )
+            .order_by(PreChatMessage.seq)
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "project_id": project_id,
+        "session_id": project.pre_chat_session_id,
+        "since": since,
+        "has_more": len(rows) == limit,
+        "messages": [
+            {
+                "seq": r.seq,
+                "kind": r.kind,
+                "content": r.content,
+                "session_id": r.session_id,
+                "reply_to_seq": r.reply_to_seq,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
 
 
 @router.post("/{project_id}/agent-run/{task_id}/chat")

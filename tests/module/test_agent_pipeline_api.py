@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -220,3 +221,134 @@ def test_marker_requires_last_line_not_quoted_mention():
     # INCOMPLETE + 原因（最后一行）→ 回执
     data3 = {"messages": [{"role": "assistant", "content": "总结。\n" + MARK_INCOMPLETE + "企业资料缺失"}]}
     assert _marker_from_export(data3, 0) == MARK_INCOMPLETE
+
+
+def test_stream_replays_entire_long_history(client, monkeypatch):
+    """终态任务长历史（>200 条）必须全部补发后再发 end，不漏尾部消息（issue #20）。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    h, pid = _setup(client)
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _seed() -> int:
+        from app.constants import TaskType
+        from app.models.agent import AgentSessionEvent
+        from app.models.project import Project
+        from app.models.task import Task
+
+        async with maker() as s:
+            proj = await s.get(Project, pid)
+            eid = proj.enterprise_id
+            task = Task(
+                enterprise_id=eid,
+                project_id=pid,
+                task_type=TaskType.AGENT_PIPELINE,
+                idempotency_key="stream-long-1",
+                priority=5,
+                status=3,
+                payload={},
+                result={"session_id": "sess-long"},
+            )
+            s.add(task)
+            await s.flush()
+            for i in range(1, 451):
+                s.add(
+                    AgentSessionEvent(
+                        enterprise_id=eid,
+                        project_id=pid,
+                        task_id=task.id,
+                        seq=i,
+                        kind="hermes",
+                        content=f"行 {i}",
+                    )
+                )
+            await s.commit()
+            return task.id
+
+    task_id = asyncio.run(_seed())
+    try:
+        lines: list[str] = []
+        with client.stream(
+            "GET", f"/api/v1/projects/{pid}/agent-run/{task_id}/stream", headers=h
+        ) as resp:
+            assert resp.status_code == 200
+            for line in resp.iter_lines():
+                lines.append(line)
+    finally:
+        asyncio.run(engine.dispose())
+
+    msg_count = sum(1 for ln in lines if ln.startswith("event: message"))
+    end_count = sum(1 for ln in lines if ln.startswith("event: end"))
+    assert msg_count == 450
+    assert end_count == 1
+    end_idx = lines.index("event: end")
+    payload = json.loads(lines[end_idx + 1].removeprefix("data: "))
+    assert payload["last_seq"] == 450
+
+
+class _FakeProc:
+    def __init__(self, out: bytes, rc: int = 0):
+        self._out = out
+        self.returncode = rc
+
+    async def communicate(self):
+        return (self._out, b"")
+
+
+def test_pre_chat_persists_messages_and_is_idempotent(client, monkeypatch):
+    """任务前对话落库可恢复；同一 client_message_id 重试回放不重复执行（issue #20）。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    from app.services import agent_pipeline as ap
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc("收到，资料情况已核对。\nSession: sess-pre-1\n".encode())
+
+    monkeypatch.setattr(ap.asyncio, "create_subprocess_exec", fake_exec)
+    h, pid = _setup(client)
+
+    body = {"message": "现在都有哪些资料？", "client_message_id": "pc-1"}
+    r = client.post(f"/api/v1/projects/{pid}/pre-chat", json=body, headers=h)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "processed"
+    assert data["message_id"] == 1
+    assert data["reply_to_message_id"] == 2
+    assert data["session_id"] == "sess-pre-1"
+
+    r2 = client.post(f"/api/v1/projects/{pid}/pre-chat", json=body, headers=h)
+    assert r2.status_code == 200
+    assert r2.json()["duplicate"] is True
+    assert r2.json()["message_id"] == data["message_id"]
+
+    r3 = client.get(f"/api/v1/projects/{pid}/pre-chat/messages", headers=h)
+    assert r3.status_code == 200
+    payload = r3.json()
+    msgs = payload["messages"]
+    assert [m["kind"] for m in msgs] == ["user", "hermes"]
+    assert msgs[1]["reply_to_seq"] == msgs[0]["seq"]
+    assert payload["session_id"] == "sess-pre-1"
+
+
+def test_pre_chat_failure_persists_error_event(client, monkeypatch):
+    """任务前对话运行失败：返回 failed 且写入 error 事件，刷新可查（issue #20）。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    from app.services import agent_pipeline as ap
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc("窗口太小，重试\n".encode(), rc=1)
+
+    monkeypatch.setattr(ap.asyncio, "create_subprocess_exec", fake_exec)
+    h, pid = _setup(client)
+
+    r = client.post(
+        f"/api/v1/projects/{pid}/pre-chat",
+        json={"message": "你好", "client_message_id": "pc-fail"},
+        headers=h,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "failed"
+    assert "退出码 1" in r.json()["error"]
+
+    msgs = client.get(f"/api/v1/projects/{pid}/pre-chat/messages", headers=h).json()["messages"]
+    assert [m["kind"] for m in msgs] == ["user", "error"]

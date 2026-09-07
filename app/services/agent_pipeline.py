@@ -24,14 +24,13 @@ import asyncio
 import logging
 import os
 import re
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import QUESTION_GATE_WINDOW_MINUTES as ASK_WINDOW_MINUTES
 from app.constants import TaskType
-from app.models.agent import AgentSessionEvent
+from app.models.agent import AgentSessionEvent, PreChatMessage
 from app.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -1872,10 +1871,121 @@ def _clean_reply(raw: str) -> str:
 _SESSION_ID_RE = re.compile(r"[Ss]ession[_ ]?[Ii]?[Dd]?:\s*([\w-]+)")
 
 
-async def pre_chat(session: AsyncSession, project, message: str) -> dict:
+async def _next_pre_chat_seq(session: AsyncSession, project) -> int:
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select as sa_select
+
+    cur = await session.scalar(
+        sa_select(sa_func.max(PreChatMessage.seq)).where(PreChatMessage.project_id == project.id)
+    )
+    return int(cur or 0)
+
+
+async def _append_pre_chat_events(
+    session: AsyncSession,
+    project,
+    seq: list[int],
+    batch: list[tuple[str, str]],
+    *,
+    client_message_id: str | None = None,
+    reply_to_seq: int | None = None,
+    session_id: str | None = None,
+) -> None:
+    """任务前对话事件写入：独立于主任务事件表，刷新后可恢复。"""
+    from app.services.task_service import _set_rls_context  # noqa: PLC0415
+
+    await _set_rls_context(session, project.enterprise_id)
+    for kind, content in batch:
+        seq[0] += 1
+        event = PreChatMessage(
+            enterprise_id=project.enterprise_id,
+            project_id=project.id,
+            seq=seq[0],
+            kind=kind,
+            content=content,
+        )
+        if client_message_id is not None:
+            event.client_message_id = client_message_id
+        if reply_to_seq is not None:
+            event.reply_to_seq = reply_to_seq
+        if session_id:
+            event.session_id = session_id
+        session.add(event)
+    await session.commit()
+    await _set_rls_context(session, project.enterprise_id)
+
+
+async def _find_pre_chat_user_event(
+    session: AsyncSession, project, client_message_id: str | None
+) -> PreChatMessage | None:
+    """按客户端幂等标识查找任务前对话已写入的 user 记录；未携带标识时恒为 None。"""
+    if not client_message_id:
+        return None
+    from sqlalchemy import select as sa_select
+
+    return await session.scalar(
+        sa_select(PreChatMessage)
+        .where(
+            PreChatMessage.project_id == project.id,
+            PreChatMessage.kind == "user",
+            PreChatMessage.client_message_id == client_message_id,
+        )
+        .order_by(PreChatMessage.seq.desc())
+        .limit(1)
+    )
+
+
+async def _replay_pre_chat_result(
+    session: AsyncSession, project, user_event: PreChatMessage
+) -> dict:
+    """幂等重试命中：回放任务前对话已有回复/失败结果，不再重复执行。"""
+    from sqlalchemy import select as sa_select
+
+    reply = await session.scalar(
+        sa_select(PreChatMessage)
+        .where(
+            PreChatMessage.project_id == project.id,
+            PreChatMessage.reply_to_seq == user_event.seq,
+        )
+        .order_by(PreChatMessage.seq.desc())
+        .limit(1)
+    )
+    if reply is not None and reply.kind == "hermes":
+        return {
+            "reply": reply.content,
+            "session_id": reply.session_id or project.pre_chat_session_id,
+            "message_id": user_event.seq,
+            "reply_to_message_id": reply.seq,
+            "status": "processed",
+            "duplicate": True,
+        }
+    if reply is not None and reply.kind == "error":
+        return {
+            "reply": None,
+            "session_id": reply.session_id or project.pre_chat_session_id,
+            "message_id": user_event.seq,
+            "reply_to_message_id": None,
+            "status": "failed",
+            "error": reply.content,
+            "duplicate": True,
+        }
+    return {
+        "reply": None,
+        "session_id": project.pre_chat_session_id,
+        "message_id": user_event.seq,
+        "reply_to_message_id": None,
+        "status": "failed",
+        "error": "该消息上次处理未完成或结果已丢失，请稍后重试",
+        "duplicate": True,
+    }
+
+
+async def pre_chat(
+    session: AsyncSession, project, message: str, client_message_id: str | None = None
+) -> dict:
     """任务前对话：项目尚无主会话任务时，客户先与 Hermes 聊天建立项目会话
-    （session id 存 project.pre_chat_session_id）；后续 agent-run 把任务 prompt
-    注入该会话，任务前的交代自动成为主会话上下文。"""
+    （session id 存 project.pre_chat_session_id）；消息持久化到 pre_chat_message，
+    刷新后可恢复。携带 client_message_id 时幂等：重试直接回放已有回复/失败结果。"""
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     hermes_bin = _hermes_bin()
@@ -1899,6 +2009,10 @@ async def pre_chat(session: AsyncSession, project, message: str) -> dict:
 
     lock = _CHAT_LOCKS.setdefault(f"project-{project.id}", asyncio.Lock())
     async with lock:
+        existing = await _find_pre_chat_user_event(session, project, client_message_id)
+        if existing is not None:
+            return await _replay_pre_chat_result(session, project, existing)
+
         # 只读说明：业务工具已开放（只读白名单），可查资料/材料/需求如实回答客户
         chat_message = (
             "（系统说明：这是任务创建前的对话，你可以调用业务工具查询企业资料库/项目材料/需求清单"
@@ -1913,6 +2027,16 @@ async def pre_chat(session: AsyncSession, project, message: str) -> dict:
                 "--max-turns", "60", "--no-restore-cwd"]
         if sid:
             args += ["--resume", sid]
+        seq = [await _next_pre_chat_seq(session, project)]
+        await _append_pre_chat_events(
+            session,
+            project,
+            seq,
+            [("user", message)],
+            client_message_id=client_message_id,
+            session_id=sid,
+        )
+        user_seq = seq[0]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -1921,19 +2045,66 @@ async def pre_chat(session: AsyncSession, project, message: str) -> dict:
             )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=1800)
         except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
+            await _append_pre_chat_events(
+                session,
+                project,
+                [user_seq],
+                [("error", "任务前对话超时（1800s）：请稍后再试")],
+                reply_to_seq=user_seq,
+                session_id=sid,
+            )
             raise ValueError("任务前对话超时（1800s）：请稍后再试") from None
         raw = out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace")
         reply = _clean_reply(raw)
         m = _SESSION_ID_RE.search(raw)
         if m:
             sid = m.group(1)
-            project.pre_chat_session_id = sid
-            await session.commit()
+            if project.pre_chat_session_id != sid:
+                project.pre_chat_session_id = sid
+                await session.commit()
+                await _set_rls_context(session, project.enterprise_id)
+        if proc.returncode not in (None, 0):
+            error_text = f"本轮处理失败：Hermes 进程退出码 {proc.returncode}，请稍后重试"
+            await _append_pre_chat_events(
+                session, project, [user_seq], [("error", error_text)],
+                reply_to_seq=user_seq, session_id=sid,
+            )
+            return {
+                "reply": None,
+                "session_id": sid,
+                "returncode": proc.returncode,
+                "message_id": user_seq,
+                "reply_to_message_id": None,
+                "status": "failed",
+                "error": error_text,
+            }
+        if not reply:
+            error_text = "主会话未返回有效回复（输出为空或仅含运行提示），请稍后重试"
+            await _append_pre_chat_events(
+                session, project, [user_seq], [("error", error_text)],
+                reply_to_seq=user_seq, session_id=sid,
+            )
+            return {
+                "reply": None,
+                "session_id": sid,
+                "returncode": proc.returncode,
+                "message_id": user_seq,
+                "reply_to_message_id": None,
+                "status": "no_valid_reply",
+                "error": error_text,
+            }
+        seq = [user_seq]
+        await _append_pre_chat_events(
+            session, project, seq, [("hermes", reply)],
+            reply_to_seq=user_seq, session_id=sid,
+        )
+        reply_seq = seq[0]
         return {
             "reply": reply,
             "session_id": sid,
             "returncode": proc.returncode,
-            "message_id": str(uuid.uuid4()),
+            "message_id": user_seq,
+            "reply_to_message_id": reply_seq,
             "status": "processed",
         }
 

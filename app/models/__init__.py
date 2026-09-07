@@ -1,6 +1,6 @@
 """SQLAlchemy 模型包（导入即注册到 Base.metadata）。"""
 
-from app.models.agent import AgentArtifact, AgentCustomerAsk, AgentSessionEvent
+from app.models.agent import AgentArtifact, AgentCustomerAsk, AgentSessionEvent, PreChatMessage
 from app.models.audit import AuditLog
 from app.models.auth import AppUser, Enterprise, EnterprisePermission, ProjectEditLock, RefreshToken
 from app.models.chat import Conversation, ConversationMessage
@@ -81,6 +81,7 @@ __all__ = [
     "ProjectMaterial",
     "ProjectMaterialRevision",
     "ProjectSnapshot",
+    "PreChatMessage",
     "QuoteCalc",
     "ReviewItem",
     "ReviewMaterialLink",
