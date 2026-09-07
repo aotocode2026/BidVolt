@@ -163,7 +163,16 @@ async def correct_category(
     )
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
-    asset.category_id = body["category_id"]
+    category_id = body.get("category_id")
+    if not category_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 category_id")
+    category = await session.get(EnterpriseAssetCategory, int(category_id))
+    if category is None or category.enterprise_id != user.enterprise_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="分类不存在")
+    asset.category_id = category.id
+    asset.asset_type = category.name
+    # 前端人工修改后即为最终口径，不再等待 AI 确认
+    asset.status = 3
     await write_audit(
         session,
         enterprise_id=user.enterprise_id,
@@ -171,10 +180,39 @@ async def correct_category(
         action="asset.category_change",
         object_type="enterprise_asset",
         object_id=asset.id,
-        payload={"category_id": body["category_id"]},
+        payload={"category_id": asset.category_id, "asset_type": asset.asset_type},
     )
     await session.commit()
-    return {"asset_id": asset.id, "category_id": asset.category_id}
+    return {"asset_id": asset.id, "category_id": asset.category_id, "asset_type": asset.asset_type, "status": asset.status}
+
+
+@router.post("/assets/{asset_id}/confirm-category")
+async def confirm_asset_category(
+    asset_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_UPLOAD)),
+) -> dict:
+    """确认当前 AI/人工分类为最终分类。"""
+    asset = await session.scalar(
+        select(EnterpriseAsset).where(
+            EnterpriseAsset.id == asset_id,
+            EnterpriseAsset.enterprise_id == user.enterprise_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
+    asset.status = 3
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        action="enterprise.confirm_asset_category",
+        object_type="enterprise_asset",
+        object_id=asset.id,
+        payload={"category_id": asset.category_id, "asset_type": asset.asset_type},
+    )
+    await session.commit()
+    return {"asset_id": asset.id, "category_id": asset.category_id, "asset_type": asset.asset_type, "status": asset.status}
 
 
 @router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)

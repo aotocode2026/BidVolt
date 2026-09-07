@@ -464,9 +464,40 @@ async function refreshAssets() {
     const data = await api("/enterprise/assets");
     setHtml("m-assets", data.map((a) => `
       <tr><td>${a.asset_id}</td><td>${esc(a.name)}</td><td>${esc(a.asset_type)}</td><td>${a.status}</td>
-      <td><button class="ghost" onclick="listFacts(${a.asset_id})">facts</button>
+      <td>
+          <button class="ghost" onclick="confirmAssetCategory(${a.asset_id})">确认</button>
+          <button class="ghost" onclick="changeAssetCategory(${a.asset_id})">改分类</button>
+          <button class="ghost" onclick="listFacts(${a.asset_id})">facts</button>
           <button class="ghost" onclick="listAssetRevisions(${a.asset_id})">revisions</button></td></tr>`).join(""));
   } catch { setHtml("m-assets", "<tr><td colspan=4>未登录或无权限</td></tr>"); }
+}
+
+async function confirmAssetCategory(assetId) {
+  try {
+    const r = await api(`/enterprise/assets/${assetId}/confirm-category`, { method: "POST" });
+    log(`资产 ${assetId} 已确认分类：${esc(r.asset_type)}`, "ok");
+    refreshAssets();
+  } catch (e) { log(`确认分类失败：${errMsg(e)}`, "err"); }
+}
+
+async function changeAssetCategory(assetId) {
+  try {
+    const categories = await api("/enterprise/categories");
+    const options = categories.map((c, i) => `${i}=${c.name}`).join("，");
+    const raw = prompt(`请选择新分类：${options}`, "0");
+    if (raw === null) return;
+    const idx = Number(raw);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= categories.length) {
+      return log("分类序号无效", "err");
+    }
+    const category = categories[idx];
+    const r = await api(`/enterprise/assets/${assetId}/category`, {
+      method: "PATCH",
+      body: { category_id: category.category_id },
+    });
+    log(`资产 ${assetId} 已改为：${esc(r.asset_type)}`, "ok");
+    refreshAssets();
+  } catch (e) { log(`修改分类失败：${errMsg(e)}`, "err"); }
 }
 
 async function importNotice() {
