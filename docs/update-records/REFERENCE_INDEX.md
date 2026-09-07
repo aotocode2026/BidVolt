@@ -7,3 +7,4 @@
 
 | 类型 | 编号 | 更新时间 | 更新记录 |
 |---|---|---|---|
+| issue | 18 | 2026-09-07 16:40 | 2026-09-07-1640-feat-ai-enterprise-asset-classification |
