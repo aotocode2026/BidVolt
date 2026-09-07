@@ -70,6 +70,33 @@ def test_corrupted_zip_upload_rejected_loudly(client):
     assert all(x["name"] != "bad.zip" for x in lst["items"])
 
 
+def test_upload_batch_records_zip_subfiles_with_parse_status(client):
+    """ZIP 自动解包：批次含原件与逐子文件条目，带来源压缩包、包内路径与解析状态（issue #23）。"""
+    h = _headers(client)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("03_业绩/合同A.txt", "合同内容A".encode())
+    r = _upload(client, h, content=buf.getvalue(), name="业绩包.zip")
+    assert r.status_code == 200
+    entry = r.json()["files"][0]
+    assert entry["expanded"]["imported"] == 1
+    batch_id = r.json()["batch_id"]
+
+    batch = client.get(f"/api/v1/files/batches/{batch_id}", headers=h).json()
+    items = batch["items"]
+    assert len(items) == 2  # 原件 + 子文件
+    original = next(i for i in items if i["filename"] == "业绩包.zip")
+    assert original["status"] == "accepted"
+    assert original["source_archive_file_id"] is None
+
+    sub = next(i for i in items if i["filename"] == "03_业绩/合同A.txt")
+    assert sub["status"] == "accepted"
+    assert sub["source_archive_file_id"] == original["file_id"]
+    assert sub["archive_path"] == "03_业绩/合同A.txt"
+    assert sub["parse_status"] == "done"
+    assert sub["file_id"] is not None
+
+
 def test_upload_to_project_sets_processing(client):
     h = _headers(client)
     pid = client.post("/api/v1/projects", json={"name": "P"}, headers=h).json()["project_id"]

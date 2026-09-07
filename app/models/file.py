@@ -76,6 +76,10 @@ class UploadBatchItem(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False)  # accepted/duplicate/error/expanded
     message: Mapped[str | None] = mapped_column(Text)
     document_role: Mapped[str | None] = mapped_column(String(50))
+    # issue #23：ZIP 解包子文件关联与逐文件解析状态
+    source_archive_file_id: Mapped[int | None] = mapped_column(BigInt)
+    archive_path: Mapped[str | None] = mapped_column(String(500))
+    parse_status: Mapped[str | None] = mapped_column(String(20))  # parsing/done/failed
 
 
 class FileImage(Base, TimestampMixin):

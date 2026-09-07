@@ -140,6 +140,65 @@ async def upload_files(
                 "failed": len(_res.get("failed") or []),
                 "duplicates": len(_res.get("duplicates") or []),
             }
+            # issue #23：逐子文件落批次条目（含来源压缩包、包内路径与解析状态）
+            sub_files: dict[int, FileObject] = {}
+            imported_ids = _res.get("imported") or []
+            if imported_ids:
+                _sub_rows = (
+                    await session.scalars(
+                        select(FileObject).where(FileObject.id.in_(imported_ids))
+                    )
+                ).all()
+                sub_files = {f.id: f for f in _sub_rows}
+            sub_items: list[dict] = []
+            for fid in imported_ids:
+                fo = sub_files.get(fid)
+                sub_items.append(
+                    {
+                        "name": (fo.archive_path or fo.original_name) if fo else f"文件#{fid}",
+                        "file_id": fid,
+                        "asset_id": None,
+                        "status": "accepted",
+                        "message": None,
+                        "document_role": document_role,
+                        "source_archive_file_id": (
+                            int(fo.source_archive_id) if fo and fo.source_archive_id else _fid
+                        ),
+                        "archive_path": fo.archive_path if fo else None,
+                        "parse_status": (
+                            file_service.file_parse_status(fo.status) if fo else "parsing"
+                        ),
+                    }
+                )
+            for row in _res.get("failed") or []:
+                sub_items.append(
+                    {
+                        "name": row.get("name") or "（未命名）",
+                        "file_id": None,
+                        "asset_id": None,
+                        "status": "error",
+                        "message": row.get("reason") or "解包失败",
+                        "document_role": document_role,
+                        "source_archive_file_id": _fid,
+                        "archive_path": row.get("name"),
+                        "parse_status": "failed",
+                    }
+                )
+            for row in _res.get("duplicates") or []:
+                sub_items.append(
+                    {
+                        "name": row.get("name") or "（未命名）",
+                        "file_id": row.get("file_id"),
+                        "asset_id": None,
+                        "status": "duplicate",
+                        "message": "内容与已入库文件相同，已跳过重复入库",
+                        "document_role": document_role,
+                        "source_archive_file_id": _fid,
+                        "archive_path": row.get("name"),
+                        "parse_status": None,
+                    }
+                )
+            item["_sub_items"] = sub_items
         except ValueError as exc:
             item["expanded"] = {"error": str(exc)}
         # process_archive 内部 commit 会清掉事务级 RLS 上下文：重设后再处理下一个文件
@@ -170,6 +229,12 @@ async def upload_files(
             message = None
             file_id = item.get("file_id")
             asset_id = item.get("asset_id")
+        file_obj = await session.get(FileObject, file_id) if file_id else None
+        parse_status = (
+            file_service.file_parse_status(file_obj.status)
+            if file_obj is not None and file_obj.ext != ".zip"
+            else None
+        )
         session.add(
             UploadBatchItem(
                 batch_id=batch.id,
@@ -180,9 +245,28 @@ async def upload_files(
                 status=batch_status,
                 message=message,
                 document_role=document_role,
+                source_archive_file_id=None,
+                archive_path=None,
+                parse_status=parse_status,
             )
         )
         item["item_id"] = None
+        for sub in item.get("_sub_items") or []:
+            session.add(
+                UploadBatchItem(
+                    batch_id=batch.id,
+                    enterprise_id=user.enterprise_id,
+                    filename=sub["name"],
+                    file_id=sub.get("file_id"),
+                    asset_id=sub.get("asset_id"),
+                    status=sub["status"],
+                    message=sub.get("message"),
+                    document_role=sub.get("document_role"),
+                    source_archive_file_id=sub.get("source_archive_file_id"),
+                    archive_path=sub.get("archive_path"),
+                    parse_status=sub.get("parse_status"),
+                )
+            )
     await session.flush()
     # 刷新后再查批次时返回的 item_id；这里无法逐个同步，因为需要再 flush 后获取。
     # 兼容现有响应：前端可用 batch_id 查询权威状态。
@@ -212,6 +296,15 @@ async def upload_batch(
             .order_by(UploadBatchItem.id)
         )
     ).all()
+    file_ids = [i.file_id for i in rows if i.file_id is not None]
+    file_map: dict[int, FileObject] = {}
+    if file_ids:
+        file_rows = (
+            await session.scalars(
+                select(FileObject).where(FileObject.id.in_(file_ids))
+            )
+        ).all()
+        file_map = {f.id: f for f in file_rows}
     return {
         "batch_id": batch.id,
         "target": batch.target,
@@ -226,6 +319,13 @@ async def upload_batch(
                 "status": i.status,
                 "message": i.message,
                 "document_role": i.document_role,
+                "source_archive_file_id": i.source_archive_file_id,
+                "archive_path": i.archive_path,
+                "parse_status": (
+                    file_service.file_parse_status(file_map[i.file_id].status)
+                    if i.file_id in file_map and file_map[i.file_id].ext != ".zip"
+                    else i.parse_status
+                ),
             }
             for i in rows
         ],

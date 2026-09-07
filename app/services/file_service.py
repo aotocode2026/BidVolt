@@ -21,6 +21,15 @@ from app.services.storage import StorageProvider
 storage = StorageProvider()
 
 
+def file_parse_status(status: int) -> str:
+    """FileObject.status → 批次展示口径（parsing/done/failed，issue #23）。"""
+    if status == 3:
+        return "done"
+    if status == 4:
+        return "failed"
+    return "parsing"
+
+
 class DuplicateUploadError(Exception):
     """内容重复：同企业已入库相同 sha256 的文件。"""
 
