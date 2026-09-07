@@ -26,7 +26,7 @@
 - `POST /agent-run/{task_id}/chat` 与排队消息支持 `client_message_id`（≤100 字符）：同一标识只写入一条 user 事件；重试直接回放已有回复/失败结果，不重复执行（`duplicate=true`）。
 - 运行异常不再冒充正常回复：Hermes 退出码非 0 返回 `status=failed`；输出为空或仅剩运行提示返回 `status=no_valid_reply`；超时写入 error 事件（`reply_to_seq` 关联本消息）后仍返回 409。
 - `_clean_reply` 统一清洗回复：去 ANSI、Reasoning 框、会话尾注、框线与状态条噪音。
-- `deploy/install-hermes.sh` 默认 `display.show_reasoning=false`，从源头关闭 Reasoning 复盘框。
+- `deploy/install-hermes.sh` 默认 `display.show_reasoning=false`，从源头关闭 Reasoning 复盘框（仅隐藏思考过程的显示：模型照常推理，思考内容仍结构化保留在 `/data/hermes/state.db` 的 `messages.reasoning_content`，调试可查，见 `docs/hermes/README.md` §6）。
 - 新增 `tests/unit/test_agent_chat.py`（7 个用例）：回复清洗、`client_message_id` 去重、结果/失败回放。
 
 ### 影响范围

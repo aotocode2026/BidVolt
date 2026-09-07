@@ -111,3 +111,38 @@ skills:
 > 当前部署的 MCP 调用使用 Hermes 服务账号 JWT（`BIDVOLT_INTERNAL_TOKEN`）走后端 JWT 回退路径；
 > **任务级 capability token 全流程（任务创建 → 签发 token → Hermes 执行 → 白名单进度）仍是生产前待办**，
 > 完成后即做五条 Skill 路径的端到端闭环验收。
+
+## 6. 思考过程（reasoning）的显示与调试
+
+### 6.1 为什么用户可见输出不显示思考过程
+
+- `deploy/install-hermes.sh` 默认写入 `display.show_reasoning=false`。该开关**只控制思考过程是否
+  打印到控制台文本 / 是否渲染“Reasoning 复盘框”，不改变模型推理本身**：模型照常思考，
+  最终回复内容完全一致（Hermes 源码 `_current_reasoning_callback` 在未开 verbose 时返回空回调）。
+- 必要性：`hermes chat -Q` 的文本输出把思考复盘与最终回答混在同一文本流，且**没有可靠的结束标记**
+  （线上会话记录中不存在 `└` 结束框线），无法在文本层面无损剥离思考内容。唯一可靠的做法是让思考
+  过程不进用户可见的文本通道——即从源头关闭显示。用户聊天回复、SSE 事件流与交付包内“会话记录”
+  因此保持干净，符合产品口径（界面不展示内部推理）。
+
+### 6.2 调试时如何回溯思考过程（不会丢失）
+
+思考过程**始终结构化持久化**在 Hermes 会话存储中，与 `display.show_reasoning` 无关：
+
+- 位置：`/data/hermes/state.db`（SQLite）的 `messages` 表；
+- 字段：`reasoning_content`（DeepSeek 思考正文）、`reasoning`、`reasoning_details`、
+  `codex_reasoning_items` 等，按 `session_id` 归属；
+- 定位：BidVolt 聊天响应与事件流中的 `session_id`（如 `20260903_104750_965a9c`）即可关联。
+
+按会话回放思考过程的示例：
+
+```sql
+SELECT id, substr(reasoning_content, 1, 300), timestamp
+FROM messages
+WHERE session_id = '20260903_104750_965a9c'
+  AND reasoning_content IS NOT NULL AND reasoning_content <> ''
+ORDER BY id;
+```
+
+- 另可用 Hermes 的会话 HTML 导出（含可折叠的 Reasoning 区块）做可视化回溯；
+- 若临时需要把思考过程重新打印到控制台（例如复现问题），执行
+  `hermes config set display.show_reasoning true`，排查结束后改回 `false`。
