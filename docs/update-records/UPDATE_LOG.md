@@ -12,7 +12,7 @@
 | id | 2026-09-07-2157-fix-agent-chat-contract |
 | datetime | 2026-09-07T21:57:33+08:00 |
 | type | fix |
-| status | in_progress |
+| status | released |
 | scope | agent, chat |
 | related | issue #19, discussion #1, discussion #15 |
 
@@ -43,8 +43,9 @@
 ### 验证方式
 
 - 新增 7 个单元测试通过；全量测试 312 passed（3 个失败为既有环境问题：SQLite 全新迁移链缺 `agent_artifact` 建表、LibreOffice 容器转换失败，原始代码同样失败，与本次改动无关）。
-- 服务器部署后：重启 app、worker，设置 Hermes `display.show_reasoning=false`；项目 207 续聊回复不再含 Reasoning/横幅，且 `message_id ≠ reply_to_message_id`。
-- GitHub 提交：`731e26e`（行尾规范化）、`1bc8da0`（本修复）。
+- 服务器已部署（2026-09-07）：HEAD `5bcb15b`，app/worker 重启后 RUNNING，`GET /healthz` 返回 ok，`alembic current=0028 (head)`；Hermes 配置已写入 `display.show_reasoning: false`；部署代码核验通过（`client_message_id` / `_clean_reply` 均已上线）。
+- 前端联调项：项目 207 续聊回复不再含 Reasoning/横幅，且 `message_id ≠ reply_to_message_id`。
+- GitHub 提交：`731e26e`（行尾规范化）、`1bc8da0`（本修复）、`ee57be8`/`5bcb15b`（文档）。
 
 ### 回滚方式
 
