@@ -3,6 +3,52 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-07-2246-fix-stream-replay-prechat"></a>
+
+## 2026-09-07 22:46 · fix · 修复长历史补读截断并持久化 pre_chat 消息
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-07-2246-fix-stream-replay-prechat |
+| datetime | 2026-09-07T22:46:26+08:00 |
+| type | fix |
+| status | in_progress |
+| scope | agent, chat, pre_chat |
+| related | issue #20, discussion #1, discussion #15 |
+
+### 为什么做这次更新
+
+终态任务的事件流每批最多补读 200 条历史后即发 `end`，长会话（如项目 207 任务 3499 共 3600+ 条事件）会漏发尾部消息；任务前对话（pre-chat）只返回当次回复、不落任何持久记录，刷新后无法恢复，也无法关联消息与回复。
+
+### 具体做了什么
+
+- `agent_run_stream`：终态任务按 `seq` 游标持续分页补读，直到某一批为空才发 `end`，保证 `end` 表示历史已全部补发；`end` 事件附带 `last_seq` 供前端续传。
+- 新增 `pre_chat_message` 表（迁移 `0029`，含租户 RLS 策略）：任务前对话的 user/hermes/error 事件逐条落库，刷新可恢复。
+- `pre_chat` 重写：写入 user 事件与 hermes 回复事件（`reply_to_seq` 关联），返回 `message_id=user_seq`、`reply_to_message_id=reply_seq`；支持 `client_message_id` 幂等去重与结果回放；退出码非 0 返回 `failed`、输出为空返回 `no_valid_reply`，超时落 error 事件。
+- 新增 `GET /projects/{project_id}/pre-chat/messages?since=&limit=` 历史恢复接口。
+- 新增 3 个回归测试：长历史（450 条）完整补发、pre_chat 持久化与幂等、失败事件落库。
+
+### 影响范围
+
+- `GET /projects/{project_id}/agent-run/{task_id}/stream` 的 `end` 事件契约（新增 `last_seq`）。
+- `POST /projects/{project_id}/pre-chat` 请求/响应契约。
+- 新增 `pre_chat_message` 表与迁移。
+
+### 迁移 / 破坏性变更
+
+- 新增迁移 `0029`（`pre_chat_message` + RLS）；无既有表结构变更。
+- 响应新增 `status`/`error`/`duplicate`/`reply_to_message_id` 字段，原有 `reply`/`session_id`/`message_id` 保留。
+
+### 验证方式
+
+- 新增 3 个用例通过；全量测试 315 passed（3 个失败为既有环境问题：SQLite 全新迁移链缺 `agent_artifact` 建表、LibreOffice 容器转换，与本次无关）。
+- 服务器部署后：`alembic upgrade head` 到 `0029`，重启 app/worker；长历史事件流不漏尾部消息，pre_chat 消息刷新可恢复。
+- GitHub 提交：`819796d`。
+
+### 回滚方式
+
+回退提交 `819796d`，`alembic downgrade 0028`（如需移除表），重启 app、worker。
+
 <a id="2026-09-07-2157-fix-agent-chat-contract"></a>
 
 ## 2026-09-07 21:57 · fix · 补齐聊天消息关联、幂等与异常处理

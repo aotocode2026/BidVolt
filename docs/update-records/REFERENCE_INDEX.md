@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-07 22:46 | #1 | discussion | [修复长历史补读截断并持久化 pre_chat 消息](UPDATE_LOG.md#2026-09-07-2246-fix-stream-replay-prechat) |
+| 2026-09-07 22:46 | #15 | discussion | [修复长历史补读截断并持久化 pre_chat 消息](UPDATE_LOG.md#2026-09-07-2246-fix-stream-replay-prechat) |
+| 2026-09-07 22:46 | #20 | issue | [修复长历史补读截断并持久化 pre_chat 消息](UPDATE_LOG.md#2026-09-07-2246-fix-stream-replay-prechat) |
 | 2026-09-07 21:57 | #1 | discussion | [补齐聊天消息关联、幂等与异常处理](UPDATE_LOG.md#2026-09-07-2157-fix-agent-chat-contract) |
 | 2026-09-07 21:57 | #15 | discussion | [补齐聊天消息关联、幂等与异常处理](UPDATE_LOG.md#2026-09-07-2157-fix-agent-chat-contract) |
 | 2026-09-07 21:57 | #19 | issue | [补齐聊天消息关联、幂等与异常处理](UPDATE_LOG.md#2026-09-07-2157-fix-agent-chat-contract) |
