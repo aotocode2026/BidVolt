@@ -100,7 +100,7 @@ FastAPI（app.main，uvicorn :8123）
 app/             FastAPI 应用（api/services/models/static demo）
 bidvolt_mcp/     MCP stdio server（OpenRPC IDL + 45 个工具）
 deploy/          容器部署脚本（install.sh / bidvolt-init.sh / bidvolt-boot.sh / supervisord.conf / install-hermes.sh / backup.sh / upgrade.sh / healthcheck.sh）
-docs/            架构/模块/威胁模型/数据分级授权清单/Hermes 契约与 Skill
+docs/            架构/模块/威胁模型/数据分级授权清单/Hermes 契约与 Skill；`update-records/` 更新记录与反向索引
 scripts/         冒烟与工具脚本（真实 OFD 样本、云能力线上冒烟、MCP 契约）
 tests/           pytest（unit/module，容器上跑 PG+RLS）
 ```
@@ -376,9 +376,11 @@ Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
 
 ## 12. 反馈与讨论（写作纪律）
 
-- 本仓库已**停用 Issue，只保留 Discussion**；反馈走 Discussions 分类
+- 缺陷/任务跟踪使用 **Issue**；反馈与需求建议使用 **Discussion**，分类为
   **General**（问题反馈：现象/复现/证据）与 **Ideas**（需求建议：现状/期望目标/约束），
-  两个分类已挂载发布表单（`.github/DISCUSSION_TEMPLATE/general.yml` / `ideas.yml`，按分类 slug 自动加载）。
+  两个 Discussion 分类已挂载发布表单（`.github/DISCUSSION_TEMPLATE/general.yml` / `ideas.yml`，按分类 slug 自动加载）。
+- 关联 issue / discussion / PR 的每次更新，需同步记录到 [`docs/update-records/`](docs/update-records/)：
+  主体更新日志 `UPDATE_LOG.md`、按 issue/discussion/PR 反查的 `REFERENCE_INDEX.md`、新增模板 `UPDATE_TEMPLATE.md`。
 - **写作纪律（防误导）**：帖子**只陈述事实**——问题现象、复现步骤、环境信息、截图/日志证据、
   期望行为；**禁止**自行推测原因/下定位结论、**禁止**命令式要求（"应该改成…""必须…""你去…"）与
   方案指定。定位与方案由维护方（Agent/人工）根据现象与证据判断，先入为主的定位与命令会误导排查方向。
@@ -387,3 +389,4 @@ Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
   后端接口是唯一契约（前端实测为准，不得自行猜测语义）；纯前端能力（交互/展示加工/本地缓存）
   由前端自己实现；后端**不会**为前端便利付出影响流程的代价；接口新增/修改须按
   [docs/接口变更申请模板.md](docs/接口变更申请模板.md) 申请并评估通过后才动。
+
