@@ -12,7 +12,7 @@
 | id | 2026-09-07-2312-fix-score-artifact-binding |
 | datetime | 2026-09-07T23:12:15+08:00 |
 | type | fix |
-| status | in_progress |
+| status | released |
 | scope | review, quotes |
 | related | issue #22, discussion #1, discussion #14, discussion #16 |
 
@@ -42,8 +42,9 @@
 ### 验证方式
 
 - 新增 2 个回归测试通过；全量测试 320 passed（3 个失败为既有环境问题，与本次无关）。
-- 服务器部署后：`alembic upgrade head` 到 `0031`，重启 app/worker；项目 207 最新评分返回 `scored_artifacts` 并能在文件版本变化后判过期。
-- GitHub 提交：`1084841`。
+- 服务器已部署（2026-09-07）：HEAD `fb9e235`，迁移已执行 `0030 → 0031`（`score_record.artifact_versions` + `quote_calc.artifact_id/artifact_version_no` 落库），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok，`alembic current=0031 (head)`。
+- 前端联调项：项目 207 最新评分返回 `scored_artifacts`；文件版本变化后 `is_stale=true` 且 `stale_reasons` 给出对应 artifact/成果。
+- GitHub 提交：`1084841`（代码）、`fb9e235`（文档）。
 
 ### 回滚方式
 
