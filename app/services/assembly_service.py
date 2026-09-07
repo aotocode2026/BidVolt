@@ -1455,73 +1455,96 @@ async def inspect_artifact(
     if art is None:
         raise ValueError("产物不存在或不属于本任务")
     base = _artifact_meta(art, project_id)
-    if art.kind == "item_docx":
-        import re as _re
+    health: dict = {
+        "bytes": len(art.content or b""),
+        "mime": art.mime,
+        "kind": art.kind,
+        "readable": False,
+        "error": None,
+    }
+    try:
+        if art.kind == "item_docx":
+            import re as _re
 
-        from lxml import etree as _etree
+            from lxml import etree as _etree
 
-        from app.services.export_service import _W_NS, _elem_text, tables_inventory
+            from app.services.export_service import _W_NS, _elem_text, tables_inventory
 
-        W = f"{{{_W_NS}}}"
-        with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
-            doc = _etree.fromstring(zf.read("word/document.xml"))
-        # 最终文本口径：只收 w:t（含插入层、不含删除层 w:delText——多轮 fill 后旧标记落在删除层，
-        # itertext 会把它们算进来造成"audit 报裸、verify 报干净"的口径打架，任务 380 曾因此空转）
-        text = _elem_text(doc)
-        # 待补充逐项清单（信息信号）：让检查者一眼看到"哪些还没填、分别要补什么"，
-        # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题；
-        # 裸待补充（label 空）与「具体标签」模板字样打 kind=bare 并排最前——验收判据最该先看它们
-        pending_items: list[dict] = []
-        for m in _re.finditer(r"【待补充[^】]*】", text):
-            label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
-            start = max(0, m.start() - 18)
-            pending_items.append(
+            W = f"{{{_W_NS}}}"
+            with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
+                doc = _etree.fromstring(zf.read("word/document.xml"))
+                health.update(
+                    {
+                        "readable": True,
+                        "zip_ok": True,
+                        "entries": len(zf.namelist()),
+                        "document_xml_ok": True,
+                    }
+                )
+            # 最终文本口径：只收 w:t（含插入层、不含删除层 w:delText——多轮 fill 后旧标记落在删除层，
+            # itertext 会把它们算进来造成"audit 报裸、verify 报干净"的口径打架，任务 380 曾因此空转）
+            text = _elem_text(doc)
+            health["text_chars"] = len(text)
+            # 待补充逐项清单（信息信号）：让检查者一眼看到"哪些还没填、分别要补什么"，
+            # 而不是只给一个计数——计数会掩盖"本可填实却空着/标签含混"的问题；
+            # 裸待补充（label 空）与「具体标签」模板字样打 kind=bare 并排最前——验收判据最该先看它们
+            pending_items: list[dict] = []
+            for m in _re.finditer(r"【待补充[^】]*】", text):
+                label = m.group(0)[5:-1] if m.group(0).startswith("【待补充：") else ""
+                start = max(0, m.start() - 18)
+                pending_items.append(
+                    {
+                        "label": label,
+                        "context": text[start:m.start()],
+                        "kind": "bare" if (not label or "具体标签" in label) else "labeled",
+                    }
+                )
+            pending_items.sort(key=lambda x: 0 if x["kind"] == "bare" else 1)
+            bare_count = sum(1 for x in pending_items if x["kind"] == "bare")
+            base.update(
                 {
-                    "label": label,
-                    "context": text[start:m.start()],
-                    "kind": "bare" if (not label or "具体标签" in label) else "labeled",
+                    "text_preview_head": text[:600],
+                    "text_preview_tail": text[-300:],
+                    "chars": len(text),
+                    "pending_count": text.count("【待补充"),
+                    "pending_items": pending_items,
+                    "bare_pending_count": bare_count,
+                    "tables": tables_inventory(doc),
+                    "ins_count": len(doc.findall(".//" + W + "ins")),
+                    "del_count": len(doc.findall(".//" + W + "del")),
                 }
             )
-        pending_items.sort(key=lambda x: 0 if x["kind"] == "bare" else 1)
-        bare_count = sum(1 for x in pending_items if x["kind"] == "bare")
-        base.update(
-            {
-                "text_preview_head": text[:600],
-                "text_preview_tail": text[-300:],
-                "chars": len(text),
-                "pending_count": text.count("【待补充"),
-                "pending_items": pending_items,
-                "bare_pending_count": bare_count,
-                "tables": tables_inventory(doc),
-                "ins_count": len(doc.findall(".//" + W + "ins")),
-                "del_count": len(doc.findall(".//" + W + "del")),
-            }
-        )
-    elif art.kind == "xlsx":
-        from openpyxl import load_workbook
+        elif art.kind == "xlsx":
+            from openpyxl import load_workbook
 
-        wb = load_workbook(_io.BytesIO(art.content))
-        sheets = []
-        for name in wb.sheetnames:
-            ws = wb[name]
-            preview = []
-            for i, row in enumerate(ws.iter_rows(values_only=True)):
-                if i >= 4:
-                    preview.append("…")
-                    break
-                preview.append([" " if c is None else str(c)[:40] for c in row])
-            sheets.append({"name": name, "rows": ws.max_row, "cols": ws.max_column, "preview": preview})
-        base["sheets"] = sheets
-    elif art.kind == "zip":
-        with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
-            base["entries"] = [{"name": n, "bytes": zf.getinfo(n).file_size} for n in zf.namelist()]
-            if "manifest.json" in zf.namelist():
-                import json as _json
+            wb = load_workbook(_io.BytesIO(art.content))
+            health.update({"readable": True, "zip_ok": True, "sheets": len(wb.sheetnames)})
+            sheets = []
+            for name in wb.sheetnames:
+                ws = wb[name]
+                preview = []
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if i >= 4:
+                        preview.append("…")
+                        break
+                    preview.append([" " if c is None else str(c)[:40] for c in row])
+                sheets.append({"name": name, "rows": ws.max_row, "cols": ws.max_column, "preview": preview})
+            base["sheets"] = sheets
+        elif art.kind == "zip":
+            with _zip.ZipFile(_io.BytesIO(art.content)) as zf:
+                health.update({"readable": True, "zip_ok": True, "entries": len(zf.namelist())})
+                base["entries"] = [{"name": n, "bytes": zf.getinfo(n).file_size} for n in zf.namelist()]
+                if "manifest.json" in zf.namelist():
+                    import json as _json
 
-                try:
-                    base["manifest"] = _json.loads(zf.read("manifest.json").decode("utf-8"))
-                except Exception as exc:  # noqa: BLE001
-                    base["manifest_error"] = f"manifest.json 解析失败：{exc}"
-    else:
-        base["note"] = "该产物类型无结构化预览"
+                    try:
+                        base["manifest"] = _json.loads(zf.read("manifest.json").decode("utf-8"))
+                    except Exception as exc:  # noqa: BLE001
+                        base["manifest_error"] = f"manifest.json 解析失败：{exc}"
+        else:
+            health["readable"] = True
+            base["note"] = "该产物类型无结构化预览"
+    except Exception as exc:  # noqa: BLE001 文件损坏时如实降级为不可读信号，不 500
+        health["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    base["file_health"] = health
     return base

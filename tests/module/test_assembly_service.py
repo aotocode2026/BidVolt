@@ -184,6 +184,50 @@ def test_artifact_versions_endpoints(client):
     asyncio.run(engine.dispose())
 
 
+def test_inspect_artifact_reports_file_health(client):
+    """产物详情带文件健康信号：正常 docx 标记可读（issue #24）。"""
+    _h, pid = _setup(client)
+    from app.services import assembly_service
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    aid = _seed_artifact(
+        maker, pid, "内部管理文件/编制逻辑与评分响应记录.docx", _docx_bytes(["编制逻辑记录"])
+    )
+
+    async def _run():
+        async with maker() as session:
+            return await assembly_service.inspect_artifact(session, 1, pid, None, aid)
+
+    detail = asyncio.run(_run())
+    assert detail["file_health"]["readable"] is True
+    assert detail["file_health"]["zip_ok"] is True
+    assert detail["file_health"]["document_xml_ok"] is True
+    assert detail["file_health"]["text_chars"] > 0
+    asyncio.run(engine.dispose())
+
+
+def test_inspect_artifact_graceful_on_broken_docx(client):
+    """损坏 docx：详情返回不可读信号与原因，而不是抛 500（issue #24）。"""
+    _h, pid = _setup(client)
+    from app.services import assembly_service
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    aid = _seed_artifact(
+        maker, pid, "内部管理文件/编制逻辑与评分响应记录.docx", b"not-a-docx"
+    )
+
+    async def _run():
+        async with maker() as session:
+            return await assembly_service.inspect_artifact(session, 1, pid, None, aid)
+
+    detail = asyncio.run(_run())
+    assert detail["file_health"]["readable"] is False
+    assert detail["file_health"]["error"]
+    asyncio.run(engine.dispose())
+
+
 def test_seal_returns_identity_signals(client, monkeypatch):
     """seal 只给信息信号、不拦截：回执带 req_title/matched_title/was_verified，供 agent 自查。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
