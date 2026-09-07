@@ -595,6 +595,8 @@ async def replace_artifact_file(
             raise ValueError("pdf 文件头无效")
     else:
         raise ValueError("仅支持 docx/xlsx/pdf 产物覆盖")
+    # 覆盖前归档当前版本内容（issue #21）：覆盖后可回读历史版本
+    await _archive_artifact_content(session, enterprise_id, art)
     art.content = data
     art.version_no = int(art.version_no or 0) + 1
     await session.commit()
@@ -608,6 +610,33 @@ async def replace_artifact_file(
     }
 
 
+async def _archive_artifact_content(
+    session: AsyncSession, enterprise_id: int, art: Any
+) -> None:
+    """把产物当前版本内容归档到历史表（幂等：同一 artifact_id+version_no 只归档一次）。"""
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentArtifactContentVersion
+
+    existing = await session.scalar(
+        _sa_select(AgentArtifactContentVersion).where(
+            AgentArtifactContentVersion.artifact_id == int(art.id),
+            AgentArtifactContentVersion.version_no == int(art.version_no or 1),
+        )
+    )
+    if existing is not None:
+        return
+    session.add(
+        AgentArtifactContentVersion(
+            enterprise_id=int(enterprise_id),
+            project_id=int(art.project_id),
+            artifact_id=int(art.id),
+            version_no=int(art.version_no or 1),
+            content=art.content or b"",
+        )
+    )
+
+
 async def save_artifact_file(
     session: AsyncSession,
     enterprise_id: int,
@@ -619,7 +648,7 @@ async def save_artifact_file(
 ) -> dict:
     """远端 Office 文件保存：
     mode=overwrite 覆盖当前 artifact（artifact_id 不变，version_no 递增）；
-    mode=new 另存为新 artifact（旧版本保留，新 artifact_id + version_no=1）。
+    mode=new 另存为新 artifact（继承逻辑文件身份，旧版本保留可下载）。
     """
     import io as _io
     import zipfile as _zip
@@ -667,8 +696,12 @@ async def save_artifact_file(
             name=art.name,
             mime=art.mime,
             content=data,
+            logical_file_id=int(art.logical_file_id or art.id),
+            parent_artifact_id=int(art.id),
+            logical_version_no=int(art.logical_version_no or 1) + 1,
         )
         session.add(new_art)
+        await session.flush()
         await session.commit()
         await _set_rls_context(session, enterprise_id)
         return {
@@ -676,11 +709,19 @@ async def save_artifact_file(
             "name": new_art.name,
             "bytes": len(data),
             "version_no": 1,
+            "logical_file_id": int(new_art.logical_file_id),
+            "logical_version_no": int(new_art.logical_version_no),
+            "parent_artifact_id": int(new_art.parent_artifact_id),
             "mode": "new",
         }
 
+    # 覆盖前归档当前版本内容（issue #21）：覆盖后可回读历史版本
+    await _archive_artifact_content(session, enterprise_id, art)
     art.content = data
     art.version_no = int(art.version_no or 0) + 1
+    if art.logical_file_id is None:
+        art.logical_file_id = int(art.id)
+        art.logical_version_no = 1
     await session.commit()
     await _set_rls_context(session, enterprise_id)
     return {
@@ -688,8 +729,88 @@ async def save_artifact_file(
         "name": art.name,
         "bytes": len(data),
         "version_no": int(art.version_no or 0),
+        "logical_file_id": int(art.logical_file_id),
+        "logical_version_no": int(art.logical_version_no or 1),
+        "parent_artifact_id": art.parent_artifact_id,
         "mode": "overwrite",
     }
+
+
+async def list_artifact_versions(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    artifact_id: int,
+) -> dict:
+    """同一逻辑文件的版本链（issue #21）：另存为链条上的全部 artifact，按逻辑版本排序。"""
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentArtifact
+
+    art = await session.scalar(
+        _sa_select(AgentArtifact).where(
+            AgentArtifact.id == int(artifact_id),
+            AgentArtifact.enterprise_id == int(enterprise_id),
+            AgentArtifact.project_id == int(project_id),
+        )
+    )
+    if art is None:
+        raise ValueError("产物不存在或不属于本项目")
+    root_id = int(art.logical_file_id or art.id)
+    rows = (
+        await session.scalars(
+            _sa_select(AgentArtifact).where(
+                AgentArtifact.enterprise_id == int(enterprise_id),
+                AgentArtifact.project_id == int(project_id),
+                (
+                    (AgentArtifact.id == root_id)
+                    | (AgentArtifact.logical_file_id == root_id)
+                ),
+            )
+        )
+    ).all()
+    versions = [_artifact_meta(a, project_id) for a in rows]
+    versions.sort(key=lambda v: (int(v["logical_version_no"]), int(v["artifact_id"])))
+    return {
+        "artifact_id": int(artifact_id),
+        "logical_file_id": root_id,
+        "current_artifact_id": int(art.id),
+        "versions": versions,
+    }
+
+
+async def read_artifact_version(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    artifact_id: int,
+    version_no: int,
+) -> tuple[bytes, str, str]:
+    """读取指定版本内容：当前版本取 artifact.content，历史版本取归档表（issue #21）。"""
+    from sqlalchemy import select as _sa_select
+
+    from app.models.agent import AgentArtifact, AgentArtifactContentVersion
+
+    art = await session.scalar(
+        _sa_select(AgentArtifact).where(
+            AgentArtifact.id == int(artifact_id),
+            AgentArtifact.enterprise_id == int(enterprise_id),
+            AgentArtifact.project_id == int(project_id),
+        )
+    )
+    if art is None:
+        raise ValueError("产物不存在或不属于本项目")
+    if int(version_no) == int(art.version_no):
+        return art.content or b"", art.mime, str(art.name or "").rsplit("/", 1)[-1]
+    row = await session.scalar(
+        _sa_select(AgentArtifactContentVersion).where(
+            AgentArtifactContentVersion.artifact_id == int(artifact_id),
+            AgentArtifactContentVersion.version_no == int(version_no),
+        )
+    )
+    if row is None:
+        raise ValueError("该版本不存在或不可读")
+    return row.content or b"", art.mime, str(art.name or "").rsplit("/", 1)[-1]
 
 
 async def render_qa_artifact(
@@ -1255,6 +1376,9 @@ def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
         "mime": art.mime,
         "bytes": len(art.content or b""),
         "version_no": int(art.version_no or 0) or 1,
+        "logical_file_id": int(art.logical_file_id or art.id),
+        "logical_version_no": int(art.logical_version_no or 1),
+        "parent_artifact_id": art.parent_artifact_id,
         "is_internal": group.startswith("内部管理文件"),
         "created_at": art.created_at.isoformat() if art.created_at else None,
         "updated_at": art.updated_at.isoformat() if art.updated_at else None,

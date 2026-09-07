@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, LargeBinary, SmallInteger, String, Text, func
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, BigInt, TimestampMixin
@@ -44,12 +45,32 @@ class AgentArtifact(Base, TimestampMixin):
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, default=b"")
     # 覆盖修改时递增；初次封存为 1。artifact_id 保持稳定，版本号用于前端识别内容变化。
     version_no: Mapped[int] = mapped_column(BigInt, nullable=False, default=1)
+    # 逻辑文件身份（issue #21）：同一逻辑文件在“另存为新版本”链上保持同一 lineage
+    logical_file_id: Mapped[int | None] = mapped_column(BigInt, nullable=True, index=True)
+    parent_artifact_id: Mapped[int | None] = mapped_column(BigInt, nullable=True)
+    logical_version_no: Mapped[int | None] = mapped_column(BigInt, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class AgentArtifactContentVersion(Base, TimestampMixin):
+    """产物覆盖前内容归档（issue #21）：覆盖保存前把当前版本内容落历史，覆盖后可回读。"""
+
+    __tablename__ = "agent_artifact_content_version"
+    __table_args__ = (
+        UniqueConstraint("artifact_id", "version_no", name="uq_artifact_content_version"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    project_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    artifact_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    version_no: Mapped[int] = mapped_column(BigInt, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, default=b"")
 
 
 class AgentCustomerAsk(Base, TimestampMixin):

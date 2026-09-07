@@ -59,6 +59,131 @@ def _docx_bytes_with_deleted_bare(paragraphs: list[str]) -> bytes:
     return buf.getvalue()
 
 
+def _seed_artifact(maker, pid: int, name: str, content: bytes) -> int:
+    """直接落一条 item_docx 产物（无外键约束的 task_id 用 1 即可）。"""
+    from app.models.agent import AgentArtifact
+
+    async def _run() -> int:
+        async with maker() as session:
+            art = AgentArtifact(
+                enterprise_id=1,
+                project_id=pid,
+                task_id=1,
+                kind="item_docx",
+                name=name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                content=content,
+                version_no=1,
+            )
+            session.add(art)
+            await session.commit()
+            return int(art.id)
+
+    return asyncio.run(_run())
+
+
+def test_save_as_new_keeps_lineage_and_old_version(client):
+    """另存为新版本：继承逻辑文件身份、逻辑版本递增，旧 artifact 保留可下载（issue #21）。"""
+    _h, pid = _setup(client)
+    from app.services import assembly_service
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    v1 = _docx_bytes(["第一版内容"])
+    v2 = _docx_bytes(["第二版内容"])
+    aid = _seed_artifact(maker, pid, "价格文件/（一）响应函及报价汇总表.docx", v1)
+
+    async def _run():
+        async with maker() as session:
+            res = await assembly_service.save_artifact_file(
+                session, 1, pid, None, aid, v2, mode="new"
+            )
+            return res
+
+    res = asyncio.run(_run())
+    assert res["mode"] == "new"
+    assert res["logical_file_id"] == aid
+    assert res["parent_artifact_id"] == aid
+    assert res["logical_version_no"] == 2
+    assert res["version_no"] == 1
+
+    async def _list():
+        async with maker() as session:
+            return await assembly_service.list_artifact_versions(session, 1, pid, aid)
+
+    versions = asyncio.run(_list())
+    assert [v["artifact_id"] for v in versions["versions"]] == [aid, res["artifact_id"]]
+    assert [v["logical_version_no"] for v in versions["versions"]] == [1, 2]
+    asyncio.run(engine.dispose())
+
+
+def test_overwrite_archives_previous_content(client):
+    """覆盖保存：version_no 递增，覆盖前内容可通过历史读取（issue #21）。"""
+    _h, pid = _setup(client)
+    from app.services import assembly_service
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    v1 = _docx_bytes(["覆盖前内容"])
+    v2 = _docx_bytes(["覆盖后内容"])
+    aid = _seed_artifact(maker, pid, "价格文件/（一）响应函及报价汇总表.docx", v1)
+
+    async def _run():
+        async with maker() as session:
+            res = await assembly_service.save_artifact_file(
+                session, 1, pid, None, aid, v2, mode="overwrite"
+            )
+            old, mime, name = await assembly_service.read_artifact_version(
+                session, 1, pid, aid, 1
+            )
+            new, _, _ = await assembly_service.read_artifact_version(
+                session, 1, pid, aid, 2
+            )
+            return res, old, new, mime, name
+
+    res, old, new, mime, name = asyncio.run(_run())
+    assert res["version_no"] == 2
+    assert res["logical_file_id"] == aid
+    assert old == v1
+    assert new == v2
+    assert name == "（一）响应函及报价汇总表.docx"
+    assert mime.startswith("application/vnd.openxmlformats")
+    asyncio.run(engine.dispose())
+
+
+def test_artifact_versions_endpoints(client):
+    """版本链列表与历史版本下载接口可被普通 JWT 用户访问（issue #21）。"""
+    h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    v1 = _docx_bytes(["端点第一版"])
+    v2 = _docx_bytes(["端点第二版"])
+    aid = _seed_artifact(maker, pid, "价格文件/（一）响应函及报价汇总表.docx", v1)
+
+    from app.services import assembly_service
+
+    async def _overwrite():
+        async with maker() as session:
+            await assembly_service.save_artifact_file(
+                session, 1, pid, None, aid, v2, mode="overwrite"
+            )
+
+    asyncio.run(_overwrite())
+
+    r = client.get(f"/api/v1/projects/{pid}/assembly/artifacts/{aid}/versions", headers=h)
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["logical_file_id"] == aid
+    assert [v["version_no"] for v in payload["versions"]] == [2]
+
+    dl = client.get(
+        f"/api/v1/projects/{pid}/agent-artifact/{aid}/versions/1/download", headers=h
+    )
+    assert dl.status_code == 200
+    assert dl.content == v1
+    asyncio.run(engine.dispose())
+
+
 def test_seal_returns_identity_signals(client, monkeypatch):
     """seal 只给信息信号、不拦截：回执带 req_title/matched_title/was_verified，供 agent 自查。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)

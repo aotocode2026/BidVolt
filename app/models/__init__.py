@@ -1,6 +1,12 @@
 """SQLAlchemy 模型包（导入即注册到 Base.metadata）。"""
 
-from app.models.agent import AgentArtifact, AgentCustomerAsk, AgentSessionEvent, PreChatMessage
+from app.models.agent import (
+    AgentArtifact,
+    AgentArtifactContentVersion,
+    AgentCustomerAsk,
+    AgentSessionEvent,
+    PreChatMessage,
+)
 from app.models.audit import AuditLog
 from app.models.auth import AppUser, Enterprise, EnterprisePermission, ProjectEditLock, RefreshToken
 from app.models.chat import Conversation, ConversationMessage
@@ -47,6 +53,7 @@ from app.models.tender_notice import TenderNotice
 
 __all__ = [
     "AgentArtifact",
+    "AgentArtifactContentVersion",
     "AgentCustomerAsk",
     "AgentSessionEvent",
     "AppUser",

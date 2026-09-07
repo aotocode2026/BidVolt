@@ -6,6 +6,8 @@ MCP 调用带 X-Bidvolt-Cap 能力令牌，逐工具校验白名单/租户/任�
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -19,6 +21,12 @@ from app.schemas.agent import AgentArtifactInspect, AgentArtifactListResponse
 from app.services import assembly_service
 
 router = APIRouter(prefix="/projects", tags=["agent-assembly"])
+
+
+def _content_disposition(filename: str) -> str:
+    """RFC 5987：ASCII 回退 + percent-encoded UTF-8 filename*，避免中文文件名撞 latin-1 头编码。"""
+    fallback = filename.encode("ascii", "ignore").decode("ascii").strip() or "download"
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename)}'
 
 
 async def _ensure_project(session: AsyncSession, enterprise_id: int, project_id: int) -> None:
@@ -355,6 +363,23 @@ async def inspect_agent_artifact(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@router.get("/{project_id}/assembly/artifacts/{artifact_id}/versions")
+async def list_artifact_versions(
+    project_id: int,
+    artifact_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """同一逻辑文件的版本链（issue #21）：另存为链条上的全部 artifact 按逻辑版本排序。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    try:
+        return await assembly_service.list_artifact_versions(
+            session, user.enterprise_id, project_id, artifact_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get("/{project_id}/agent-artifact/{artifact_id}/download")
 async def download_artifact(
     project_id: int,
@@ -375,5 +400,30 @@ async def download_artifact(
     return Response(
         content=art.content,
         media_type=art.mime,
-        headers={"Content-Disposition": f'attachment; filename="{art.name.rsplit("/", 1)[-1]}"'},
+        headers={"Content-Disposition": _content_disposition(art.name.rsplit("/", 1)[-1])},
+    )
+
+
+@router.get("/{project_id}/agent-artifact/{artifact_id}/versions/{version_no}/download")
+async def download_artifact_version(
+    project_id: int,
+    artifact_id: int,
+    version_no: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_DOWNLOAD)),
+) -> Response:
+    """下载产物指定版本内容：当前版本取 artifact，历史版本取覆盖前归档（issue #21）。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    try:
+        content, mime, filename = await assembly_service.read_artifact_version(
+            session, user.enterprise_id, project_id, artifact_id, version_no
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={
+            "Content-Disposition": _content_disposition(f"v{version_no}_{filename}")
+        },
     )

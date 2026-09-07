@@ -20,6 +20,9 @@ class AgentArtifactSummary(BaseModel):
     mime: str
     bytes: int
     version_no: int
+    logical_file_id: int
+    logical_version_no: int
+    parent_artifact_id: int | None
     is_internal: bool
     status: str
     created_at: datetime
@@ -51,6 +54,9 @@ class AgentArtifactInspect(BaseModel):
     mime: str
     bytes: int
     version_no: int
+    logical_file_id: int
+    logical_version_no: int
+    parent_artifact_id: int | None
     is_internal: bool
     status: str
     created_at: datetime
