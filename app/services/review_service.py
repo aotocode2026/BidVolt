@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent import AgentArtifact
 from app.models.deliverable import Deliverable
 from app.models.project_material import ProjectMaterial, ProjectSnapshot
 from app.models.requirement import Requirement
@@ -23,6 +24,21 @@ from app.services import deliverable_service
 
 RULESET_VERSION = "builtin-code-1.0"
 DELIVERABLE_NAMES = {1: "商务标", 2: "技术标", 3: "报价单"}
+
+
+async def _project_artifact_versions(
+    session: AsyncSession, enterprise_id: int, project_id: int
+) -> dict[int, int]:
+    """当前正式 artifact 的版本映射（artifact_id -> version_no，issue #22）。"""
+    artifacts = (
+        await session.scalars(
+            select(AgentArtifact).where(
+                AgentArtifact.enterprise_id == enterprise_id,
+                AgentArtifact.project_id == project_id,
+            )
+        )
+    ).all()
+    return {int(a.id): int(a.version_no) for a in artifacts}
 
 
 async def ensure_builtin_provider(session: AsyncSession, enterprise_id: int) -> ReviewProvider:
@@ -103,8 +119,10 @@ async def run_evaluation(
         )
     ).all()
     existing_types = {d.deliverable_type for d in deliverables}
+    artifact_versions = await _project_artifact_versions(session, enterprise_id, project_id)
     input_refs = {
         "deliverable_versions": {d.id: d.current_version_no for d in deliverables},
+        "artifact_versions": artifact_versions,
         "ruleset": RULESET_VERSION,
         "provider_code": provider.provider_code,
         "provider_version": provider.provider_version,
@@ -276,6 +294,7 @@ async def run_evaluation(
         missing_count=missing_count,
         improvable=round(sum(d["improvable"] for d in items_data), 2),
         deliverable_versions=input_refs["deliverable_versions"],
+        artifact_versions=artifact_versions,
         detail={
             "items_count": len(items_data),
             "score_rules": score_rule_stats,
@@ -382,11 +401,26 @@ async def re_evaluate(
         raise ValueError("没有可重审的条目")
 
     provider = await ensure_builtin_provider(session, enterprise_id)
+    deliverables = (
+        await session.scalars(
+            select(Deliverable).where(
+                Deliverable.enterprise_id == enterprise_id,
+                Deliverable.project_id == project_id,
+            )
+        )
+    ).all()
+    deliverable_versions = {d.id: d.current_version_no for d in deliverables}
+    artifact_versions = await _project_artifact_versions(session, enterprise_id, project_id)
     snapshot = ProjectSnapshot(
         enterprise_id=enterprise_id,
         project_id=project_id,
         snapshot_type="review",
-        input_refs={"item_ids": item_ids, "ruleset": RULESET_VERSION},
+        input_refs={
+            "item_ids": item_ids,
+            "ruleset": RULESET_VERSION,
+            "deliverable_versions": deliverable_versions,
+            "artifact_versions": artifact_versions,
+        },
         rules_version={"ruleset": RULESET_VERSION},
     )
     session.add(snapshot)
@@ -491,6 +525,8 @@ async def re_evaluate(
         total_score=round(total_got / total_full * 100, 2) if total_full else 0.0,
         missing_count=sum(1 for i in all_items if i.got == 0),
         improvable=round(sum(float(i.improvable or 0) for i in all_items), 2),
+        deliverable_versions=deliverable_versions,
+        artifact_versions=artifact_versions,
         detail={"re_evaluated": len(new_items), "carried": len(carried)},
     )
     session.add(score)

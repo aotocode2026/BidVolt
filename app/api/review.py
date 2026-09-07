@@ -74,6 +74,7 @@ async def latest_score(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="尚未评标")
     run = await session.get(ReviewRun, score.review_run_id) if score.review_run_id else None
     from app.models.deliverable import Deliverable
+    from app.models.agent import AgentArtifact
 
     current_deliverables = (
         await session.scalars(
@@ -84,13 +85,39 @@ async def latest_score(
         )
     ).all()
     current_versions = {d.id: d.current_version_no for d in current_deliverables}
-    frozen_versions = score.deliverable_versions or {}
+    # 键归一化为整数：JSON 序列化后键会变成字符串，直接比较会全部漏判（issue #22）
+    frozen_versions = {
+        int(did): int(scored) for did, scored in (score.deliverable_versions or {}).items()
+    }
+    frozen_artifacts = {
+        int(aid): int(ver) for aid, ver in (score.artifact_versions or {}).items()
+    }
+    current_artifacts = (
+        await session.scalars(
+            select(AgentArtifact).where(
+                AgentArtifact.enterprise_id == user.enterprise_id,
+                AgentArtifact.project_id == project_id,
+            )
+        )
+    ).all()
+    current_artifact_versions = {int(a.id): int(a.version_no) for a in current_artifacts}
+    artifact_names = {int(a.id): a.name for a in current_artifacts}
     stale_reasons = [
         {"deliverable_id": did, "scored_version": scored, "current_version": current_versions.get(did)}
         for did, scored in frozen_versions.items()
         if current_versions.get(did) is not None and current_versions.get(did) != scored
     ]
+    artifact_stale_reasons = [
+        {
+            "artifact_id": aid,
+            "scored_version": scored,
+            "current_version": current_artifact_versions.get(aid),
+        }
+        for aid, scored in frozen_artifacts.items()
+        if current_artifact_versions.get(aid) != scored
+    ]
     return {
+        "has_score": True,
         "score_id": score.id,
         "review_run_id": score.review_run_id,
         "snapshot_id": run.snapshot_id if run else None,
@@ -99,8 +126,17 @@ async def latest_score(
         "improvable": float(score.improvable) if score.improvable is not None else None,
         "detail": score.detail,
         "deliverable_versions": frozen_versions,
-        "is_stale": bool(stale_reasons),
-        "stale_reasons": stale_reasons,
+        "artifact_versions": frozen_artifacts,
+        "scored_artifacts": [
+            {
+                "artifact_id": aid,
+                "name": artifact_names.get(aid),
+                "version_no": ver,
+            }
+            for aid, ver in sorted(frozen_artifacts.items())
+        ],
+        "is_stale": bool(stale_reasons or artifact_stale_reasons),
+        "stale_reasons": stale_reasons + artifact_stale_reasons,
         # 评分基准（Issue #8）：scale=score_rules 按招标评分细则打分；builtin=内置完整性规则
         "scale": (score.detail or {}).get("scale", "builtin"),
         "full_marks": (score.detail or {}).get("full_marks"),

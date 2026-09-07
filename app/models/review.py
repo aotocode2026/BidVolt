@@ -71,6 +71,8 @@ class ScoreRecord(Base, TimestampMixin):
     improvable: Mapped[float | None] = mapped_column(Numeric(6, 2))
     detail: Mapped[dict | None] = mapped_column(JSONType)
     deliverable_versions: Mapped[dict | None] = mapped_column(JSONType)
+    # 评分时冻结的正式 artifact 版本（artifact_id -> version_no，issue #22）
+    artifact_versions: Mapped[dict | None] = mapped_column(JSONType)
 
 
 class ReviewItem(Base, TimestampMixin):

@@ -91,6 +91,77 @@ def test_evaluate_weighted_score_rules(client):
     assert "评分细则未在成果中体现" in missed_item["suggestion"]
 
 
+def test_latest_score_binds_artifact_versions_and_detects_stale(client):
+    """评分冻结 artifact 版本；artifact/结构化成果版本变化后旧分判过期（issue #22）。"""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models.agent import AgentArtifact
+
+    h, pid = _setup(client)
+    did1 = _create_deliverable(client, h, pid, 1, {"nodes": [{"type": "paragraph", "text": "商务"}]})
+    _create_deliverable(client, h, pid, 2, {"nodes": [{"type": "paragraph", "text": "技术"}]})
+    _create_deliverable(client, h, pid, 3, {"type": "sheet", "sheets": [{"name": "报价单", "rows": [["项目", "建议价"]]}]})
+
+    engine = create_async_engine("sqlite+aiosqlite:///./.test_bidvolt.db")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _seed() -> int:
+        async with maker() as s:
+            art = AgentArtifact(
+                enterprise_id=1,
+                project_id=pid,
+                task_id=1,
+                kind="item_docx",
+                name="价格文件/报价单.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                content=b"x",
+                version_no=1,
+            )
+            s.add(art)
+            await s.commit()
+            return int(art.id)
+
+    aid = asyncio.run(_seed())
+    r = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h)
+    assert r.status_code == 200
+
+    latest = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
+    assert latest["has_score"] is True
+    assert latest["artifact_versions"] == {str(aid): 1}
+    assert any(a["artifact_id"] == aid for a in latest["scored_artifacts"])
+    assert latest["is_stale"] is False
+
+    # artifact 版本变化 → 旧分过期（issue #22 核心验收）
+    async def _bump_artifact():
+        async with maker() as s:
+            art = await s.get(AgentArtifact, aid)
+            art.version_no = 2
+            await s.commit()
+
+    asyncio.run(_bump_artifact())
+    stale_after_artifact = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
+    assert stale_after_artifact["is_stale"] is True
+    assert any(
+        reason.get("artifact_id") == aid and reason.get("current_version") == 2
+        for reason in stale_after_artifact["stale_reasons"]
+    )
+
+    # 结构化成果版本变化 → 旧分过期（字符串/整数键比对修复）
+    client.post(
+        f"/api/v1/deliverables/{did1}/versions",
+        json={"content": {"nodes": [{"type": "paragraph", "text": "商务第二版"}]}, "version_type": 2},
+        headers=h,
+    )
+    stale_after_deliverable = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
+    assert any(
+        reason.get("deliverable_id") == did1 and reason.get("current_version") == 2
+        for reason in stale_after_deliverable["stale_reasons"]
+    )
+    asyncio.run(engine.dispose())
+
+
 def test_two_enterprises_both_evaluate(client):
     """服务器实测回归：内置 Provider 按企业隔离创建，
     唯一约束为 (enterprise_id, provider_code)，第二个企业评审不再撞

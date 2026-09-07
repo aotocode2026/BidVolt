@@ -52,6 +52,9 @@ class QuoteCalc(Base, TimestampMixin):
     enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
     project_id: Mapped[int] = mapped_column(BigInt, nullable=False)
     deliverable_id: Mapped[int | None] = mapped_column(BigInt)
+    # 报价绑定的正式 artifact 与版本（issue #22，前端提交成果目录中的文件时写入）
+    artifact_id: Mapped[int | None] = mapped_column(BigInt)
+    artifact_version_no: Mapped[int | None] = mapped_column(BigInt)
     params: Mapped[dict] = mapped_column(JSONType, nullable=False)
     result: Mapped[dict] = mapped_column(JSONType, nullable=False)
     strategy_results: Mapped[dict | None] = mapped_column(JSONType)

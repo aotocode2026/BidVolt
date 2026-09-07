@@ -153,6 +153,37 @@ def test_history_library_query_contract(client):
     assert all(s["price_mode"] == "固定总价" for s in fixed["samples"])
 
 
+def test_calculate_records_artifact_binding(client):
+    """报价测算可绑定正式 artifact 与版本，详情/列表可读回（issue #22）。"""
+    h, pid, did, _ = _setup(client)
+    _seed_public()
+    r = client.post(
+        "/api/v1/quotes/calculate",
+        json={
+            "material_ref": "CABLE-YJV-3x95",
+            "cost": 100,
+            "min_profit_rate": 0.1,
+            "unit": "万元",
+            "project_id": pid,
+            "deliverable_id": did,
+            "artifact_id": 933,
+            "artifact_version_no": 2,
+        },
+        headers=h,
+    )
+    assert r.status_code == 200
+    calc_id = r.json()["calc_id"]
+
+    detail = client.get(f"/api/v1/quotes/{calc_id}", headers=h).json()
+    assert detail["artifact_id"] == 933
+    assert detail["artifact_version_no"] == 2
+
+    items = client.get("/api/v1/quotes", params={"project_id": pid}, headers=h).json()["items"]
+    mine = next(i for i in items if i["calc_id"] == calc_id)
+    assert mine["artifact_id"] == 933
+    assert mine["artifact_version_no"] == 2
+
+
 def test_history_import_public_builds_shared_library(client):
     """共建导入：上传「标黄提取」格式 xlsx 入公共库，随后可查询到（含折扣率行正确归一）。"""
     h, _, _, _ = _setup(client)
