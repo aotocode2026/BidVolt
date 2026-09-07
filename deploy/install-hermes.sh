@@ -66,6 +66,7 @@ export HERMES_HOME
 "$HERMES" config set model.max_tokens 8000 >/dev/null 2>&1 || true
 "$HERMES" config set model_catalog.enabled false >/dev/null 2>&1 || true
 "$HERMES" config set display.language zh >/dev/null 2>&1 || true
+"$HERMES" config set display.show_reasoning false >/dev/null 2>&1 || true
 
 "$HERMES_VENV/bin/python" - "$HERMES_HOME/config.yaml" "$BIDVOLT_ENV" "$REPO" "$HERMES_HOME" <<'PY'
 import os, re, sys, yaml

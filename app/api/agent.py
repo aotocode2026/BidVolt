@@ -413,6 +413,12 @@ async def agent_run_chat(
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message 不能为空")
+    client_message_id = str(body.get("client_message_id") or "").strip() or None
+    if client_message_id is not None and len(client_message_id) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="client_message_id 过长（最多 100 字符）",
+        )
     from app.services.agent_pipeline import chat_with_session, queue_chat_message
 
     if task.status in (1, 2):
@@ -420,7 +426,9 @@ async def agent_run_chat(
         # 长驻 REPL 抢同一会话。mode=queue（默认）排队下一轮处理；mode=steer 插话——
         # 下一个工具调用后注入改方向提示，不打断当前步骤。
         mode = "steer" if str(body.get("mode") or "") == "steer" else "queue"
-        queue_result = await queue_chat_message(session, task, message, mode)
+        queue_result = await queue_chat_message(
+            session, task, message, mode, client_message_id=client_message_id
+        )
         if mode == "steer":
             hint = "插话已注入：主会话在下一步工具调用后会看到并调整方向（不打断当前步骤）。"
         else:
@@ -432,9 +440,10 @@ async def agent_run_chat(
             "session_id": (task.result or {}).get("session_id"),
             "message_id": queue_result.get("message_id"),
             "status": "queued",
+            "duplicate": bool(queue_result.get("duplicate")),
             "message": hint,
         }
     try:
-        return await chat_with_session(session, task, message)
+        return await chat_with_session(session, task, message, client_message_id=client_message_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

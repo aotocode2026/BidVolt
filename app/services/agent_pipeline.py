@@ -224,7 +224,15 @@ async def _next_seq(session: AsyncSession, task: Task) -> int:
     return int(cur or 0)
 
 
-async def _append_events(session: AsyncSession, task: Task, seq: list[int], batch: list[tuple[str, str]]) -> None:
+async def _append_events(
+    session: AsyncSession,
+    task: Task,
+    seq: list[int],
+    batch: list[tuple[str, str]],
+    *,
+    client_message_id: str | None = None,
+    reply_to_seq: int | None = None,
+) -> None:
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
 
@@ -242,16 +250,19 @@ async def _append_events(session: AsyncSession, task: Task, seq: list[int], batc
     seq[0] = max(seq[0], int(cur or 0))
     for kind, content in batch:
         seq[0] += 1
-        session.add(
-            AgentSessionEvent(
-                enterprise_id=task.enterprise_id,
-                project_id=task.project_id,
-                task_id=task.id,
-                seq=seq[0],
-                kind=kind,
-                content=content,
-            )
+        event = AgentSessionEvent(
+            enterprise_id=task.enterprise_id,
+            project_id=task.project_id,
+            task_id=task.id,
+            seq=seq[0],
+            kind=kind,
+            content=content,
         )
+        if client_message_id is not None:
+            event.client_message_id = client_message_id
+        if reply_to_seq is not None:
+            event.reply_to_seq = reply_to_seq
+        session.add(event)
     await session.commit()
     await _set_rls_context(session, task.enterprise_id)
 
@@ -1603,7 +1614,78 @@ async def _event_tail(session: AsyncSession, task: Task, limit: int) -> str:
     return "\n".join(r.content or "" for r in reversed(rows))[-limit:]
 
 
-async def queue_chat_message(session: AsyncSession, task: Task, message: str, mode: str = "queue") -> dict:
+async def _find_client_message_event(
+    session: AsyncSession, task: Task, client_message_id: str | None
+) -> AgentSessionEvent | None:
+    """按客户端幂等标识查找已写入的 user 事件；未携带标识时恒为 None。"""
+    if not client_message_id:
+        return None
+    from sqlalchemy import select as sa_select
+
+    return await session.scalar(
+        sa_select(AgentSessionEvent)
+        .where(
+            AgentSessionEvent.task_id == task.id,
+            AgentSessionEvent.kind == "user",
+            AgentSessionEvent.client_message_id == client_message_id,
+        )
+        .order_by(AgentSessionEvent.seq.desc())
+        .limit(1)
+    )
+
+
+async def _replay_chat_result(
+    session: AsyncSession, task: Task, user_event: AgentSessionEvent, sid: str
+) -> dict:
+    """幂等重试命中：回放该消息已有的回复/失败结果，不再重复执行。"""
+    from sqlalchemy import select as sa_select
+
+    reply = await session.scalar(
+        sa_select(AgentSessionEvent)
+        .where(
+            AgentSessionEvent.task_id == task.id,
+            AgentSessionEvent.reply_to_seq == user_event.seq,
+        )
+        .order_by(AgentSessionEvent.seq.desc())
+        .limit(1)
+    )
+    if reply is not None and reply.kind == "hermes":
+        return {
+            "reply": reply.content,
+            "session_id": sid,
+            "message_id": user_event.seq,
+            "reply_to_message_id": reply.seq,
+            "status": "processed",
+            "duplicate": True,
+        }
+    if reply is not None and reply.kind == "error":
+        return {
+            "reply": None,
+            "session_id": sid,
+            "message_id": user_event.seq,
+            "reply_to_message_id": None,
+            "status": "failed",
+            "error": reply.content,
+            "duplicate": True,
+        }
+    return {
+        "reply": None,
+        "session_id": sid,
+        "message_id": user_event.seq,
+        "reply_to_message_id": None,
+        "status": "failed",
+        "error": "该消息上次处理未完成或结果已丢失，请稍后重试",
+        "duplicate": True,
+    }
+
+
+async def queue_chat_message(
+    session: AsyncSession,
+    task: Task,
+    message: str,
+    mode: str = "queue",
+    client_message_id: str | None = None,
+) -> dict:
     """运行中的任务：把客户消息追加进任务字段 + 事件流（runner 泵循环取出后经 PTY 注入）。
 
     mode：queue=排队（下一轮处理，/queue 注入）；steer=插话（下一个工具调用后注入
@@ -1615,6 +1697,15 @@ async def queue_chat_message(session: AsyncSession, task: Task, message: str, mo
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     await _set_rls_context(session, task.enterprise_id)
+    existing = await _find_client_message_event(session, task, client_message_id)
+    if existing is not None:
+        # 幂等：同一 client_message_id 不重复入队、不重复写 user 事件
+        return {
+            "message_id": existing.seq,
+            "status": "queued",
+            "mode": mode,
+            "duplicate": True,
+        }
     row = (
         await session.execute(
             sa_select(Task).where(Task.id == task.id).with_for_update()
@@ -1626,7 +1717,9 @@ async def queue_chat_message(session: AsyncSession, task: Task, message: str, mo
     payload["pending_chat"] = pending
     row.payload = payload
     seq = [await _next_seq(session, task)]
-    await _append_events(session, task, seq, [("user", message)])
+    await _append_events(
+        session, task, seq, [("user", message)], client_message_id=client_message_id
+    )
     await session.commit()
     return {
         "message_id": seq[0],
@@ -1635,9 +1728,13 @@ async def queue_chat_message(session: AsyncSession, task: Task, message: str, mo
     }
 
 
-async def chat_with_session(session: AsyncSession, task: Task, message: str) -> dict:
-    """客户在网页上直接与主会话对话：向同一 session 追加一条消息，
-    返回主会话回复。同一任务串行（一个会话一次只能进行一轮对话）。"""
+async def chat_with_session(
+    session: AsyncSession, task: Task, message: str, client_message_id: str | None = None
+) -> dict:
+    """客户在网页上直接与主会话对话：向同一 session 追加一条消息，返回主会话回复。
+
+    同一任务串行（一个会话一次只能进行一轮对话）。携带 client_message_id 时幂等：
+    同一标识只写入一条 user 事件，重试直接回放已有回复/失败结果，不重复执行。"""
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
     result = task.result or {}
@@ -1665,8 +1762,15 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
 
     lock = _CHAT_LOCKS.setdefault(task.id, asyncio.Lock())
     async with lock:
+        existing = await _find_client_message_event(session, task, client_message_id)
+        if existing is not None:
+            return await _replay_chat_result(session, task, existing, sid)
+
         seq = [await _next_seq(session, task)]
-        await _append_events(session, task, seq, [("user", message)])
+        await _append_events(
+            session, task, seq, [("user", message)], client_message_id=client_message_id
+        )
+        user_seq = seq[0]
         try:
             proc = await asyncio.create_subprocess_exec(
                 hermes_bin, "chat", "-q", message,
@@ -1678,10 +1782,51 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
             )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=1800)
         except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
+            # 记录失败事件（reply_to_seq 指向本消息），重试可回放，不会静默丢结果
+            await _append_events(
+                session,
+                task,
+                [user_seq],
+                [("error", "主会话本轮对话超时（1800s）：请稍后再试")],
+                reply_to_seq=user_seq,
+            )
             raise ValueError("主会话本轮对话超时（1800s）：请稍后再试") from None
+
         raw = out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace")
-        reply = _strip_session_trailer(raw).strip()
-        await _append_events(session, task, seq, [("hermes", reply or raw.strip()[-800:])])
+        reply = _clean_reply(raw)
+        # 运行异常不再冒充正常回复：退出码非 0 或输出无有效内容都返回明确失败状态
+        if proc.returncode not in (None, 0):
+            error_text = f"本轮处理失败：Hermes 进程退出码 {proc.returncode}，请稍后重试"
+            await _append_events(
+                session, task, [user_seq], [("error", error_text)], reply_to_seq=user_seq
+            )
+            return {
+                "reply": None,
+                "session_id": sid,
+                "returncode": proc.returncode,
+                "message_id": user_seq,
+                "reply_to_message_id": None,
+                "status": "failed",
+                "error": error_text,
+            }
+        if not reply:
+            error_text = "主会话未返回有效回复（输出为空或仅含运行提示），请稍后重试"
+            await _append_events(
+                session, task, [user_seq], [("error", error_text)], reply_to_seq=user_seq
+            )
+            return {
+                "reply": None,
+                "session_id": sid,
+                "returncode": proc.returncode,
+                "message_id": user_seq,
+                "reply_to_message_id": None,
+                "status": "no_valid_reply",
+                "error": error_text,
+            }
+
+        seq = [user_seq]
+        await _append_events(session, task, seq, [("hermes", reply)], reply_to_seq=user_seq)
+        reply_seq = seq[0]
         # 纯代码收尾：任务完成后的对话也会把会话记录刷新进最终 zip（完整版+精简版），主会话不感知
         try:
             await _refresh_zip_record(session, task)
@@ -1691,20 +1836,36 @@ async def chat_with_session(session: AsyncSession, task: Task, message: str) -> 
             "reply": reply,
             "session_id": sid,
             "returncode": proc.returncode,
-            "message_id": seq[0],
-            "reply_to_message_id": seq[0],
+            "message_id": user_seq,
+            "reply_to_message_id": reply_seq,
             "status": "processed",
         }
 
 
-def _strip_session_trailer(raw: str) -> str:
-    """-Q 模式下输出=最终回复+会话信息尾注；剥离尾注行，保留回复正文。"""
-    lines = raw.splitlines()
-    out = []
-    for ln in lines:
-        if re.match(r"^(Resume this session with:|[Ss]ession[_ ]?[Ii]?[Dd]?:|Duration:|Messages:|$)", ln.strip()):
+_TRAILER_LINE_RES = (
+    re.compile(r"^↻\s+Resumed session"),
+    re.compile(r"^Resume this session with:"),
+    re.compile(r"^[Ss]ession[_ ]?[Ii]?[Dd]?:"),
+    re.compile(r"^Duration:"),
+    re.compile(r"^Messages:"),
+    re.compile(r"^Window too small\.*$"),
+)
+
+
+def _clean_reply(raw: str) -> str:
+    """把 hermes -Q 输出清洗为可展示回复：去 ANSI、去框线/状态条/思考动画、
+    Reasoning 框与会话尾注。空白或仅剩噪音时返回空串，由调用方判定无效回复。"""
+    text = _strip_ansi(raw)
+    out: list[str] = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
             continue
-        out.append(ln)
+        if _is_noise_line(ln):
+            continue
+        if any(p.match(s) for p in _TRAILER_LINE_RES):
+            continue
+        out.append(ln.rstrip())
     return "\n".join(out).strip()
 
 
@@ -1762,7 +1923,7 @@ async def pre_chat(session: AsyncSession, project, message: str) -> dict:
         except asyncio.TimeoutError:  # noqa: UP041 服务器 Python 3.10
             raise ValueError("任务前对话超时（1800s）：请稍后再试") from None
         raw = out.decode("utf-8", "replace") + "\n" + err.decode("utf-8", "replace")
-        reply = _strip_session_trailer(raw).strip()
+        reply = _clean_reply(raw)
         m = _SESSION_ID_RE.search(raw)
         if m:
             sid = m.group(1)
