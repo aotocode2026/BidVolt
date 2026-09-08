@@ -12,7 +12,7 @@
 | id | 2026-09-08-2056-fix-tender-import-any-site |
 | datetime | 2026-09-08T20:56:00+08:00 |
 | type | fix |
-| status | deployed |
+| status | released |
 | scope | tender-notices |
 | related | issue #32, discussion #27 |
 
@@ -40,6 +40,10 @@
 ### 验证方式
 
 - 测试更新：任意公开站点返回 201（导入中），内网/保留地址仍 422 拒绝；相关用例全绿。
+- 服务器已部署（2026-09-08）：HEAD `a1a164b`，无数据库迁移；app/worker 重启后 RUNNING，
+  `GET /healthz` 返回 ok；生产代码冒烟：`ccgp.gov.cn`、`cebpubservice.com` 等任意公开站点通过校验，
+  127.0.0.1/10.0.0.5/169.254.169.254 均被 `blocked_address` 拒绝。
+- GitHub 提交：`a1a164b`（代码 + 文档）。
 
 ### 回滚方式
 
