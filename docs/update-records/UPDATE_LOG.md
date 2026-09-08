@@ -12,7 +12,7 @@
 | id | 2026-09-08-2156-feat-market-knowledge-library |
 | datetime | 2026-09-08T21:56:00+08:00 |
 | type | feat |
-| status | deployed |
+| status | released |
 | scope | market-knowledge, bid-generate, mcp |
 | related | issue #34, discussion #26 |
 
@@ -43,6 +43,10 @@
 
 - 新增 13 个单元/模块测试（解析、分类、图片规范化、管理员门禁、URL 导入、提炼 1:N、重试、级联删除、搜索）；全量 340 passed（3 个失败为既有环境问题，与本次无关）。
 - MCP OpenRPC IDL 重新生成（46 个方法）与工具定义一致。
+- 服务器已部署（2026-09-08）：HEAD `165026a`，迁移 `0034 (head)`（3 张新表 + RLS 策略核验通过），
+  pre-upgrade 备份完成；app/worker/hermes RUNNING，`GET /healthz` ok，
+  `/api/v1/market-knowledge` 路由已挂载（未认证 401）；bid-generate skill 已同步至 Hermes。
+- GitHub 提交：`165026a`（代码 + 文档）。
 
 ### 回滚方式
 
