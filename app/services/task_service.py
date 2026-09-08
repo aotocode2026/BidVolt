@@ -1595,7 +1595,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
     )
 
     try:
-        market_ref = await collect_reference_points(session, task.enterprise_id)
+        market_ref = await collect_reference_points(session)
     except Exception:  # noqa: BLE001 参考收集失败不阻塞生成
         market_ref = {"count": 0, "items": [], "strategy": "all", "rules_version": ""}
     market_ref_text = format_reference_block(market_ref.get("items") or [])

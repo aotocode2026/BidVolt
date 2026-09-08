@@ -2,6 +2,8 @@
 
 设计要点：
 - 一条资料（`MarketKnowledgeArticle`）→ 多条提炼要点（`MarketKnowledgePoint`，1:N）；
+- 行情库为**平台共享内容**：所有登录用户可见，不按企业分类；`enterprise_id` 仅记录上传者所属企业用于溯源；
+- 上传/删除/重试为平台管理员操作（权限点 `market_knowledge.manage`）；
 - 图片走现有识图链路（`image_desc`，qwen-vl，受 `vl_enabled` 门禁），描述文本并入提炼输入；
 - 提炼提示词带版本号（`MARKET_RULES_VERSION`），写入资料与任务 payload，便于后续演进追溯；
 - Agent 参考经可替换策略 provider（当前 `all`=全量读取已提炼要点），调用方不感知策略变化；
@@ -426,7 +428,6 @@ async def extract_handler(session: AsyncSession, task: Task) -> None:
     article = await session.scalar(
         select(MarketKnowledgeArticle).where(
             MarketKnowledgeArticle.id == article_id,
-            MarketKnowledgeArticle.enterprise_id == task.enterprise_id,
             MarketKnowledgeArticle.deleted_at.is_(None),
         )
     )
@@ -513,7 +514,7 @@ def register_strategy(name: str, fn) -> None:
     _STRATEGIES[name] = fn
 
 
-async def _collect_all(session: AsyncSession, enterprise_id: int) -> list[dict]:
+async def _collect_all(session: AsyncSession) -> list[dict]:
     rows = (
         await session.execute(
             select(
@@ -528,7 +529,6 @@ async def _collect_all(session: AsyncSession, enterprise_id: int) -> list[dict]:
                 MarketKnowledgePoint.article_id == MarketKnowledgeArticle.id,
             )
             .where(
-                MarketKnowledgePoint.enterprise_id == enterprise_id,
                 MarketKnowledgePoint.deleted_at.is_(None),
                 MarketKnowledgeArticle.deleted_at.is_(None),
             )
@@ -552,13 +552,12 @@ register_strategy("all", _collect_all)
 
 async def collect_reference_points(
     session: AsyncSession,
-    enterprise_id: int,
     *,
     strategy: str = "all",
     limit: int | None = None,
 ) -> dict:
     fn = _STRATEGIES.get(strategy) or _collect_all
-    items = await fn(session, enterprise_id)
+    items = await fn(session)
     if limit:
         items = items[:limit]
     return {
@@ -581,11 +580,10 @@ def format_reference_block(items: list[dict]) -> str:
     )
 
 
-async def delete_article(session: AsyncSession, enterprise_id: int, article_id: int) -> None:
+async def delete_article(session: AsyncSession, article_id: int) -> None:
     article = await session.scalar(
         select(MarketKnowledgeArticle).where(
             MarketKnowledgeArticle.id == article_id,
-            MarketKnowledgeArticle.enterprise_id == enterprise_id,
             MarketKnowledgeArticle.deleted_at.is_(None),
         )
     )
@@ -597,7 +595,6 @@ async def delete_article(session: AsyncSession, enterprise_id: int, article_id: 
         await session.scalars(
             select(MarketKnowledgePoint).where(
                 MarketKnowledgePoint.article_id == article.id,
-                MarketKnowledgePoint.enterprise_id == enterprise_id,
                 MarketKnowledgePoint.deleted_at.is_(None),
             )
         )

@@ -3,6 +3,46 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-08-2243-fix-market-knowledge-platform"></a>
+
+## 2026-09-08 22:43 · fix · 行情库改为平台共享（所有用户可见）
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-08-2243-fix-market-knowledge-platform |
+| datetime | 2026-09-08T22:43:00+08:00 |
+| type | fix |
+| status | deployed |
+| scope | market-knowledge, bid-generate |
+| related | issue #34, discussion #26 |
+
+### 为什么做这次更新
+
+口径修正：行情库应为平台共享内容，所有登录用户均可查看，不再按企业分类；上传/删除/重试等管理操作由平台管理员执行。
+
+### 具体做了什么
+
+- 列表/详情/要点接口移除企业过滤：任何登录用户可见全平台行情资料与提炼要点；
+- Agent 参考出口（provider 策略 `all`）改为全平台要点，不再按企业过滤；
+- 提炼任务与删除操作按资料 ID 直查（不再校验操作者企业），管理仍要求管理员权限 `market_knowledge.manage`；
+- 迁移 `0035`：移除 3 张行情库表的企业级 RLS 策略并 `NO FORCE ROW LEVEL SECURITY`（`enterprise_id` 保留为上传者溯源字段）。
+
+### 影响范围
+
+- 行情库可见范围（扩大为全平台）、提炼任务/删除的租户校验、Agent 生成参考内容来源。
+
+### 迁移 / 破坏性变更
+
+- 迁移 `0035`：仅 PG 上移除 3 张表的 RLS 策略；无列/数据变更。
+
+### 验证方式
+
+- 新增跨企业可见性与跨企业管理员删除测试；行情库相关 11 个测试全绿，ruff 通过。
+
+### 回滚方式
+
+回退迁移 `0035`（恢复 RLS 策略）并回退本次提交，重启 app/worker。
+
 <a id="2026-09-08-2156-feat-market-knowledge-library"></a>
 
 ## 2026-09-08 21:56 · feat · 投标行情内容库管理与 Agent 生成前参考

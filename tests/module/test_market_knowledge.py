@@ -193,3 +193,38 @@ def test_re_extract_increments_attempt(client, monkeypatch):
     r = client.post(f"/api/v1/market-knowledge/{article['article_id']}/re-extract", headers=h)
     assert r.status_code == 200
     assert r.json()["extract_status"] == "pending"
+
+
+def test_market_knowledge_visible_across_enterprises(client, monkeypatch):
+    """口径修正：行情库为平台共享内容，所有登录用户可见，不按企业分类。"""
+    h_a = _register(client, email="mka@test.com")
+    _grant_admin("mka@test.com")
+    r = client.post(
+        "/api/v1/market-knowledge/upload",
+        files={"file": ("平台共享经验.txt", "平台共享的投标经验要点".encode(), "text/plain")},
+        headers=h_a,
+    )
+    assert r.status_code == 201
+    article_id = r.json()["article_id"]
+
+    h_b = _register(client, email="mkb@test.com")
+    listing = client.get("/api/v1/market-knowledge", headers=h_b).json()
+    assert listing["total"] == 1
+    assert listing["items"][0]["article_id"] == article_id
+    assert client.get(f"/api/v1/market-knowledge/{article_id}", headers=h_b).status_code == 200
+
+
+def test_platform_admin_from_other_enterprise_can_delete(client, monkeypatch):
+    h_a = _register(client, email="mkdel-a@test.com")
+    _grant_admin("mkdel-a@test.com")
+    article = client.post(
+        "/api/v1/market-knowledge/upload",
+        files={"file": ("待删.txt", "内容".encode(), "text/plain")},
+        headers=h_a,
+    ).json()
+
+    h_b = _register(client, email="mkdel-b@test.com")
+    _grant_admin("mkdel-b@test.com")
+    r = client.delete(f"/api/v1/market-knowledge/{article['article_id']}", headers=h_b)
+    assert r.status_code == 200
+    assert client.get(f"/api/v1/market-knowledge/{article['article_id']}", headers=h_a).status_code == 404

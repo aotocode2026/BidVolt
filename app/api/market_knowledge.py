@@ -117,7 +117,6 @@ async def list_articles(
     user: UserContext = Depends(require_permission(Permission.FILE_READ)),
 ) -> dict:
     query = select(MarketKnowledgeArticle).where(
-        MarketKnowledgeArticle.enterprise_id == user.enterprise_id,
         MarketKnowledgeArticle.deleted_at.is_(None),
     )
     if category:
@@ -128,7 +127,6 @@ async def list_articles(
             (MarketKnowledgeArticle.title.ilike(like))
             | MarketKnowledgeArticle.id.in_(
                 select(MarketKnowledgePoint.article_id).where(
-                    MarketKnowledgePoint.enterprise_id == user.enterprise_id,
                     MarketKnowledgePoint.deleted_at.is_(None),
                     MarketKnowledgePoint.content.ilike(like),
                 )
@@ -150,7 +148,6 @@ async def list_articles(
                 select(MarketKnowledgePoint.article_id, func.count())
                 .where(
                     MarketKnowledgePoint.article_id.in_(ids),
-                    MarketKnowledgePoint.enterprise_id == user.enterprise_id,
                     MarketKnowledgePoint.deleted_at.is_(None),
                 )
                 .group_by(MarketKnowledgePoint.article_id)
@@ -171,7 +168,7 @@ async def list_points(
     user: UserContext = Depends(require_capability("search_market_knowledge")),
 ) -> dict:
     """Agent 参考出口：全量返回本企业所有已提炼要点（当前 strategy=all）。"""
-    ref = await market_knowledge.collect_reference_points(session, user.enterprise_id)
+    ref = await market_knowledge.collect_reference_points(session)
     return {
         "total": ref["count"],
         "strategy": ref["strategy"],
@@ -189,7 +186,6 @@ async def article_detail(
     article = await session.scalar(
         select(MarketKnowledgeArticle).where(
             MarketKnowledgeArticle.id == article_id,
-            MarketKnowledgeArticle.enterprise_id == user.enterprise_id,
             MarketKnowledgeArticle.deleted_at.is_(None),
         )
     )
@@ -202,7 +198,6 @@ async def article_detail(
             select(MarketKnowledgePoint)
             .where(
                 MarketKnowledgePoint.article_id == article.id,
-                MarketKnowledgePoint.enterprise_id == user.enterprise_id,
                 MarketKnowledgePoint.deleted_at.is_(None),
             )
             .order_by(MarketKnowledgePoint.ordinal)
@@ -217,7 +212,6 @@ async def article_detail(
             .join(FileObject, FileObject.id == MarketKnowledgeImage.file_id)
             .where(
                 MarketKnowledgeImage.article_id == article.id,
-                MarketKnowledgeImage.enterprise_id == user.enterprise_id,
             )
             .order_by(MarketKnowledgeImage.ordinal)
         )
@@ -243,7 +237,6 @@ async def re_extract(
     article = await session.scalar(
         select(MarketKnowledgeArticle).where(
             MarketKnowledgeArticle.id == article_id,
-            MarketKnowledgeArticle.enterprise_id == user.enterprise_id,
             MarketKnowledgeArticle.deleted_at.is_(None),
         )
     )
@@ -274,7 +267,7 @@ async def delete_article(
     user: UserContext = Depends(require_permission(Permission.MARKET_KNOWLEDGE_MANAGE)),
 ) -> dict:
     try:
-        await market_knowledge.delete_article(session, user.enterprise_id, article_id)
+        await market_knowledge.delete_article(session, article_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     await write_audit(
