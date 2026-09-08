@@ -319,6 +319,8 @@ async def upload_batch(
                 "status": i.status,
                 "message": i.message,
                 "document_role": i.document_role,
+                "notice_id": i.notice_id,
+                "source_url": i.source_url,
                 "source_archive_file_id": i.source_archive_file_id,
                 "archive_path": i.archive_path,
                 "parse_status": (

@@ -2552,8 +2552,16 @@ async def _image_describe_dispatch(session: AsyncSession, task: Task) -> None:
     await image_describe_handler(session, task)
 
 
+async def _tender_import_dispatch(session: AsyncSession, task: Task) -> None:
+    """Issue #32：招标公告 URL 导入逐附件下载（实现位于 tender_service）。"""
+    from app.services.tender_service import run_tender_import  # noqa: PLC0415
+
+    await run_tender_import(session, task)
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
+    TaskType.TENDER_IMPORT: _tender_import_dispatch,
     TaskType.BID_GENERATE: _bid_generate_handler,
     TaskType.MATERIAL_MATCH: _material_match_handler,
     TaskType.CHAT: _chat_handler,

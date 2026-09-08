@@ -87,6 +87,7 @@ class TaskStatus(IntEnum):
 class TaskType:
     ENTERPRISE_INGESTION = "enterprise_ingestion"
     TENDER_PARSE = "tender_parse"
+    TENDER_IMPORT = "tender_import"
     MATERIAL_MATCH = "material_match"
     BID_GENERATE = "bid_generate"
     BID_REVIEW = "bid_review"
@@ -101,6 +102,7 @@ class TaskType:
     ALL = {
         ENTERPRISE_INGESTION,
         TENDER_PARSE,
+        TENDER_IMPORT,
         MATERIAL_MATCH,
         BID_GENERATE,
         BID_REVIEW,

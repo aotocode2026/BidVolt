@@ -22,6 +22,7 @@ class TenderNotice(Base, TimestampMixin):
     title: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)  # 1 导入中 2 已导入 3 失败
     file_id: Mapped[int | None] = mapped_column(BigInt)  # 公告正文落库后的项目文件
+    import_batch_id: Mapped[int | None] = mapped_column(BigInt)  # 附件导入批次（UploadBatch.id）
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

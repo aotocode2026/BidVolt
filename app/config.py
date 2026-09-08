@@ -73,6 +73,20 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 500 * 1024 * 1024
     virus_scan_required: bool = False  # 生产置 True：ClamAV 不可用则 fail-closed
 
+    # 招标公告 URL 导入逐附件下载（Issue #32）
+    # 仅允许已知站点（逗号分隔的域名，子域名自动匹配）；名单外 URL 直接拒绝。
+    tender_import_allowed_hosts: str = "sgccetp.com.cn"
+    # 仅“公告附件下载通道”放开到单文件/总量 1GB；正文仍走 50MB 上限。
+    tender_import_attachment_max_bytes: int = 1024 * 1024 * 1024
+    tender_import_body_max_bytes: int = 50 * 1024 * 1024
+    # 无头浏览器渲染开关与 SPA 渲染等待时长（毫秒）
+    tender_import_browser_enabled: int = 1
+    tender_import_render_wait_ms: int = 8000
+    # SPA 中“点击按钮触发下载”的等待上限（获取招标文件类无下载视为需登录跳过）
+    tender_import_click_timeout_ms: int = 30000
+    # 高风险可执行扩展名（逗号分隔，含点）：附件通道默认拦截，可配置调整。
+    tender_import_blocked_exts: str = ".exe,.dll,.bat,.com,.scr,.msi,.cmd,.vbs,.ps1,.hta,.cpl,.lnk,.jar,.js"
+
     @property
     def cloud_features_locked(self) -> bool:
         """数据分级未确认时，云模型/搜索强制关闭（fail-closed）。"""

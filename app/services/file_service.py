@@ -124,6 +124,7 @@ async def process_upload(
     target: str,
     project_id: int | None = None,
     document_role: str | None = None,
+    max_bytes: int | None = None,
 ) -> FileObject:
     if target not in ("enterprise", "project"):
         raise ValueError("target 必须是 enterprise 或 project")
@@ -132,7 +133,7 @@ async def process_upload(
             raise ValueError("target=project 时必须传 project_id")
         await _get_project(session, user.enterprise_id, project_id)
 
-    mime, ext = file_safety.validate_upload(filename, data)
+    mime, ext = file_safety.validate_upload(filename, data, max_bytes=max_bytes)
     file_safety.virus_scan(data)
     await check_storage(session, user.enterprise_id, len(data))
     # 内容去重：仅限"同企业同项目"（项目文件）/"同企业"（企业资产）——跨项目的相同文件

@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-08 18:25 | #27 | discussion | [招标公告 URL 导入逐附件下载与预览](UPDATE_LOG.md#2026-09-08-1825-feat-tender-import-attachments) |
+| 2026-09-08 18:25 | #32 | issue | [招标公告 URL 导入逐附件下载与预览](UPDATE_LOG.md#2026-09-08-1825-feat-tender-import-attachments) |
 | 2026-09-07 23:45 | #15 | discussion | [worker 泵循环 MissingGreenlet 自愈与悬挂事务加固](UPDATE_LOG.md#2026-09-07-2345-fix-worker-greenlet-hardening) |
 | 2026-09-07 23:45 | #25 | issue | [worker 泵循环 MissingGreenlet 自愈与悬挂事务加固](UPDATE_LOG.md#2026-09-07-2345-fix-worker-greenlet-hardening) |
 | 2026-09-07 23:32 | #1 | discussion | [产物详情增加文件健康信号并优雅降级损坏文件](UPDATE_LOG.md#2026-09-07-2332-feat-artifact-file-health) |

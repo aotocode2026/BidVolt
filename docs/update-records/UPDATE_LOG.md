@@ -3,6 +3,54 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-08-1825-feat-tender-import-attachments"></a>
+
+## 2026-09-08 18:25 · feat · 招标公告 URL 导入逐附件下载与预览
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-08-1825-feat-tender-import-attachments |
+| datetime | 2026-09-08T18:25:00+08:00 |
+| type | feat |
+| status | deployed |
+| scope | tender-notices, files, worker |
+| related | issue #32, discussion #27 |
+
+### 为什么做这次更新
+
+原 `import-url` 只抓公告正文（50MB 上限 + 内容类型白名单），无法满足“逐附件下载、解压、预览并用于后续标书生成”的需求。产品在 Discussion #27 确认口径：仅已知站点（默认 `sgccetp.com.cn`）、单文件/总量 1GB、不限类型、解压 zip、部分失败保留成功项并逐条说明原因。ECP 示例页是 Angular hash 路由 SPA，正文与“[下载公告文件]”均由前端 JS 渲染、站点启用 SM2/SM4 加密，后端普通 HTTP 无法直接获取附件。
+
+### 具体做了什么
+
+- `import-url` 改为“秒回”：同步创建 `TenderNotice`（导入中）+ `UploadBatch` + worker 任务；附件下载/解包/落库由 worker 后台执行，前端轮询批次/公告状态。
+- 新增抓取服务 `tender_crawler.py`：白名单校验；hash 路由 SPA 用无头浏览器（Playwright/Chromium）渲染，发现“下载/附件/获取”类按钮后**浏览器内点击并拦截下载**（复用站点自带加密/验签，不逆向协议）；静态页直连解析 `<a>` 附件链接。
+- 逐附件落库：正文 `document_role=招标公告`；附件 `招标文件/公告附件`；zip 复用 `process_archive` 解包，子文件写 `source_archive_file_id/archive_path` 溯源；每个附件（含解包子文件/失败项）各写一条 `UploadBatchItem`，状态 `accepted/duplicate/expanded/error/skipped` 并带可读原因。
+- 失败降级：401/403、重定向登录页、登录墙 HTML 判定为 `skipped`（“获取招标文件”类需登录附件跳过）；正文成功但附件全部失败时公告仍置为已导入，逐条原因可查。
+- 安全边界：附件通道放开至 1GB、不限类型，但仍保留 ClamAV 病毒扫描、zip 炸弹/嵌套/路径穿越防护、逐跳 SSRF 校验；高风险可执行扩展名（`.exe/.dll/.bat` 等）默认拦截；全局上传通道的 500MB 上限与类型白名单不变。
+- `TenderNotice` 新增 `import_batch_id`，`UploadBatchItem` 新增 `notice_id/source_url`（迁移 `0033`）。
+- `GET /projects/{project_id}/tender-notices/{notice_id}` 新增逐附件 `attachments`；`GET /files/batches/{batch_id}` items 新增 `notice_id/source_url`。
+
+### 影响范围
+
+- 招标公告导入接口、文件批次查询接口、worker 任务编排、无头浏览器运行时（服务器新增 Playwright + Chromium 依赖）。
+
+### 迁移 / 破坏性变更
+
+- 迁移 `0033`：`tender_notice.import_batch_id`、`upload_batch_item.notice_id/source_url`。
+- `import-url` 语义变化：由“同步返回结果”改为“秒回导入中 + 后台处理”，前端需轮询；仅白名单站点可导入，名单外 422 拒绝。
+- 新增运行时依赖：`playwright>=1.49` 及无头 Chromium（浏览器二进制 + 系统依赖）。
+
+### 验证方式
+
+- 新增单元/模块测试 10 个（分类、发现、异步契约、附件成功/跳过/失败、zip 解包溯源、正文失败）；相关用例全绿。
+- 全量测试 329 passed（3 个失败为既有环境问题：迁移链 0027 缺 `agent_artifact` 表、LibreOffice 转换，与本次无关）。
+- 真实 ECP 示例页端到端冒烟：成功下载“[下载公告文件]”对应“招标公告.zip”（36,226 字节，ZIP 魔数），
+  “[获取招标文件]”无下载判定为需登录跳过。
+
+### 回滚方式
+
+回退迁移 `0033`（`alembic downgrade 0032`）并回退本次提交，重启 app/worker。
+
 <a id="2026-09-07-2345-fix-worker-greenlet-hardening"></a>
 
 ## 2026-09-07 23:45 · fix · worker 泵循环 MissingGreenlet 自愈与悬挂事务加固

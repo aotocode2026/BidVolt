@@ -240,50 +240,50 @@ def test_knowledge_search_tenant_isolation(client):
     assert r.json()["items"] == []
 
 
-# ---------- #6 P0：招标公告 URL 导入 ----------
+# ---------- #6 P0 + #32：招标公告 URL 导入 ----------
 
 
-def test_tender_notice_import_happy_path(client, monkeypatch):
-    from app.services import tender_service
-
+def test_tender_notice_import_async_contract(client):
     h = _register(client, email="tn@test.com")
     pid = _make_project(client, h)
+    r = client.post(
+        f"/api/v1/projects/{pid}/tender-notices/import-url",
+        json={"url": "https://sgccetp.com.cn/portal/#/doc/notice/1"},
+        headers=h,
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["status"] == 1  # 导入中（worker 异步处理）
+    assert body["import_batch_id"] is not None
+    assert body["batch_id"] == body["import_batch_id"]
+    detail = client.get(
+        f"/api/v1/projects/{pid}/tender-notices/{body['tender_notice_id']}", headers=h
+    ).json()
+    assert detail["import_batch_id"] == body["import_batch_id"]
 
-    async def fake_fetch(url):
-        return "招标公告正文内容".encode(), "notice.html", "text/html"
 
-    monkeypatch.setattr(tender_service, "fetch_document", fake_fetch)
+def test_tender_notice_import_site_not_allowed(client):
+    h = _register(client, email="tn2@test.com")
+    pid = _make_project(client, h)
     r = client.post(
         f"/api/v1/projects/{pid}/tender-notices/import-url",
         json={"url": "https://example.com/notice.html"},
         headers=h,
     )
-    assert r.status_code == 201
-    body = r.json()
-    assert body["status"] == 2
-    assert body["file_id"] > 0
-    notices = client.get(f"/api/v1/projects/{pid}/tender-notices", headers=h).json()
-    assert len(notices["items"]) == 1
+    assert r.status_code == 422
+    assert "仅支持已接入站点" in r.json()["detail"]
 
 
-def test_tender_notice_import_blocked_fail_closed(client, monkeypatch):
-    from app.services import tender_service
-
-    h = _register(client, email="tn2@test.com")
+def test_tender_notice_import_blocked_address(client):
+    h = _register(client, email="tn3@test.com")
     pid = _make_project(client, h)
-
-    async def fake_fetch(url):
-        raise TenderImportError("blocked_address", "内网地址已拒绝")
-
-    monkeypatch.setattr(tender_service, "fetch_document", fake_fetch)
     r = client.post(
         f"/api/v1/projects/{pid}/tender-notices/import-url",
         json={"url": "http://127.0.0.1/notice"},
         headers=h,
     )
-    assert r.status_code == 201
-    assert r.json()["status"] == 3
-    assert r.json()["error_code"] == "blocked_address"
+    assert r.status_code == 422
+    assert "内网/保留地址" in r.json()["detail"]
 
 
 @pytest.mark.parametrize(
