@@ -1,7 +1,7 @@
 """招标公告 URL 安全导入（Issue #6 P0 + Issue #32 逐附件下载与预览）。
 
 流程（Issue #32 确认口径）：
-- 用户输入的页面 URL 必须命中已知站点白名单（`tender_import_allowed_hosts`），名单外直接拒绝；
+- 用户输入的页面 URL 允许任意公开网址；仅 http/https，内网/保留地址等 SSRF 目标拒绝；
 - 接口“秒回”：同步创建 `TenderNotice`（导入中）+ `UploadBatch` + worker `Task`；
 - worker 后台：渲染/抓取公告正文 → 逐附件下载/解包/入库 → 逐文件状态与原因；
 - 正文 `document_role=招标公告`；附件 `招标文件/公告附件`，只入本项目材料，绝不写企业资料库；
@@ -37,7 +37,6 @@ from app.services.tender_crawler import (
     CrawlerError,
     RenderedDocument,
     TenderPageFetcher,
-    validate_site_url,
 )
 
 
@@ -69,7 +68,7 @@ def _validate_host(host: str) -> None:
 
 
 def _validate_url(url: str) -> None:
-    """SSRF 校验（不含白名单；白名单由 `validate_site_url` 单独执行）。"""
+    """SSRF 校验：仅 http/https，禁内网/保留地址（任意公开网址均可）。"""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise TenderImportError("unsupported_scheme", "仅支持 http/https 链接")
@@ -102,10 +101,6 @@ async def import_tender_notice(
         raise ValueError("项目不存在或已归档")
 
     _validate_url(url)
-    try:
-        validate_site_url(url)
-    except CrawlerError as exc:
-        raise TenderImportError(exc.code, exc.message) from exc
 
     notice = TenderNotice(
         enterprise_id=user.enterprise_id,

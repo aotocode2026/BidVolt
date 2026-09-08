@@ -3,6 +3,48 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-08-2056-fix-tender-import-any-site"></a>
+
+## 2026-09-08 20:56 · fix · 招标公告 URL 导入开放任意网址并明确前端轮询契约
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-08-2056-fix-tender-import-any-site |
+| datetime | 2026-09-08T20:56:00+08:00 |
+| type | fix |
+| status | deployed |
+| scope | tender-notices |
+| related | issue #32, discussion #27 |
+
+### 为什么做这次更新
+
+产品确认：招标公告 URL 导入不限于国网 ECP 等已知站点，任意公开网址都允许导入。原实现默认仅放行 `sgccetp.com.cn`、名单外 422 拒绝，与最新口径不符。同时把“异步导入 + 前端轮询”的对接契约在接口文档中固化，便于前端按新契约配合。
+
+### 具体做了什么
+
+- 取消站点白名单：移除 `tender_import_allowed_hosts` 配置与 `host_allowed`/`site_not_allowed` 校验，任意公开网址均可导入。
+- SSRF 防线保留不变：仅 http/https；逐跳（含重定向）DNS 校验，内网/保留地址一律拒绝；附件下载仍逐跳校验 + 1GB 上限 + 高危可执行扩展名拦截。
+- 文档固化**前端轮询契约**：`import-url` 返回 `status=1`（导入中）后，前端轮询
+  `GET /projects/{project_id}/tender-notices/{notice_id}`（`status` 与 `attachments`）或
+  `GET /files/batches/{batch_id}`（逐附件状态）；`status=2`（已导入）前禁用“确认”按钮，
+  `status=3` 为失败（`error_code/error_message` 说明原因）。
+
+### 影响范围
+
+- `import-url` 允许的网址范围（扩到任意公开网址）；前端需按轮询契约配合。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；仅代码与文档。
+
+### 验证方式
+
+- 测试更新：任意公开站点返回 201（导入中），内网/保留地址仍 422 拒绝；相关用例全绿。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-08-1825-feat-tender-import-attachments"></a>
 
 ## 2026-09-08 18:25 · feat · 招标公告 URL 导入逐附件下载与预览

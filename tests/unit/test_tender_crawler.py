@@ -5,16 +5,8 @@ from __future__ import annotations
 from app.services.tender_crawler import (
     extract_actions,
     extract_links,
-    host_allowed,
     parse_content_disposition,
 )
-
-
-def test_host_allowed_exact_and_subdomain():
-    assert host_allowed("sgccetp.com.cn")
-    assert host_allowed("www.sgccetp.com.cn")
-    assert not host_allowed("example.com")
-    assert not host_allowed("badsgccetp.com.cn.evil.com")
 
 
 def test_extract_links_skips_navigation_and_picks_files():

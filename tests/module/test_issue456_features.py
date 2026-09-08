@@ -262,7 +262,8 @@ def test_tender_notice_import_async_contract(client):
     assert detail["import_batch_id"] == body["import_batch_id"]
 
 
-def test_tender_notice_import_site_not_allowed(client):
+def test_tender_notice_import_any_public_site_accepted(client):
+    """域名规则：任意公开网址均可导入（内网/保留地址仍拒绝，见 blocked_address 用例）。"""
     h = _register(client, email="tn2@test.com")
     pid = _make_project(client, h)
     r = client.post(
@@ -270,8 +271,10 @@ def test_tender_notice_import_site_not_allowed(client):
         json={"url": "https://example.com/notice.html"},
         headers=h,
     )
-    assert r.status_code == 422
-    assert "仅支持已接入站点" in r.json()["detail"]
+    assert r.status_code == 201
+    body = r.json()
+    assert body["status"] == 1
+    assert body["import_batch_id"] is not None
 
 
 def test_tender_notice_import_blocked_address(client):

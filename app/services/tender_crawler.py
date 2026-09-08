@@ -1,7 +1,7 @@
 """招标公告站点抓取（Issue #32）：正文获取 + 附件发现 + 附件安全下载。
 
 安全模型：
-- 页面 URL 必须命中配置的已知站点白名单（子域名自动匹配），名单外直接拒绝；
+- 页面 URL 允许任意公开网址（仅 http/https），但内网/保留地址等 SSRF 目标一律拒绝；
 - 附件下载逐跳（含重定向）校验：仅 http/https、逐跳解析 DNS、禁内网/保留地址、重定向上限；
 - 附件大小上限 1GB（流式计数），不限制内容类型，但默认拦截高风险可执行扩展名；
 - 需登录的附件（401/403 / 重定向到登录页 / 返回登录 HTML）判定为 skipped 并说明原因。
@@ -71,15 +71,6 @@ class RenderedDocument:
     links: list[AttachmentLink] = field(default_factory=list)
 
 
-def _allowed_hosts() -> set[str]:
-    hosts = {
-        h.strip().lower().lstrip(".")
-        for h in settings.tender_import_allowed_hosts.split(",")
-        if h.strip()
-    }
-    return hosts
-
-
 def _blocked_exts() -> set[str]:
     exts = {
         e.strip().lower()
@@ -89,18 +80,8 @@ def _blocked_exts() -> set[str]:
     return {e if e.startswith(".") else f".{e}" for e in exts}
 
 
-def host_allowed(host: str | None) -> bool:
-    if not host:
-        return False
-    host = host.lower().rstrip(".")
-    for allowed in _allowed_hosts():
-        if host == allowed or host.endswith(f".{allowed}"):
-            return True
-    return False
-
-
 def validate_site_url(url: str) -> str:
-    """校验并规范化页面 URL：仅 http/https + 白名单域名。"""
+    """校验并规范化页面 URL：任意公开网址，仅 http/https，内网/保留地址拒绝（SSRF）。"""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise CrawlerError("unsupported_scheme", "仅支持 http/https 链接")
@@ -108,11 +89,7 @@ def validate_site_url(url: str) -> str:
         raise CrawlerError("invalid_url", "URL 缺少主机名")
     if parsed.username or parsed.password:
         raise CrawlerError("invalid_url", "URL 不允许携带用户信息")
-    if not host_allowed(parsed.hostname):
-        raise CrawlerError(
-            "site_not_allowed",
-            f"仅支持已接入站点（当前名单：{settings.tender_import_allowed_hosts}），目标站点 {parsed.hostname} 未接入",
-        )
+    _validate_host(parsed.hostname)
     return url
 
 
@@ -150,7 +127,7 @@ def _validate_download_url(url: str) -> str:
 
 
 def _validate_page_hop(url: str) -> str:
-    """公告页重定向逐跳校验（仅安全校验，不要求命中白名单；白名单只约束用户输入的 URL）。"""
+    """公告页重定向逐跳 SSRF 校验（任意公开站点均可，内网/保留地址拒绝）。"""
     return _validate_download_url(url)
 
 

@@ -74,8 +74,6 @@ class Settings(BaseSettings):
     virus_scan_required: bool = False  # 生产置 True：ClamAV 不可用则 fail-closed
 
     # 招标公告 URL 导入逐附件下载（Issue #32）
-    # 仅允许已知站点（逗号分隔的域名，子域名自动匹配）；名单外 URL 直接拒绝。
-    tender_import_allowed_hosts: str = "sgccetp.com.cn"
     # 仅“公告附件下载通道”放开到单文件/总量 1GB；正文仍走 50MB 上限。
     tender_import_attachment_max_bytes: int = 1024 * 1024 * 1024
     tender_import_body_max_bytes: int = 50 * 1024 * 1024
