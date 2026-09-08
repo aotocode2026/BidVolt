@@ -12,7 +12,7 @@
 | id | 2026-09-08-1825-feat-tender-import-attachments |
 | datetime | 2026-09-08T18:25:00+08:00 |
 | type | feat |
-| status | deployed |
+| status | released |
 | scope | tender-notices, files, worker |
 | related | issue #32, discussion #27 |
 
@@ -46,6 +46,10 @@
 - 全量测试 329 passed（3 个失败为既有环境问题：迁移链 0027 缺 `agent_artifact` 表、LibreOffice 转换，与本次无关）。
 - 真实 ECP 示例页端到端冒烟：成功下载“[下载公告文件]”对应“招标公告.zip”（36,226 字节，ZIP 魔数），
   “[获取招标文件]”无下载判定为需登录跳过。
+- 服务器已部署（2026-09-08）：HEAD `ac882a5`，迁移 `0033 (head)`，pre-upgrade 备份完成
+  （DB dump + appdata），app/worker 重启后 RUNNING，`GET /healthz` 返回 ok；
+  生产代码对真实 ECP 页复跑冒烟通过，worker 日志无新增错误。
+- GitHub 提交：`ac882a5`（代码 + 文档）。
 
 ### 回滚方式
 
