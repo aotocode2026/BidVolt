@@ -12,7 +12,7 @@
 | id | 2026-09-08-2243-fix-market-knowledge-platform |
 | datetime | 2026-09-08T22:43:00+08:00 |
 | type | fix |
-| status | deployed |
+| status | released |
 | scope | market-knowledge, bid-generate |
 | related | issue #34, discussion #26 |
 
@@ -38,6 +38,9 @@
 ### 验证方式
 
 - 新增跨企业可见性与跨企业管理员删除测试；行情库相关 11 个测试全绿，ruff 通过。
+- 服务器已部署（2026-09-08）：HEAD `5831d2c`，迁移 `0035 (head)`（3 张行情库表 RLS 策略已移除、`pg_policies` 计数 0），
+  迁移前 DB 备份完成；app/worker RUNNING，`GET /healthz` ok。
+- GitHub 提交：`5831d2c`（代码 + 文档）。
 
 ### 回滚方式
 
