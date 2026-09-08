@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # 高风险可执行扩展名（逗号分隔，含点）：附件通道默认拦截，可配置调整。
     tender_import_blocked_exts: str = ".exe,.dll,.bat,.com,.scr,.msi,.cmd,.vbs,.ps1,.hta,.cpl,.lnk,.jar,.js"
 
+    # 投标行情内容库（Issue #34）
+    market_knowledge_max_points: int = 12  # 单篇资料最多提炼要点数
+    market_knowledge_point_max_chars: int = 200  # 单条要点最大字符数
+    market_knowledge_text_max_chars: int = 24000  # 提炼输入正文上限
+    market_knowledge_ref_max_chars: int = 6000  # 生成时注入参考块总长度上限
+    market_knowledge_max_images: int = 30  # 单篇抓取图片上限
+    market_knowledge_image_max_bytes: int = 20 * 1024 * 1024  # 单张图片大小上限
+
     @property
     def cloud_features_locked(self) -> bool:
         """数据分级未确认时，云模型/搜索强制关闭（fail-closed）。"""

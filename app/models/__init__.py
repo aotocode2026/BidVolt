@@ -29,6 +29,11 @@ from app.models.enterprise_domain import (
 )
 from app.models.export import ExportJob, FinalCheck
 from app.models.file import ArchiveJob, FileObject
+from app.models.market_knowledge import (
+    MarketKnowledgeArticle,
+    MarketKnowledgeImage,
+    MarketKnowledgePoint,
+)
 from app.models.project import Project
 from app.models.project_material import (
     MaterialMatchResult,
@@ -82,6 +87,9 @@ __all__ = [
     "FinalCheck",
     "HistoryPriceSnapshot",
     "MaterialMatchResult",
+    "MarketKnowledgeArticle",
+    "MarketKnowledgeImage",
+    "MarketKnowledgePoint",
     "Project",
     "ProjectEditLock",
     "ProjectEvent",

@@ -56,6 +56,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "get_requirement",
         "list_requirements",
         "search_knowledge",
+        "search_market_knowledge",
     },
     "bid_review": {
         "get_deliverable_content",
@@ -87,6 +88,7 @@ TASK_TOOL_WHITELIST: dict[str, set[str]] = {
         "save_material_match_results",
         "list_material_matches",
         "search_knowledge",
+        "search_market_knowledge",
         # 成文工具链（主会话自主成文：切片→填空→追加→校验→封存→打包）
         "resolve_template_draft",
         "get_template_outline",

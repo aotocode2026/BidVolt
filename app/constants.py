@@ -19,6 +19,7 @@ class Permission:
     SCORE_VIEW = "score.view"
     SCORE_CONFIRM = "score.confirm"
     REVIEW_PROVIDER_CONFIG = "review_provider.config"
+    MARKET_KNOWLEDGE_MANAGE = "market_knowledge.manage"
     ADMIN_USER = "admin.user"
     ADMIN_QUOTA = "admin.quota"
     AUDIT_VIEW = "audit.view"
@@ -35,6 +36,7 @@ class Permission:
         SCORE_VIEW,
         SCORE_CONFIRM,
         REVIEW_PROVIDER_CONFIG,
+        MARKET_KNOWLEDGE_MANAGE,
         ADMIN_USER,
         ADMIN_QUOTA,
         AUDIT_VIEW,
@@ -43,6 +45,7 @@ class Permission:
     # 管理员专属
     RESTRICTED = {
         REVIEW_PROVIDER_CONFIG,
+        MARKET_KNOWLEDGE_MANAGE,
         ADMIN_USER,
         ADMIN_QUOTA,
         AUDIT_VIEW,
@@ -98,6 +101,7 @@ class TaskType:
     AGENT_PIPELINE = "agent_pipeline"
     # 图片描述（入库后台任务）：sha256 缓存，每张图只描述一次
     IMAGE_DESCRIBE = "image_describe"
+    MARKET_KNOWLEDGE_EXTRACT = "market_knowledge_extract"
 
     ALL = {
         ENTERPRISE_INGESTION,
@@ -111,4 +115,5 @@ class TaskType:
         CHAT,
         AGENT_PIPELINE,
         IMAGE_DESCRIBE,
+        MARKET_KNOWLEDGE_EXTRACT,
     }

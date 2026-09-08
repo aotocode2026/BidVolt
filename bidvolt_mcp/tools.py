@@ -291,6 +291,13 @@ def _search_knowledge(args: dict) -> Any:
         return resp.json()
 
 
+def _search_market_knowledge(args: dict) -> Any:
+    with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
+        resp = client.get("/api/v1/market-knowledge/points", headers=_headers())
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _link_citation(args: dict) -> Any:
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
         resp = client.post(
@@ -329,6 +336,12 @@ TOOL_DEFS: list[dict] = [
             "additionalProperties": False,
         },
         "handler": _search_knowledge,
+    },
+    {
+        "name": "search_market_knowledge",
+        "description": "读取本企业投标行情库的全部提炼要点（低优先级写作参考；招标文件要求与企业真实资料优先，不得虚构企业事实或把其他企业业绩/资质当作本企业事实）",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": _search_market_knowledge,
     },
     {
         "name": "search_assets",

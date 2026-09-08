@@ -39,6 +39,7 @@ metadata:
 | `get_deliverable_content` | 读取已有成果（校核模式）或当前版本（取 version_id） |
 | `save_deliverable` | 写新版本（expected_version_id CAS + idempotency_key + source_task_id） |
 | `calculate_quote` / `get_history_price` | 报价建议（只建议不落库） |
+| `search_market_knowledge` | 行情库提炼要点（**低优先级**写作参考） |
 | `search_web` / `save_source` / `link_citation` | 行情/竞对/政策/标准（带来源） |
 
 ## Procedure
@@ -57,16 +58,19 @@ metadata:
 
 ### 生成模式（或校核后生成缺失文件）
 1. `list_requirements` 建立基线；`search_assets` 汇集企业事实（资质/业绩/人员/产品参数/财务）。
-2. 三份成果可**并行**执行（MCP `supports_parallel_tool_calls`）：
+2. 正式编写前调用一次 `search_market_knowledge` 读取行情库提炼要点，作为**低优先级辅助参考**：
+   - 只能用于写作技巧/注意事项/行业惯例等参考；**招标文件要求与企业真实资料优先**；
+   - **不得**把其他企业业绩/资质/报价当成本企业事实，不得虚构内容；无要点时直接跳过。
+3. 三份成果可**并行**执行（MCP `supports_parallel_tool_calls`）：
    - **商务标**：商务响应、企业介绍、资质证明（只引用真实证照，标注有效期）、业绩表（真实业绩）
    - **技术标**：技术方案、供货范围、参数响应（对 tech_requirement 逐条响应）、质量/进度/服务承诺
    - **报价单**：按 quote_rule 填报价，价格建议来自 `calculate_quote`；仅无公式/无数据时给出 AI 参考区间（标注 is_ai_suggest + 依据/假设/置信度/风险，无追溯依据不输出数字）
-3. 内容来源规则（**P1 禁止编造**）：
+4. 内容来源规则（**P1 禁止编造**）：
    - 企业名称、资质、业绩、人员、产品参数、成本：只允许来自 `search_assets`/`get_asset` 结果
    - 招标要求：来自 `list_requirements`
    - 市场/政策/标准：来自 `search_web` 且引用时 `link_citation` 记录来源
-4. 写入前交叉一致性检查：企业名称、项目名称、金额、工期、数量、参数、税率，三份必须一致。
-5. `save_deliverable` 保存（expected_version_no 必须等于当前版本号：新建记录当前为 0，
+5. 写入前交叉一致性检查：企业名称、项目名称、金额、工期、数量、参数、税率，三份必须一致。
+6. `save_deliverable` 保存（expected_version_no 必须等于当前版本号：新建记录当前为 0，
    首次保存传 0；先 `get_deliverable_content` 读回 current_version_no 再保存；idempotency_key、source_task_id、change_note 说明改动）。
 
 ### 校核项（校核模式）

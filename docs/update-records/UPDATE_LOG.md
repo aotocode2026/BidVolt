@@ -3,6 +3,51 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-08-2156-feat-market-knowledge-library"></a>
+
+## 2026-09-08 21:56 · feat · 投标行情内容库管理与 Agent 生成前参考
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-08-2156-feat-market-knowledge-library |
+| datetime | 2026-09-08T21:56:00+08:00 |
+| type | feat |
+| status | deployed |
+| scope | market-knowledge, bid-generate, mcp |
+| related | issue #34, discussion #26 |
+
+### 为什么做这次更新
+
+实现 Discussion #26 确认口径的“投标行情内容库”：管理员上传/抓取投标经验资料，AI 提炼短要点，标书生成时 Agent 自动读取作低优先级辅助参考；同时支持管理员删除资料并级联删除其全部提炼要点。
+
+### 具体做了什么
+
+- 新增模型（迁移 `0034`，含 PG RLS）：`market_knowledge_article`（资料）、`market_knowledge_point`（提炼要点，1:N）、`market_knowledge_image`（图片关联）；资料/要点软删除。
+- 新增接口：`POST /market-knowledge/import-url`（公开网页/公众号，同步抓取正文与图片，解析失败即提示“无法解析”）、`POST /market-knowledge/upload`（文档/PDF/图片）、`GET /market-knowledge`（列表+关键词搜索）、`GET /market-knowledge/{id}`（详情+要点+图片）、`GET /market-knowledge/points`（Agent 参考出口）、`POST /market-knowledge/{id}/re-extract`（重试提炼）、`DELETE /market-knowledge/{id}`（管理员删除，级联软删除其全部要点）。
+- 权限：新增管理员权限点 `market_knowledge.manage`（上传/删除/重试）；预览与搜索为登录用户；内容全企业共享。
+- 抓取：复用 Issue #32 的 `tender_crawler`（任意公开网址、SSRF 逐跳校验），提取标题/正文/懒加载图片；图片经 Pillow 规范化（webp/gif 等转 PNG/JPG）后入库。
+- AI 提炼：新增 worker 任务 `market_knowledge_extract`——文本 + 已完成的图片视觉描述（复用 `image_desc`/qwen-vl，受 `vl_enabled` 门禁）→ LLM 提炼短要点（一条资料 → 多条要点）；提示词带版本号 `MARKET_RULES_VERSION` 写入资料与任务；云模型关闭/失败时 `extract_status=failed` 仍可预览、可重试。
+- Agent 参考：可替换 provider（当前策略 `all`=全量读取已提炼要点）；Hermes 新增只读 MCP 工具 `search_market_knowledge`（并更新 bid-generate skill 用法），内嵌闭环在生成上下文中注入“行情库提炼要点”低优先级参考块（招标文件要求与企业事实优先，不得虚构事实）；参考数量只记任务元数据/审计，不提示前端。
+- 通用文件列表不再展示行情库文件（`owner_type=3` 从无 target 列表过滤）。
+
+### 影响范围
+
+- 行情库接口与文件归属（新增 owner_type=3）、MCP 工具与生成上下文、权限模型。
+
+### 迁移 / 破坏性变更
+
+- 迁移 `0034`：新增 3 张表（含 RLS 策略）；无存量数据影响。
+- 新增权限点 `market_knowledge.manage`（管理员专属）：既有管理员需在其用户权限集中具备该点才可管理行情库。
+
+### 验证方式
+
+- 新增 13 个单元/模块测试（解析、分类、图片规范化、管理员门禁、URL 导入、提炼 1:N、重试、级联删除、搜索）；全量 340 passed（3 个失败为既有环境问题，与本次无关）。
+- MCP OpenRPC IDL 重新生成（46 个方法）与工具定义一致。
+
+### 回滚方式
+
+回退迁移 `0034`（`alembic downgrade 0033`）并回退本次提交，重启 app/worker。
+
 <a id="2026-09-08-2056-fix-tender-import-any-site"></a>
 
 ## 2026-09-08 20:56 · fix · 招标公告 URL 导入开放任意网址并明确前端轮询契约

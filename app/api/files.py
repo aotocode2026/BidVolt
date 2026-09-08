@@ -350,6 +350,9 @@ async def list_files(
         query = query.where(FileObject.owner_type == 1)
     elif target == "project":
         query = query.where(FileObject.owner_type == 2)
+    else:
+        # 行情库文件（owner_type=3）不在通用文件列表展示（走行情库接口）
+        query = query.where(FileObject.owner_type.in_((1, 2)))
     if project_id is not None:
         query = query.where(FileObject.project_id == project_id)
     total = await session.scalar(select(func.count()).select_from(query.subquery()))

@@ -285,6 +285,31 @@ async def download_attachment(
     raise AttachmentDownloadError("too_many_redirects", f"附件重定向超过 {MAX_REDIRECTS} 次")
 
 
+async def fetch_static_page(url: str, max_bytes: int = 5 * 1024 * 1024) -> tuple[str, str]:
+    """逐跳 SSRF 校验抓取公开页面 HTML（静态页/公众号文章），返回 (html, final_url)。"""
+    validate_site_url(url)
+    current = url
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=15.0, read=60.0, write=15.0, pool=15.0),
+        follow_redirects=False,
+        proxy=settings.http_proxy or None,
+    ) as client:
+        for _hop in range(MAX_REDIRECTS + 1):
+            _validate_page_hop(current)
+            resp = await client.get(current, headers={"User-Agent": DEFAULT_UA})
+            next_url, redirect = _resolve_redirect(current, resp)
+            if redirect:
+                current = next_url
+                continue
+            if resp.status_code != 200:
+                raise CrawlerError("http_error", f"页面抓取失败：HTTP {resp.status_code}")
+            html = resp.text
+            if len(html.encode("utf-8", errors="replace")) > max_bytes:
+                raise CrawlerError("too_large", f"页面超过大小上限（{max_bytes} 字节）")
+            return html, str(resp.url)
+    raise CrawlerError("too_many_redirects", f"页面重定向超过 {MAX_REDIRECTS} 次")
+
+
 class _AnchorCollector(HTMLParser):
     """静态 HTML 中提取 <a>：文本 + href。"""
 

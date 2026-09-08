@@ -80,6 +80,34 @@
       }
     },
     {
+      "name": "search_market_knowledge",
+      "summary": "读取本企业投标行情库的全部提炼要点（低优先级写作参考；招标文件要求与企业真实资料优先，不得虚构企业事实或把其他企业业绩/资质当作本企业事实）",
+      "params": [
+        {
+          "name": "args",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    {
       "name": "search_assets",
       "summary": "按关键词/分类搜索企业资料（企业事实唯一来源）",
       "params": [

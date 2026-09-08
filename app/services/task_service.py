@@ -1587,6 +1587,19 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         f"- [{i['source_type']}]{i['file_name']}：{i['snippet']}" for i in knowledge_refs
     ) or "（无历史参考素材）"
 
+    # 行情库提炼要点（Issue #34）：Agent 正式编写前自动读取，低优先级辅助参考。
+    # 有无参考属后端行为：数量仅记入任务元数据/审计，不向前端提示。
+    from app.services.market_knowledge import (  # noqa: PLC0415
+        collect_reference_points,
+        format_reference_block,
+    )
+
+    try:
+        market_ref = await collect_reference_points(session, task.enterprise_id)
+    except Exception:  # noqa: BLE001 参考收集失败不阻塞生成
+        market_ref = {"count": 0, "items": [], "strategy": "all", "rules_version": ""}
+    market_ref_text = format_reference_block(market_ref.get("items") or [])
+
     def _business_model() -> dict:
         buyer = buyer_name
         nodes = [
@@ -1697,6 +1710,8 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         "refined": [],
     }
     chapter_expansions = {"n": 0}  # 分章字数不达标自动重写次数（闭环）
+    agent_meta["market_knowledge_refs"] = market_ref.get("count", 0)
+    agent_meta["market_knowledge_rules_version"] = market_ref.get("rules_version") or ""
 
     # 企业名称（模板填空用：供应商名称字段）
     from app.models.auth import Enterprise as _Ent
@@ -1967,7 +1982,8 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             f"项目名称：{project_name}\n招标人：{buyer_name or '未提供'}\n"
             f"企业产品/能力事实：\n{fact_text[:3000]}\n"
             f"当前招标材料摘录：\n{material_text[:12000]}\n"
-            f"历史参考素材（仅作专业写法参考，项目事实以本项目材料为准）：\n{knowledge_text[:4000]}"
+            f"历史参考素材（仅作专业写法参考，项目事实以本项目材料为准）：\n{knowledge_text[:4000]}\n"
+            f"{market_ref_text[:6000]}"
         )
 
         chapter_sem = asyncio.Semaphore(4)  # 控制并发，避免云模型限流/超时
@@ -2279,6 +2295,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             "structure_source": structure_source,
             "structure": structure_summary,
             "agent": agent_meta,
+            "market_knowledge_refs": market_ref.get("count", 0),
             "knowledge_refs": [
                 {"file_name": i["file_name"], "project_id": i["project_id"], "source_type": i["source_type"]}
                 for i in knowledge_refs
@@ -2293,6 +2310,7 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
             "structure_source": structure_source,
             "structure": structure_summary,
             "agent": agent_meta,
+            "market_knowledge_refs": market_ref.get("count", 0),
         }
 
 
@@ -2559,9 +2577,17 @@ async def _tender_import_dispatch(session: AsyncSession, task: Task) -> None:
     await run_tender_import(session, task)
 
 
+async def _market_knowledge_extract_dispatch(session: AsyncSession, task: Task) -> None:
+    """Issue #34：行情资料 AI 提炼要点（实现位于 market_knowledge）。"""
+    from app.services.market_knowledge import extract_handler  # noqa: PLC0415
+
+    await extract_handler(session, task)
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
     TaskType.TENDER_IMPORT: _tender_import_dispatch,
+    TaskType.MARKET_KNOWLEDGE_EXTRACT: _market_knowledge_extract_dispatch,
     TaskType.BID_GENERATE: _bid_generate_handler,
     TaskType.MATERIAL_MATCH: _material_match_handler,
     TaskType.CHAT: _chat_handler,

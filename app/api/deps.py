@@ -25,6 +25,7 @@ TOOL_PERMISSION: dict[str, str] = {
     "get_project_material_blocks": Permission.FILE_READ,
     "list_project_materials": Permission.FILE_READ,
     "get_deliverable_content": Permission.FILE_READ,
+    "search_market_knowledge": Permission.FILE_READ,
     "save_deliverable": Permission.DELIVERABLE_EDIT,
     "get_latest_score": Permission.SCORE_VIEW,
     "get_review_items": Permission.SCORE_VIEW,
