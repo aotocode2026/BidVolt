@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-09 11:57 | #38 | discussion | [Docker 崩溃恢复、启动自举修复与生成任务防复发](UPDATE_LOG.md#2026-09-09-1157-ops-docker-crash-recovery) |
+| 2026-09-09 11:57 | #43 | issue | [Docker 崩溃恢复、启动自举修复与生成任务防复发](UPDATE_LOG.md#2026-09-09-1157-ops-docker-crash-recovery) |
 | 2026-09-09 11:53 | #38 | discussion | [Agent 主会话任务状态一致性（终态/重试/回收）](UPDATE_LOG.md#2026-09-09-1153-fix-agent-task-state-consistency) |
 | 2026-09-09 11:53 | #42 | issue | [Agent 主会话任务状态一致性（终态/重试/回收）](UPDATE_LOG.md#2026-09-09-1153-fix-agent-task-state-consistency) |
 | 2026-09-09 10:33 | #37 | discussion | [配置 DeepSeek 凭据并恢复 Agent 主会话生成](UPDATE_LOG.md#2026-09-09-1033-ops-restore-deepseek-credential) |

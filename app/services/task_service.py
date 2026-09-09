@@ -176,6 +176,25 @@ async def reclaim_stale(session: AsyncSession) -> bool:
             task.lease_expires_at = None
             await session.commit()
             return True
+        # Agent 主会话（长时、重负载）在未写出终态结论时被回收：不自动重跑整条管线，
+        # 取消并提示人工重新发起——避免部署重启/worker 中断后无人值守全量重跑拖垮宿主机。
+        if task.task_type == TaskType.AGENT_PIPELINE:
+            task.status = int(TaskStatus.CANCELLED)
+            task.error = {
+                "code": "interrupted_no_auto_retry",
+                "message": "Agent 主会话执行中断：为避免重复生成与资源占用，任务已取消，请重新发起生成",
+            }
+            task.finished_at = now
+            task.progress = {
+                "phase": task.task_type,
+                "status": "cancelled",
+                "percent": 100,
+                "hint": "主会话执行中断，已取消（请重新发起生成，不会自动重跑）",
+            }
+            task.lease_owner = None
+            task.lease_expires_at = None
+            await session.commit()
+            return True
         task.retry_count += 1
         if task.retry_count >= MAX_RETRIES:
             task.status = int(TaskStatus.FAILED_TERMINAL)
@@ -348,16 +367,31 @@ async def run_task(
             # 执行被中断（取消/停机），未走成功/失败路径：按失败计次，避免永久卡 RUNNING
             try:
                 await session.rollback()
-                task.retry_count += 1
-                now = datetime.now(timezone.utc)
-                if task.retry_count >= MAX_RETRIES:
-                    task.status = int(TaskStatus.FAILED_TERMINAL)
-                    task.error = {"message": "执行被中断且重试耗尽"}
+                if task.task_type == TaskType.AGENT_PIPELINE:
+                    now = datetime.now(timezone.utc)
+                    task.status = int(TaskStatus.CANCELLED)
+                    task.error = {
+                        "code": "interrupted_no_auto_retry",
+                        "message": "Agent 主会话执行中断：为避免重复生成与资源占用，任务已取消，请重新发起生成",
+                    }
                     task.finished_at = now
-                    task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "执行被中断且重试耗尽，请人工处理"}
+                    task.progress = {
+                        "phase": task.task_type,
+                        "status": "cancelled",
+                        "percent": 100,
+                        "hint": "主会话执行中断，已取消（请重新发起生成，不会自动重跑）",
+                    }
                 else:
-                    task.status = int(TaskStatus.QUEUED)
-                    task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"执行被中断，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
+                    task.retry_count += 1
+                    now = datetime.now(timezone.utc)
+                    if task.retry_count >= MAX_RETRIES:
+                        task.status = int(TaskStatus.FAILED_TERMINAL)
+                        task.error = {"message": "执行被中断且重试耗尽"}
+                        task.finished_at = now
+                        task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "执行被中断且重试耗尽，请人工处理"}
+                    else:
+                        task.status = int(TaskStatus.QUEUED)
+                        task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"执行被中断，重新入队（{task.retry_count}/{MAX_RETRIES}）"}
             except Exception:  # noqa: BLE001 主会话毒化时中断计次改由下方短命会话兜底
                 task.retry_count += 1
                 task.status = int(TaskStatus.QUEUED)

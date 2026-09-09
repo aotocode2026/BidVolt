@@ -140,7 +140,8 @@ _sql_with_password() {
   chmod 600 "$sql_file"
   # 转义单引号后写入 \set 变量，psql 的 :'pw' 引用保证任意特殊字符安全
   printf "\\set pw '%s'\n%s\n" "${pwd_val//\'/\'\'}" "$sql_tpl" > "$sql_file"
-  su postgres -c "$PGBIN/psql -v ON_ERROR_STOP=1 -f $sql_file"
+  # 容器无 CAP_CHOWN：不 chown，经 stdin 传给 psql（root 打开文件、postgres 继承 fd 读取）
+  su postgres -c "$PGBIN/psql -v ON_ERROR_STOP=1 -f -" < "$sql_file"
   rm -f "$sql_file"
 }
 

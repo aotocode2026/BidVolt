@@ -3,6 +3,46 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-1157-ops-docker-crash-recovery"></a>
+
+## 2026-09-09 11:57 · ops · Docker 崩溃恢复、启动自举修复与生成任务防复发
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-1157-ops-docker-crash-recovery |
+| datetime | 2026-09-09T11:57:00+08:00 |
+| type | ops |
+| status | released |
+| scope | deploy, task, agent-pipeline |
+| related | issue #43, discussion #38 |
+
+### 为什么做这次更新
+
+服务器 Docker 崩溃（05:51-05:52 UTC 前后），用户登录失败、SSH/API 全部不可用。恢复后修复了容器重启自举失败问题，并对主会话生成任务做了防复发加固。
+
+### 具体做了什么
+
+- **崩溃归因**：项目 217 的生成任务 7819 以 `hermes chat --cli --yolo --max-turns 360` 全量运行，崩溃时刻正处于“系统复核确认”阶段：工作区 632 个文件/354MB、37 个并行 delegation 目录、多个 MCP 进程、docx 解包统计与图片放大/视觉等重负载；应用层无异常日志，符合宿主机资源耗尽导致 Docker/WSL2 崩溃的特征。
+- **启动自举修复**：`deploy/bidvolt-init.sh` 角色同步改为“root 写临时 SQL → 经 stdin 传给 postgres 读取”（容器无 CAP_CHOWN，不能用 chown），修复后重启可自动拉起 PG/supervisor/app/worker/hermes。
+- **防复发**：agent_pipeline 任务被中断/租约回收且未写出终态结论时，置为 `CANCELLED`（`error.code=interrupted_no_auto_retry`），不再自动整条重跑；已写出 complete/incomplete 结论的按结论收尾。
+- 重启并核验：app/worker/hermes/postgres/clamd/backup-cron 全部 RUNNING，`/healthz`（内外网）ok，管理员账号登录 200；任务 7819 确认为 DONE（崩溃前生成已完成），无失控 hermes 进程。
+
+### 影响范围
+
+- 部署自举脚本、任务状态机（agent_pipeline 中断/回收语义）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 新增 1 个测试（回收时未终态的主会话任务 → CANCELLED 不重跑）；task_service 相关 13 个用例全绿、ruff 通过；登录接口实测 200。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker（自举脚本修复保留，避免下次重启再失败）。
+
 <a id="2026-09-09-1153-fix-agent-task-state-consistency"></a>
 
 ## 2026-09-09 11:53 · fix · Agent 主会话任务状态一致性（终态/重试/回收）

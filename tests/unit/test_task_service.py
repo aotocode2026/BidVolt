@@ -271,6 +271,40 @@ def test_reclaim_stale_finalizes_agent_outcome_without_rerun(monkeypatch):
     }
 
 
+def test_reclaim_stale_cancels_interrupted_agent_pipeline_without_rerun(monkeypatch):
+    """Issue #38 防复发：未写出终态结论的主会话任务被回收时不自动重跑，取消并提示人工重新发起。"""
+    from datetime import datetime, timedelta, timezone
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def scenario():
+        async with factory() as session:
+            task = _task(
+                enterprise_id=1,
+                project_id=1,
+                task_type=TaskType.AGENT_PIPELINE,
+                idempotency_key="reclaim-cancel",
+                status=int(TaskStatus.RUNNING),
+                lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+                result=None,
+            )
+            session.add(task)
+            await session.commit()
+            await task_service.reclaim_stale(session)
+            await session.refresh(task)
+            return task
+
+    task = asyncio.run(scenario())
+    engine.sync_engine.dispose()
+    assert task.status == int(TaskStatus.CANCELLED)
+    assert task.retry_count == 0
+    assert task.error == {
+        "code": "interrupted_no_auto_retry",
+        "message": "Agent 主会话执行中断：为避免重复生成与资源占用，任务已取消，请重新发起生成",
+    }
+
+
 # ---------- 租约 / 心跳 / 中断恢复（Issue #3） ----------
 
 
