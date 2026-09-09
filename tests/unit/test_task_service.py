@@ -192,6 +192,85 @@ def test_terminal_task_error_fails_without_retry(monkeypatch):
     }
 
 
+def test_run_task_retry_clears_stale_error(monkeypatch):
+    """Issue #38：普通重试时清掉上一轮的 error/结束时间，避免旧失败被误读为当前状态。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def failing_handler(session, task):
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(task_service.HANDLERS, TaskType.CHAT, failing_handler)
+
+    async def scenario():
+        async with factory() as session:
+            task, _ = await task_service.create_task(
+                session,
+                enterprise_id=1,
+                project_id=1,
+                task_type=TaskType.CHAT,
+                payload={},
+                idempotency_key="retry-clear-error",
+            )
+            await session.commit()
+            await task_service.run_task(session, task)
+            return task
+
+    task = asyncio.run(scenario())
+    engine.sync_engine.dispose()
+    assert task.status == int(TaskStatus.QUEUED)
+    assert task.retry_count == 1
+    assert task.error is None
+    assert task.finished_at is None
+
+
+def test_reclaim_stale_finalizes_agent_outcome_without_rerun(monkeypatch):
+    """Issue #38：已写出终态结论的主会话任务被租约回收时按结论收尾，不重跑管线。"""
+    from datetime import datetime, timedelta, timezone
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def scenario():
+        async with factory() as session:
+            done = _task(
+                enterprise_id=1,
+                project_id=1,
+                task_type=TaskType.AGENT_PIPELINE,
+                idempotency_key="reclaim-done",
+                status=int(TaskStatus.RUNNING),
+                lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+                result={"outcome": "complete", "session_id": "s1"},
+            )
+            inc = _task(
+                enterprise_id=1,
+                project_id=1,
+                task_type=TaskType.AGENT_PIPELINE,
+                idempotency_key="reclaim-inc",
+                status=int(TaskStatus.RUNNING),
+                lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+                result={"outcome": "incomplete", "reason": "缺企业资料"},
+            )
+            session.add_all([done, inc])
+            await session.commit()
+            await task_service.reclaim_stale(session)
+            await task_service.reclaim_stale(session)
+            await session.refresh(done)
+            await session.refresh(inc)
+            return done, inc
+
+    done, inc = asyncio.run(scenario())
+    engine.sync_engine.dispose()
+    assert done.status == int(TaskStatus.DONE)
+    assert done.retry_count == 0
+    assert inc.status == int(TaskStatus.FAILED_TERMINAL)
+    assert inc.retry_count == 0
+    assert inc.error == {
+        "code": "agent_incomplete",
+        "message": "生成未闭环（未冒充完成）：原因见 result.reason；补齐硬约束后可重新发起生成",
+    }
+
+
 # ---------- 租约 / 心跳 / 中断恢复（Issue #3） ----------
 
 

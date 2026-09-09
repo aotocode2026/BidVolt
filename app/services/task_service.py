@@ -143,6 +143,39 @@ async def reclaim_stale(session: AsyncSession) -> bool:
     for task in candidates:
         if _aware(task.lease_expires_at) >= now:
             continue  # 租约仍有效（持有 worker 正常执行中）
+        # Agent 主会话已写出终态业务结论（complete/incomplete）但主进程被回收：
+        # 不得重跑整条管线（会重复执行、混版本），按已有结论直接收尾。
+        if task.task_type == TaskType.AGENT_PIPELINE and (task.result or {}).get("outcome") == "complete":
+            task.status = int(TaskStatus.DONE)
+            task.error = None
+            task.finished_at = now
+            task.progress = {
+                "phase": task.task_type,
+                "status": "done",
+                "percent": 100,
+                "current_work": "Agent 主会话完成（全部验收门通过）",
+            }
+            task.lease_owner = None
+            task.lease_expires_at = None
+            await session.commit()
+            return True
+        if task.task_type == TaskType.AGENT_PIPELINE and (task.result or {}).get("outcome") == "incomplete":
+            task.status = int(TaskStatus.FAILED_TERMINAL)
+            task.error = {
+                "code": "agent_incomplete",
+                "message": "生成未闭环（未冒充完成）：原因见 result.reason；补齐硬约束后可重新发起生成",
+            }
+            task.finished_at = now
+            task.progress = {
+                "phase": task.task_type,
+                "status": "failed",
+                "percent": 100,
+                "hint": "生成未闭环：原因见 result.reason",
+            }
+            task.lease_owner = None
+            task.lease_expires_at = None
+            await session.commit()
+            return True
         task.retry_count += 1
         if task.retry_count >= MAX_RETRIES:
             task.status = int(TaskStatus.FAILED_TERMINAL)
@@ -156,6 +189,7 @@ async def reclaim_stale(session: AsyncSession) -> bool:
             }
         else:
             task.status = int(TaskStatus.QUEUED)
+            task.error = None
             task.progress = {
                 "phase": task.task_type,
                 "status": "retrying",
@@ -266,6 +300,9 @@ async def run_task(
                     task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
                 else:
                     task.status = int(TaskStatus.QUEUED)
+                    # 新尝试尚未失败：清掉上一轮的错误/结束时间，避免旧失败被误读为当前状态
+                    task.error = None
+                    task.finished_at = None
                     task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
         elif session_factory is not None:
             # 主会话毒化兜底：失败/重试状态经独立短命会话直写，状态机确定性落库
@@ -294,6 +331,8 @@ async def run_task(
                             _row.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
                         else:
                             _row.status = int(TaskStatus.QUEUED)
+                            _row.error = None
+                            _row.finished_at = None
                             _row.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {_row.retry_count}/{MAX_RETRIES}"}
                     _row.lease_owner = None
                     _row.lease_expires_at = None

@@ -3,6 +3,47 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-1153-fix-agent-task-state-consistency"></a>
+
+## 2026-09-09 11:53 · fix · Agent 主会话任务状态一致性（终态/重试/回收）
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-1153-fix-agent-task-state-consistency |
+| datetime | 2026-09-09T11:53:00+08:00 |
+| type | fix |
+| status | deployed |
+| scope | agent-pipeline, task |
+| related | issue #42, discussion #38 |
+
+### 为什么做这次更新
+
+任务 7805/7812 出现 `running` + `done/100` + `result.outcome=incomplete` 并存、重试后旧结果未清理的混合状态。根因：主会话终态结果/进度经独立会话先落库，任务终态后提交；异常/主会话提交失败/租约回收都会重新入队，而旧结果不清理、尝试不区分。
+
+### 具体做了什么
+
+- “未闭环（incomplete）”改为终态业务失败：写完 result 后抛 `TerminalTaskError(code=agent_incomplete)`，`run_task` 直接置 `FAILED_TERMINAL`、不重试，状态/错误/进度与结果一致，不冒充成功。
+- `reclaim_stale` 发现 agent_pipeline 任务已写出 `outcome=complete/incomplete` 时按结论收尾（DONE / FAILED_TERMINAL），不整条管线重跑。
+- 普通重试入队时清空上一轮 `error`/`finished_at`，避免旧失败被误读为当前状态。
+- 结果写入 `attempt`（当前尝试序号）；`GET /projects/{id}/agent-run/{task_id}` 新增 `retry_count`、`generation`。
+
+### 影响范围
+
+- agent_pipeline 收尾/异常路径、任务状态机（run_task/reclaim_stale）、agent-run 详情响应。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 新增 3 个测试（重试清旧错误、回收按结论收尾 complete/incomplete 不重跑）；相关 13 个用例全绿，ruff 通过；
+  全量测试（跳过会真实拉起 hermes 子进程的 `test_bid_generate_api.py`）333 passed，3 个失败为既有环境问题，与本次无关。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-09-1033-ops-restore-deepseek-credential"></a>
 
 ## 2026-09-09 10:33 · ops · 配置 DeepSeek 凭据并恢复 Agent 主会话生成

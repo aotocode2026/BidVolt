@@ -149,6 +149,8 @@ async def agent_run_status(
         "task_id": task.id,
         "task_type": task.task_type,
         "status": task.status,
+        "retry_count": task.retry_count,
+        "generation": task.generation,
         "progress": task.progress,
         "result": result,
         "error": task.error,

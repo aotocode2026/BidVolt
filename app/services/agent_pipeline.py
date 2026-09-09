@@ -1426,6 +1426,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "session_id": sid,
             "log_tail": tail[-800:],
             "outcome": "complete",
+            "attempt": int(task.retry_count) + 1,
             "note": "Agent 主会话端到端完成：计划/子任务/验收报告见会话控制台（事件流），session_id 可恢复。",
         }
         _final_progress = {
@@ -1460,15 +1461,16 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "session_id": sid,
             "log_tail": tail[-800:],
             "outcome": "incomplete",
+            "attempt": int(task.retry_count) + 1,
             "reason": reason or "主会话判定未闭环（详见会话记录）",
             "note": "Agent 主会话走完全部流程并如实判定未闭环（未冒充完成）：原因见 reason。"
                     "补齐硬约束（如企业资料）后可重新发起 agent-run。会话控制台可回看全程。",
         }
         _final_progress = {
             "phase": "agent_pipeline",
-            "status": "done",
+            "status": "failed",
             "percent": 100,
-            "current_work": "主会话完成（如实判定未闭环，原因见 result.reason）",
+            "current_work": "主会话判定未闭环（原因见 result.reason）",
         }
     else:
         raise ValueError(
@@ -1515,6 +1517,17 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                 "终态落库暂未成功（task=%s，第 %s/3 次）", task.id, _attempt, exc_info=True
             )
             await asyncio.sleep(5)
+
+    # 未闭环是终态业务结论：不得再按普通异常重试（重跑不会改变硬约束）。
+    # 结果/进度已独立落库；经 TerminalTaskError 让 run_task 直接置 FAILED_TERMINAL，
+    # 保证 status/error/progress 与 result.outcome=incomplete 一致，不冒充成功。
+    if marker == MARK_INCOMPLETE:
+        from app.services.task_service import TerminalTaskError  # noqa: PLC0415
+
+        raise TerminalTaskError(
+            "生成未闭环（未冒充完成）：原因见 result.reason；补齐硬约束后可重新发起生成",
+            code="agent_incomplete",
+        )
 
     # 收尾：把最终 zip 附带的会话记录刷新为完整版（含最终回执）+ 附精简版。
     # 打包时的快照早于最终回执，不刷新交付包里的会话记录会戛然而止。
