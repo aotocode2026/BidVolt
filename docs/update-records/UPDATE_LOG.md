@@ -3,6 +3,44 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-2019-fix-docx-media-content-type"></a>
+
+## 2026-09-09 20:19 · fix · docx 图片 ContentType 与实际格式不一致导致图片无法显示
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-2019-fix-docx-media-content-type |
+| datetime | 2026-09-09T20:19:00+08:00 |
+| type | fix |
+| status | released |
+| scope | hermes-skills, artifacts |
+| related | issue #45 |
+
+### 为什么做这次更新
+
+项目 217 交付的“技术文件/（二）专项响应文件.docx”有 222 张图片在 Word 中无法显示。根因：图片压缩把 PNG 重编码为 JPEG，但媒体部件名是无扩展名 `word/media/imageN.`，压缩脚本的按扩展名重命名正则匹配不到，`[Content_Types].xml` 仍声明 `image/png`，Word 按声明类型解码失败。商务补充文件证据扫描件本就是 JPEG，故不受影响。
+
+### 具体做了什么
+
+- 修复项目 217 全部交付文件：按媒体字节魔数修正 `[Content_Types].xml`（不改文件名与 rels）；8 个历史响应包 zip（955-963）内容已修复，旧内容按版本链归档、`version_no` 递增；最新 948/964/965 已由在跑会话修复。复检全部错配=0，LibreOffice 转 PDF（455 页）渲染验证通过。
+- 防复发（技能脚本）：新增 `scripts/compress_docx_media.py`（重编码后同步 ContentType）与 `scripts/repair_docx_media_types.py`（按魔数校验修复）；SKILL.md 增加“媒体压缩必须同步 ContentType、打包前错配数必须为 0”的纪律。
+
+### 影响范围
+
+- 项目 217 已交付 artifact（历史包内容修复、版本号 1→2）；Hermes 成文技能脚本与纪律。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；仅 artifact 内容修复与技能脚本新增。
+
+### 验证方式
+
+- 项目 217 全部 docx/zip 解包复检：声明类型与实际魔数错配=0；LibreOffice 转 PDF 成功（455 页、27.6MB）。
+
+### 回滚方式
+
+artifact 修复经版本链归档可回读（`agent_artifact_content_version`）；技能脚本回退提交即可。
+
 <a id="2026-09-09-1157-ops-docker-crash-recovery"></a>
 
 ## 2026-09-09 11:57 · ops · Docker 崩溃恢复、启动自举修复与生成任务防复发

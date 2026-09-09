@@ -7,6 +7,7 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-09 20:19 | #45 | issue | [docx 图片 ContentType 与实际格式不一致导致图片无法显示](UPDATE_LOG.md#2026-09-09-2019-fix-docx-media-content-type) |
 | 2026-09-09 11:57 | #38 | discussion | [Docker 崩溃恢复、启动自举修复与生成任务防复发](UPDATE_LOG.md#2026-09-09-1157-ops-docker-crash-recovery) |
 | 2026-09-09 11:57 | #43 | issue | [Docker 崩溃恢复、启动自举修复与生成任务防复发](UPDATE_LOG.md#2026-09-09-1157-ops-docker-crash-recovery) |
 | 2026-09-09 11:53 | #38 | discussion | [Agent 主会话任务状态一致性（终态/重试/回收）](UPDATE_LOG.md#2026-09-09-1153-fix-agent-task-state-consistency) |
