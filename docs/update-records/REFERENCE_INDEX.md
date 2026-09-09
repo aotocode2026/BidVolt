@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-09 10:33 | #37 | discussion | [配置 DeepSeek 凭据并恢复 Agent 主会话生成](UPDATE_LOG.md#2026-09-09-1033-ops-restore-deepseek-credential) |
+| 2026-09-09 10:33 | #41 | issue | [配置 DeepSeek 凭据并恢复 Agent 主会话生成](UPDATE_LOG.md#2026-09-09-1033-ops-restore-deepseek-credential) |
 | 2026-09-09 10:25 | #37 | discussion | [Agent 主会话模型凭据缺失快速失败](UPDATE_LOG.md#2026-09-09-1025-fix-agent-credential-fail-fast) |
 | 2026-09-09 10:25 | #41 | issue | [Agent 主会话模型凭据缺失快速失败](UPDATE_LOG.md#2026-09-09-1025-fix-agent-credential-fail-fast) |
 | 2026-09-08 22:43 | #26 | discussion | [行情库改为平台共享（所有用户可见）](UPDATE_LOG.md#2026-09-08-2243-fix-market-knowledge-platform) |

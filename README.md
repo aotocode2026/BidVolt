@@ -204,7 +204,7 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 | `DATABASE_URL` / `APP_DB_PASSWORD` | PostgreSQL 连接与建库密码 |
 | `JWT_SECRET` / `BIDVOLT_INTERNAL_TOKEN` | 签名密钥与内部传输令牌（≥32 位随机串） |
 | `MINIMAX_API_KEY` / `MINIMAX_BASE_URL` | MiniMax 文本模型（备用；主模型为 DeepSeek，Key 在 supervisor 环境） |
-| `DEEPSEEK_API_KEY` | DeepSeek 文本模型（supervisor `environment=` 注入，不进 .env） |
+| `DEEPSEEK_API_KEY` | DeepSeek 文本模型（`HERMES_HOME/.env` 或 supervisor `environment=` 注入，不进仓库 .env） |
 | `DASHSCOPE_API_KEY` | 百炼 qwen-vl 视觉模型 |
 | `DASHSCOPE_VL_VERIFY_MODEL` | 编号二次识别专用 VL 模型（默认空=同主模型；线上为 qwen2.5-vl-72b-instruct） |
 | `BIDVOLT_OCR_VERIFY` | 1=入库关键编号二次识别（默认开；0 关闭） |
@@ -389,4 +389,3 @@ Requirement）PASS；浏览器全流程 E2E 见 `scripts/e2e_browser_demo.py`。
   后端接口是唯一契约（前端实测为准，不得自行猜测语义）；纯前端能力（交互/展示加工/本地缓存）
   由前端自己实现；后端**不会**为前端便利付出影响流程的代价；接口新增/修改须按
   [docs/接口变更申请模板.md](docs/接口变更申请模板.md) 申请并评估通过后才动。
-

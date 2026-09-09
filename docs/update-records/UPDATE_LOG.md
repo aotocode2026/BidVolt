@@ -3,6 +3,47 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-1033-ops-restore-deepseek-credential"></a>
+
+## 2026-09-09 10:33 · ops · 配置 DeepSeek 凭据并恢复 Agent 主会话生成
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-1033-ops-restore-deepseek-credential |
+| datetime | 2026-09-09T10:33:00+08:00 |
+| type | ops |
+| status | released |
+| scope | agent-pipeline, hermes |
+| related | issue #41, discussion #37 |
+
+### 为什么做这次更新
+
+配置缺失的 DeepSeek 凭据，恢复被 Discussion #37 阻断的 Agent 主会话生成。
+
+### 具体做了什么
+
+- 将 `DEEPSEEK_API_KEY` 写入 `/data/hermes/.env`（与既有 MINIMAX/DASHSCOPE 密钥同处，权限 600；**不进入 Git 仓库**）；
+- 重启 `hermes` 服务；模型保持 flash 模式（`config.yaml`：`provider=deepseek`、`default=deepseek-v4-flash`）；
+- README 凭据说明改为与实际一致的“HERMES_HOME/.env 或 supervisor environment= 注入，不进仓库 .env”。
+
+### 影响范围
+
+- Agent 主会话生成（agent_pipeline）恢复可用；任务 7805/7812 可由用户重新发起生成。
+
+### 迁移 / 破坏性变更
+
+- 无代码/数据库变更。
+
+### 验证方式
+
+- 后端凭据预检实测 `credential_available=True`；
+- 最小真实模型调用 `hermes chat -q "请只回复两个字：OK"` 返回 `OK`（DeepSeek flash 模式）；
+- app/worker/hermes RUNNING，`GET /healthz` ok。
+
+### 回滚方式
+
+从 `/data/hermes/.env` 移除 `DEEPSEEK_API_KEY` 并重启 hermes（不影响仓库）。
+
 <a id="2026-09-09-1025-fix-agent-credential-fail-fast"></a>
 
 ## 2026-09-09 10:25 · fix · Agent 主会话模型凭据缺失快速失败
