@@ -18,6 +18,7 @@ from app.models.enterprise_domain import (
     EnterpriseIngestionTask,
 )
 from app.models.task import Task
+from app.services.asset_classification_service import classify_asset_with_ai
 from app.services.audit import write_audit
 from app.services.enterprise_service import (
     classify_asset_name as _classify,
@@ -25,7 +26,6 @@ from app.services.enterprise_service import (
 from app.services.enterprise_service import (
     ensure_asset_categories as _ensure_categories,
 )
-from app.services.asset_classification_service import classify_asset_with_ai
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 
@@ -239,6 +239,9 @@ async def trigger_ingest(
         status=1,
     )
     session.add(ingest)
+    # 先提交“处理中”标记：同步分类期间并发轮询能看到 分类中 状态（分类状态信号）
+    await session.commit()
+    await _set_rls_context(session, user.enterprise_id)
 
     categories = await _ensure_categories(session, user.enterprise_id)
     classified: list[dict] = []
@@ -293,6 +296,37 @@ async def trigger_ingest(
     )
     await session.commit()
     return {"task_id": task.id, "ingest_id": ingest.id, "classified": classified}
+
+
+@router.get("/classification-status")
+async def classification_status(
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """企业资料分类进行中信号：pending=true 时前端显示“分类中”，完成后一次性刷新最终数量。"""
+    await _set_rls_context(session, user.enterprise_id)
+    pending_assets = await session.scalar(
+        select(func.count())
+        .select_from(EnterpriseAsset)
+        .where(
+            EnterpriseAsset.enterprise_id == user.enterprise_id,
+            EnterpriseAsset.is_deleted.is_(False),
+            EnterpriseAsset.status == 1,
+        )
+    )
+    running_ingests = await session.scalar(
+        select(func.count())
+        .select_from(EnterpriseIngestionTask)
+        .where(
+            EnterpriseIngestionTask.enterprise_id == user.enterprise_id,
+            EnterpriseIngestionTask.status == 1,
+        )
+    )
+    return {
+        "pending": bool(pending_assets or running_ingests),
+        "pending_asset_count": int(pending_assets or 0),
+        "running_ingest_count": int(running_ingests or 0),
+    }
 
 
 @router.post("/assets/{asset_id}/classify", status_code=status.HTTP_202_ACCEPTED)

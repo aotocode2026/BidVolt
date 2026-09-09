@@ -204,7 +204,8 @@ async def process_upload(
         categories = await ensure_asset_categories(session, user.enterprise_id)
         asset.category_id = categories.get(category)
         asset.asset_type = category
-        asset.status = 2  # 待确认（已带初始事实）
+        # 保持 status=1 待分类：AI 分类完成前不显示“最终分类”，供前端“分类中”信号使用
+        # （文件名分类只是临时占位，AI 分类完成后由入库流程置为 2 待确认）
         for fact_key, value, confidence in facts:
             session.add(
                 EnterpriseFact(

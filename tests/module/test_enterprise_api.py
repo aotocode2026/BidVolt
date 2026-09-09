@@ -36,10 +36,11 @@ def test_upload_creates_asset_and_ingest_classifies(client):
     assets = client.get("/api/v1/enterprise/assets", headers=h)
     assert len(assets.json()) == 1
     asset_id = assets.json()[0]["asset_id"]
-    assert assets.json()[0]["status"] == 2  # 自动入库 → 待确认
+    assert assets.json()[0]["status"] == 1  # 上传后先保持“待分类”（分类中信号）
+    assert client.get("/api/v1/enterprise/classification-status", headers=h).json()["pending"] is True
 
     detail = client.get(f"/api/v1/enterprise/assets/{asset_id}", headers=h)
-    assert detail.json()["status"] == 2
+    assert detail.json()["status"] == 1
     credit_facts = [f for f in detail.json()["facts"] if f["fact_key"] == "credit_code"]
     assert len(credit_facts) == 1
 
@@ -47,7 +48,9 @@ def test_upload_creates_asset_and_ingest_classifies(client):
     ingest = client.post("/api/v1/enterprise/ingest", json={"asset_ids": [asset_id]}, headers=h)
     assert ingest.status_code == 202
     assert ingest.json()["classified"][0]["category"] == "证照"
+    assert client.get("/api/v1/enterprise/classification-status", headers=h).json()["pending"] is False
     detail2 = client.get(f"/api/v1/enterprise/assets/{asset_id}", headers=h)
+    assert detail2.json()["status"] == 2
     assert sum(1 for f in detail2.json()["facts"] if f["fact_key"] == "credit_code") == 1
 
 

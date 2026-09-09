@@ -3,6 +3,45 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-2348-feat-enterprise-classification-status"></a>
+
+## 2026-09-09 23:48 · feat · 企业资料分类状态信号（分类中/完成）
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-2348-feat-enterprise-classification-status |
+| datetime | 2026-09-09T23:48:00+08:00 |
+| type | feat |
+| status | released |
+| scope | enterprise |
+| related | issue #48 |
+
+### 为什么做这次更新
+
+上传企业资料后，前端展示的分类数量在十几秒内逐步漂移（“其他”变少、真实分类变多）。核实：上传先按文件名规则落保守分类，随后 AI 分类逐个改写（前端每个文件单独触发一次同步 ingest，约 3-5 秒/个），前端轮询资产列表分组计数时看到中间态；后端并无分类数量推送。按方案 A 提供稳定“分类中/完成”信号，前端据此一次性刷新最终数量。
+
+### 具体做了什么
+
+- 上传后资产保持 `status=1`（待分类，分类名称为临时占位），AI 分类完成置 `status=2`（待确认）；
+- `POST /enterprise/ingest` 先提交“处理中”标记（`enterprise_ingestion_task.status=1`），同步分类期间并发轮询可见分类中；
+- 新增 `GET /enterprise/classification-status`：`{pending, pending_asset_count, running_ingest_count}`。
+
+### 影响范围
+
+- 企业资产状态语义（上传 1 待分类 → AI 分类 2 待确认 → 人工确认 3）；新接口。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；存量资产 status=2 不变（视为已分类），新上传资产先为 1。
+
+### 验证方式
+
+- 新增/更新测试：上传后 status=1、`classification-status.pending=true`；ingest 完成后 status=2、`pending=false`；相关用例全绿、ruff 通过。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-09-2321-fix-zip-mixed-encoding"></a>
 
 ## 2026-09-09 23:21 · fix · 国网公告 ZIP 混合编码文件名兼容，修复误报损坏
