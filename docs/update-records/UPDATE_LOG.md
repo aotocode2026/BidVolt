@@ -3,6 +3,47 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-2321-fix-zip-mixed-encoding"></a>
+
+## 2026-09-09 23:21 · fix · 国网公告 ZIP 混合编码文件名兼容，修复误报损坏
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-2321-fix-zip-mixed-encoding |
+| datetime | 2026-09-09T23:21:00+08:00 |
+| type | fix |
+| status | released |
+| scope | files, tender-notices |
+| related | issue #47, discussion #35 |
+
+### 为什么做这次更新
+
+公告 URL 导入在国网 ECP 真实样本上把“招标公告.zip”误报为压缩包损坏、附件未入库。根因：该 ZIP 中央目录文件名为 GBK（未置 UTF-8 标志）、本地文件头为 UTF-8（置标志），zipfile 按 CP437 解码中央目录名产生乱码，并因目录名/本地名不一致把正常条目判为损坏。实际条目 CRC 均正常，属文件名编码兼容问题。
+
+### 具体做了什么
+
+- `file_safety.normalize_zip`：统一中央目录/本地头文件名编码与标志位（内容字节不变）；真正 CRC/内容损坏仍由 `testzip()` 拦截，路径穿越/绝对路径/符号链接/限额等安全检查不回退；
+- `.zip` 上传校验与 `extract_zip` 先归一化再校验/解包；
+- 新增混合编码回归测试（构造“中央目录 GBK + 本地头 UTF-8”夹具）。
+
+### 影响范围
+
+- zip 文件校验与解包、公告 URL 导入附件链路。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 单元测试全绿；真实国网原包：外层 `testzip()` 通过、中文名正确、内层 3 个业务文件全部解出；
+- 原公告 URL 端到端导入复测：正文 + 招标公告.zip + 招标公告.docx、采购项目需求表_服务公招.xlsx、附件：应答人提醒.docx 全部入库（各有 file_id），“获取招标文件”按需登录跳过。
+- 服务器已部署：HEAD `ee58d6d`，app/worker RUNNING、`/healthz` ok。
+
+### 回滚方式
+
+回退提交 `ee58d6d` 并重启 app/worker。
+
 <a id="2026-09-09-2019-fix-docx-media-content-type"></a>
 
 ## 2026-09-09 20:19 · fix · docx 图片 ContentType 与实际格式不一致导致图片无法显示
