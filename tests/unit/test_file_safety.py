@@ -1,11 +1,83 @@
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 
 import pytest
 
 from app.services import file_safety
+
+
+def _make_mixed_encoding_zip(entries: dict[str, bytes]) -> bytes:
+    """构造“中央目录 GBK 无 UTF-8 标志 + 本地头 UTF-8”的混合编码 zip（#35 场景）。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, payload in entries.items():
+            zf.writestr(name, payload)
+    raw = bytearray(buf.getvalue())
+    eocd_pos = raw.rfind(b"PK\x05\x06")
+    assert eocd_pos != -1
+    cd_offset, = struct.unpack_from("<I", raw, eocd_pos + 16)
+    total, = struct.unpack_from("<H", raw, eocd_pos + 10)
+    comment_len, = struct.unpack_from("<H", raw, eocd_pos + 20)
+    comment = bytes(raw[eocd_pos + 22: eocd_pos + 22 + comment_len])
+
+    pos = cd_offset
+    rebuilt = bytearray()
+    for _ in range(total):
+        assert raw[pos:pos + 4] == b"PK\x01\x02"
+        flag, = struct.unpack_from("<H", raw, pos + 8)
+        name_len, = struct.unpack_from("<H", raw, pos + 28)
+        extra_len, = struct.unpack_from("<H", raw, pos + 30)
+        clen, = struct.unpack_from("<H", raw, pos + 32)
+        name_bytes = bytes(raw[pos + 46: pos + 46 + name_len])
+        name = name_bytes.decode("utf-8")
+        gbk = name.encode("gbk")
+        new_flag = flag & ~0x800
+        header = (
+            bytes(raw[pos: pos + 8])
+            + struct.pack("<H", new_flag)
+            + bytes(raw[pos + 10: pos + 28])
+            + struct.pack("<HHH", len(gbk), extra_len, clen)
+            + bytes(raw[pos + 34: pos + 46])
+        )
+        rebuilt += header + gbk + bytes(raw[pos + 46 + name_len: pos + 46 + name_len + extra_len + clen])
+        pos += 46 + name_len + extra_len + clen
+
+    new_cd_size = len(rebuilt)
+    eocd = (
+        b"PK\x05\x06"
+        + bytes(raw[eocd_pos + 4: eocd_pos + 12])
+        + struct.pack("<I", new_cd_size)
+        + struct.pack("<I", cd_offset)
+        + struct.pack("<H", comment_len)
+        + comment
+    )
+    return bytes(raw[:cd_offset]) + bytes(rebuilt) + eocd
+
+
+def test_mixed_encoding_zip_normalized_and_extracted():
+    """#35：中央目录 GBK/本地头 UTF-8 的包不得被误判损坏，解包名与内容正确。"""
+    payload = "内容".encode("utf-8")
+    data = _make_mixed_encoding_zip({"材料.txt": payload})
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.testzip() is not None  # 修复前：被误判为损坏条目
+    normalized = file_safety.normalize_zip(data)
+    with zipfile.ZipFile(io.BytesIO(normalized)) as zf:
+        assert zf.testzip() is None
+        assert zf.infolist()[0].filename == "材料.txt"
+    out = file_safety.extract_zip(data)
+    assert out[0]["name"] == "材料.txt"
+    assert out[0]["data"] == payload
+
+
+def test_normalize_zip_ascii_is_noop():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"abc")
+    data = buf.getvalue()
+    assert file_safety.normalize_zip(data) == data
 
 
 def test_virus_scan_disabled_skips(monkeypatch):

@@ -6,6 +6,7 @@ import io
 import logging
 import time
 import zipfile
+import zlib
 from pathlib import PurePosixPath
 
 from app.config import settings
@@ -119,6 +120,7 @@ def extract_zip(
 
     name=条目文件名（basename）；path=包内相对路径（保留目录层次，供入库溯源展示）。
     报错信息逐类区分（文件数/总量/穿越/绝对路径/符号链接/层级过深），用户能看懂是哪类问题。"""
+    data = normalize_zip(data)  # 先统一文件名编码/标志位，避免正常文件被误判损坏（#35）
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         infos = zf.infolist()
         if len(infos) > max_entries:
@@ -151,3 +153,75 @@ def extract_zip(
                 continue
             results.append({"name": p.name, "path": str(p), "data": zf.read(info)})
         return results
+
+
+def _read_entry_raw(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    """按本地头直接读取条目解压字节（绕过 zipfile 的目录名/本地名一致性检查）。"""
+    fp = zf.fp
+    if fp is None or not getattr(fp, "seekable", lambda: False)():
+        raise ValueError("压缩包文件对象不可寻址")
+    fp.seek(info.header_offset)
+    hdr = fp.read(30)
+    if len(hdr) != 30 or hdr[:4] != b"PK\x03\x04":
+        raise zipfile.BadZipFile("本地文件头无效")
+    name_len = hdr[26] | (hdr[27] << 8)
+    extra_len = hdr[28] | (hdr[29] << 8)
+    fp.seek(info.header_offset + 30 + name_len + extra_len)
+    if (info.flag_bits & 0x0008) and info.file_size == 0 and info.compress_size == 0:
+        raise ValueError("暂不支持流式数据描述符且无大小的压缩包条目")
+    if info.compress_type == zipfile.ZIP_STORED:
+        return fp.read(info.file_size)
+    if info.compress_type == zipfile.ZIP_DEFLATED:
+        decomp = zlib.decompressobj(-15)
+        out = decomp.decompress(fp.read(info.compress_size))
+        out += decomp.flush()
+        return out
+    raise ValueError(f"不支持的压缩方式：{info.compress_type}")
+
+
+def normalize_zip(data: bytes) -> bytes:
+    """统一 ZIP 文件名字节与标志位（内容字节不变），解决混合编码误报损坏。
+
+    国网公告包的中央目录文件名为 GBK（未置 UTF-8 标志）、本地头为 UTF-8（置标志）：
+    zipfile 按 CP437 解中央目录名产生乱码，并因目录名/本地名不一致把正常条目误判为损坏
+    （`File name in directory ... and header ... differ`，Discussion #35 实测）。
+
+    本函数重写为一致名字（UTF-8 标志位），内容字节不变；真正的 CRC/内容损坏
+    仍由调用方 `testzip()`/解包流程校验，安全检查不回退。
+    """
+    src = zipfile.ZipFile(io.BytesIO(data))
+    infos = src.infolist()
+    out = io.BytesIO()
+    changed = False
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in infos:
+            flag = info.flag_bits
+            if flag & 0x800:
+                name = info.filename
+            else:
+                try:
+                    name = info.filename.encode("cp437").decode("gbk")
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    name = info.filename
+                # 只在确实还原出 CJK 时采用 GBK 名，避免误改拉丁字符文件名
+                if not any("\u4e00" <= ch <= "\u9fff" for ch in name):
+                    name = info.filename
+                flag = flag | 0x800
+            if name != info.filename:
+                changed = True
+            new_info = zipfile.ZipInfo(filename=name, date_time=info.date_time)
+            new_info.compress_type = info.compress_type
+            # 重写条目不再使用数据描述符（writestr 会写头部大小）；统一置 UTF-8 标志
+            new_info.flag_bits = (flag & ~0x0008) | 0x800
+            new_info.external_attr = info.external_attr
+            new_info.internal_attr = info.internal_attr
+            new_info.create_system = info.create_system
+            new_info.extra = info.extra or b""
+            new_info.comment = info.comment or b""
+            if info.is_dir():
+                dst.writestr(new_info, b"")
+            else:
+                dst.writestr(new_info, _read_entry_raw(src, info))
+    if not changed:
+        return data
+    return out.getvalue()

@@ -71,9 +71,11 @@ async def _parse_file(session: AsyncSession, fobj: FileObject) -> None:
             # 坏包红字拒绝）；.rar/.7z 当前既不能解析也不能导入，直接拒绝避免歧义。
             if fobj.ext != ".zip":
                 raise ValueError("暂不支持 .rar/.7z：请转换为 .zip 后上传，或直接上传压缩包内的文件")
+            import io
             import zipfile
 
-            with zipfile.ZipFile(path) as zf:
+            normalized = file_safety.normalize_zip(path.read_bytes())
+            with zipfile.ZipFile(io.BytesIO(normalized)) as zf:
                 bad = zf.testzip()
             if bad:
                 raise ValueError(f"压缩包损坏（条目 {bad} 校验失败）")
