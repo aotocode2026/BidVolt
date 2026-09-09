@@ -22,6 +22,19 @@ HEARTBEAT_INTERVAL = 90  # 执行期间心跳续期间隔（< LEASE_SECONDS 的�
 HEARTBEAT_LOCK_TIMEOUT_MS = 2000  # 心跳 UPDATE 等行锁上限（长 handler 持锁时放弃本轮，下轮再试）
 
 
+class TerminalTaskError(Exception):
+    """确定性、不可重试的任务失败（如模型凭据缺失、配置性阻断）。
+
+    与普通异常不同：run_task 捕获后直接置 FAILED_TERMINAL，不消耗重试、不重新入队，
+    避免"靠等待无法解决"的错误反复催办/重试，让用户和前端及时看到明确失败。
+    """
+
+    def __init__(self, message: str, code: str = "terminal_error") -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 def _aware(dt: datetime | None) -> datetime:
     """SQLite 读回的 datetime 可能为 naive，统一按 timezone.utc 解释以便比较。"""
     if dt is None:
@@ -234,15 +247,26 @@ async def run_task(
         except Exception:  # noqa: BLE001 主会话被取消/毒化（MissingGreenlet）时回滚也失败
             _bookkeeping_ok = False
         if _bookkeeping_ok:
-            task.retry_count += 1
-            if task.retry_count >= MAX_RETRIES:
+            if isinstance(exc, TerminalTaskError):
                 task.status = int(TaskStatus.FAILED_TERMINAL)
-                task.error = {"message": str(exc)}
+                task.error = {"code": exc.code, "message": exc.message}
                 task.finished_at = datetime.now(timezone.utc)
-                task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
+                task.progress = {
+                    "phase": task.task_type,
+                    "status": "failed",
+                    "percent": 100,
+                    "hint": exc.message,
+                }
             else:
-                task.status = int(TaskStatus.QUEUED)
-                task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
+                task.retry_count += 1
+                if task.retry_count >= MAX_RETRIES:
+                    task.status = int(TaskStatus.FAILED_TERMINAL)
+                    task.error = {"message": str(exc)}
+                    task.finished_at = datetime.now(timezone.utc)
+                    task.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
+                else:
+                    task.status = int(TaskStatus.QUEUED)
+                    task.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {task.retry_count}/{MAX_RETRIES}"}
         elif session_factory is not None:
             # 主会话毒化兜底：失败/重试状态经独立短命会话直写，状态机确定性落库
             try:
@@ -256,15 +280,21 @@ async def run_task(
                             timeout=30,
                         )
                     ).scalar_one()
-                    _row.retry_count = int(_row.retry_count or 0) + 1
-                    if _row.retry_count >= MAX_RETRIES:
+                    if isinstance(exc, TerminalTaskError):
                         _row.status = int(TaskStatus.FAILED_TERMINAL)
-                        _row.error = {"message": str(exc)}
+                        _row.error = {"code": exc.code, "message": exc.message}
                         _row.finished_at = datetime.now(timezone.utc)
-                        _row.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
+                        _row.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": exc.message}
                     else:
-                        _row.status = int(TaskStatus.QUEUED)
-                        _row.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {_row.retry_count}/{MAX_RETRIES}"}
+                        _row.retry_count = int(_row.retry_count or 0) + 1
+                        if _row.retry_count >= MAX_RETRIES:
+                            _row.status = int(TaskStatus.FAILED_TERMINAL)
+                            _row.error = {"message": str(exc)}
+                            _row.finished_at = datetime.now(timezone.utc)
+                            _row.progress = {"phase": task.task_type, "status": "failed", "percent": 100, "hint": "重试耗尽，请人工处理"}
+                        else:
+                            _row.status = int(TaskStatus.QUEUED)
+                            _row.progress = {"phase": task.task_type, "status": "retrying", "percent": 5, "hint": f"失败，重试 {_row.retry_count}/{MAX_RETRIES}"}
                     _row.lease_owner = None
                     _row.lease_expires_at = None
                     await asyncio.wait_for(_fs.commit(), timeout=30)

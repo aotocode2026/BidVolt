@@ -155,6 +155,43 @@ def test_handler_partial_write_rolls_back_with_failure(monkeypatch):
     assert status == int(TaskStatus.QUEUED)  # 失败后进入重试队列
 
 
+def test_terminal_task_error_fails_without_retry(monkeypatch):
+    """Issue #37：凭据缺失等确定性失败直接终态，不消耗重试、不重新入队。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def terminal_handler(session, task):
+        raise task_service.TerminalTaskError(
+            "模型凭据不可用：管理员需为 Hermes 配置 DEEPSEEK_API_KEY 后重新发起生成",
+            code="model_credentials_unavailable",
+        )
+
+    monkeypatch.setitem(task_service.HANDLERS, TaskType.AGENT_PIPELINE, terminal_handler)
+
+    async def scenario():
+        async with factory() as session:
+            task, _ = await task_service.create_task(
+                session,
+                enterprise_id=1,
+                project_id=1,
+                task_type=TaskType.AGENT_PIPELINE,
+                payload={},
+                idempotency_key="terminal-cred",
+            )
+            await session.commit()
+            await task_service.run_task(session, task)
+            return task
+
+    task = asyncio.run(scenario())
+    engine.sync_engine.dispose()
+    assert task.status == int(TaskStatus.FAILED_TERMINAL)
+    assert task.retry_count == 0
+    assert task.error == {
+        "code": "model_credentials_unavailable",
+        "message": "模型凭据不可用：管理员需为 Hermes 配置 DEEPSEEK_API_KEY 后重新发起生成",
+    }
+
+
 # ---------- 租约 / 心跳 / 中断恢复（Issue #3） ----------
 
 

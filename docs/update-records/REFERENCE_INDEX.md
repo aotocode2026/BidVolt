@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-09 10:25 | #37 | discussion | [Agent 主会话模型凭据缺失快速失败](UPDATE_LOG.md#2026-09-09-1025-fix-agent-credential-fail-fast) |
+| 2026-09-09 10:25 | #41 | issue | [Agent 主会话模型凭据缺失快速失败](UPDATE_LOG.md#2026-09-09-1025-fix-agent-credential-fail-fast) |
 | 2026-09-08 22:43 | #26 | discussion | [行情库改为平台共享（所有用户可见）](UPDATE_LOG.md#2026-09-08-2243-fix-market-knowledge-platform) |
 | 2026-09-08 22:43 | #34 | issue | [行情库改为平台共享（所有用户可见）](UPDATE_LOG.md#2026-09-08-2243-fix-market-knowledge-platform) |
 | 2026-09-08 21:56 | #26 | discussion | [投标行情内容库管理与 Agent 生成前参考](UPDATE_LOG.md#2026-09-08-2156-feat-market-knowledge-library) |

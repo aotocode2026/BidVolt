@@ -191,6 +191,26 @@ def _hermes_bin() -> str | None:
     return shutil.which("hermes") or "/data/hermes/venv/bin/hermes"
 
 
+_CREDENTIAL_MARKERS = ("No usable credentials found", "Set DEEPSEEK_API_KEY")
+
+
+def _hermes_credential_available() -> bool:
+    """主会话所用模型（deepseek）凭据是否可用：进程环境或 HERMES_HOME/.env 任一存在即视为可用。"""
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        return True
+    hermes_home = os.environ.get("HERMES_HOME") or "/data/hermes"
+    env_file = os.path.join(hermes_home, ".env")
+    try:
+        with open(env_file, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("DEEPSEEK_API_KEY=") and line.split("=", 1)[1].strip():
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _hermes_env(cap: str) -> dict:
     env = dict(os.environ)
     env["BIDVOLT_CAPABILITY_TOKEN"] = cap
@@ -404,6 +424,14 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     hermes_bin = _hermes_bin()
     if hermes_bin is None or not os.path.exists(hermes_bin):
         raise ValueError("Hermes 未安装：Agent 主会话流程不可用")
+    if not _hermes_credential_available():
+        from app.services.task_service import TerminalTaskError  # noqa: PLC0415
+
+        raise TerminalTaskError(
+            "模型凭据不可用：管理员需为 Hermes 配置 DEEPSEEK_API_KEY 后重新发起生成；"
+            "本次任务已终止，不会自动重试（用户重试同样无效）",
+            code="model_credentials_unavailable",
+        )
 
     from app.services.capability import issue_capability
 
@@ -828,6 +856,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         echo_texts: set[str] = set()
         last_line = ""
         pending: list[tuple[str, str]] = []
+        cred_fail: dict[str, str] = {}
         last_out_at = loop.time()
         nudges = 0
         sent_first = False
@@ -901,6 +930,11 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                     ):
                         continue
                     last_line = ln
+                    if cred_fail.get("msg") is None and any(m in ln for m in _CREDENTIAL_MARKERS):
+                        cred_fail["msg"] = (
+                            "模型凭据不可用：管理员需为 Hermes 配置 DEEPSEEK_API_KEY 后重新发起生成；"
+                            "本次任务已终止，不会自动重试（用户重试同样无效）"
+                        )
                     pending.append(("hermes", ln))
             except Exception:  # noqa: BLE001 回调内异常不得吞掉事件流
                 logger.exception("主会话输出解析失败（task=%s）", task.id)
@@ -941,6 +975,12 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
         try:
             while True:
                 await asyncio.sleep(EVENT_FLUSH_SECONDS)
+                if cred_fail.get("msg"):
+                    from app.services.task_service import TerminalTaskError  # noqa: PLC0415
+
+                    raise TerminalTaskError(
+                        cred_fail["msg"], code="model_credentials_unavailable"
+                    )
                 # 事件写入自身含 RLS 重设；任何瞬时 DB 故障都不得杀死泵循环
                 # （批量留在 pending，下轮重试）——历史上 INSERT 撞 RLS 曾把整轮打死
                 try:

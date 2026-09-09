@@ -3,6 +3,47 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-09-1025-fix-agent-credential-fail-fast"></a>
+
+## 2026-09-09 10:25 · fix · Agent 主会话模型凭据缺失快速失败
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-09-1025-fix-agent-credential-fail-fast |
+| datetime | 2026-09-09T10:25:00+08:00 |
+| type | fix |
+| status | deployed |
+| scope | agent-pipeline, task |
+| related | issue #41, discussion #37 |
+
+### 为什么做这次更新
+
+项目 215/216 生成失败（任务 7805/7812）：主模型已切 DeepSeek，但 `DEEPSEEK_API_KEY` 未配置到 Hermes 可见位置，生成报 `No usable credentials found for provider 'deepseek'`；任务按普通异常重试 3 次、长时催办后以“未闭环”收尾，状态接口没有可直接处理的失败原因。
+
+### 具体做了什么
+
+- `run_agent_pipeline` 启动前预检 `DEEPSEEK_API_KEY`（进程环境或 `HERMES_HOME/.env`），缺失立即快速失败；REPL 运行中命中凭据错误标记同样终止。
+- 新增 `TerminalTaskError`：确定性失败直接 `FAILED_TERMINAL`，不消耗重试、不重新入队、不无效催办。
+- 失败原因安全可读：`error={code: model_credentials_unavailable, message}`、进度 `hint` 给出“管理员配置 DEEPSEEK_API_KEY 后重新发起生成”，不含密钥/内部细节。
+- 存量任务 7805/7812 资料与历史保留，凭据配置后由用户重新发起生成，后端不静默重复执行。
+
+### 影响范围
+
+- agent_pipeline 启动/运行路径、`run_task` 异常状态机（新增 TerminalTaskError 分支）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 新增 4 个测试（凭据来源探测 ×3、TerminalTaskError 终态不重试 ×1）；相关 14 个用例全绿，ruff 通过。
+- **待外部配置**：`DEEPSEEK_API_KEY` 尚未提供，生成恢复仍需配置密钥并做最小真实模型调用验证（见 issue #41）。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-08-2243-fix-market-knowledge-platform"></a>
 
 ## 2026-09-08 22:43 · fix · 行情库改为平台共享（所有用户可见）
