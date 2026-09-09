@@ -12,7 +12,7 @@
 | id | 2026-09-09-1025-fix-agent-credential-fail-fast |
 | datetime | 2026-09-09T10:25:00+08:00 |
 | type | fix |
-| status | deployed |
+| status | released |
 | scope | agent-pipeline, task |
 | related | issue #41, discussion #37 |
 
@@ -38,7 +38,10 @@
 ### 验证方式
 
 - 新增 4 个测试（凭据来源探测 ×3、TerminalTaskError 终态不重试 ×1）；相关 14 个用例全绿，ruff 通过。
+- 服务器已部署（2026-09-09）：HEAD `254eae4`，无数据库迁移；app/worker RUNNING，`GET /healthz` ok；
+  生产环境预检实测 `credential_available=False`（凭据缺失将被识别并快速失败）。
 - **待外部配置**：`DEEPSEEK_API_KEY` 尚未提供，生成恢复仍需配置密钥并做最小真实模型调用验证（见 issue #41）。
+- GitHub 提交：`254eae4`（代码 + 文档）。
 
 ### 回滚方式
 
