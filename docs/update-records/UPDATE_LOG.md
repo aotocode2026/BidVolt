@@ -12,7 +12,7 @@
 | id | 2026-09-09-1153-fix-agent-task-state-consistency |
 | datetime | 2026-09-09T11:53:00+08:00 |
 | type | fix |
-| status | deployed |
+| status | released |
 | scope | agent-pipeline, task |
 | related | issue #42, discussion #38 |
 
@@ -39,6 +39,10 @@
 
 - 新增 3 个测试（重试清旧错误、回收按结论收尾 complete/incomplete 不重跑）；相关 13 个用例全绿，ruff 通过；
   全量测试（跳过会真实拉起 hermes 子进程的 `test_bid_generate_api.py`）333 passed，3 个失败为既有环境问题，与本次无关。
+- 服务器已部署（2026-09-09）：HEAD `545b500`，无数据库迁移；app/worker RUNNING、`/healthz` ok；
+  遗留的 3 个“RUNNING 且 outcome=complete”任务（387/388/397）一次性置为 DONE；
+  受重启影响的在跑任务 7819 已干净重新入队并由新 worker 领取（无重复 hermes 进程）。
+- GitHub 提交：`545b500`（代码 + 文档）。
 
 ### 回滚方式
 
