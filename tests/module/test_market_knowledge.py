@@ -228,3 +228,32 @@ def test_platform_admin_from_other_enterprise_can_delete(client, monkeypatch):
     r = client.delete(f"/api/v1/market-knowledge/{article['article_id']}", headers=h_b)
     assert r.status_code == 200
     assert client.get(f"/api/v1/market-knowledge/{article['article_id']}", headers=h_a).status_code == 404
+
+
+def test_market_knowledge_original_file_visible_to_any_user(client):
+    """行情库原件/图片为平台共享：跨企业普通用户也能下载，企业内文件仍隔离。"""
+    h_a = _register(client, email="mkfile-a@test.com")
+    _grant_admin("mkfile-a@test.com")
+    up = client.post(
+        "/api/v1/market-knowledge/upload",
+        files={"file": ("共享经验.txt", "平台共享的投标经验要点".encode(), "text/plain")},
+        headers=h_a,
+    )
+    assert up.status_code == 201
+    market_file_id = up.json()["file_id"]
+
+    # 同企业普通文件（对照：另一企业用户不可见）
+    ent_file = client.post(
+        "/api/v1/files/upload",
+        data={"target": "enterprise"},
+        files=[("files", ("私密.txt", "私有内容".encode(), "text/plain"))],
+        headers=h_a,
+    )
+    ent_file_id = ent_file.json()["files"][0]["file_id"]
+
+    h_b = _register(client, email="mkfile-b@test.com")
+    dl = client.get(f"/api/v1/files/{market_file_id}/download", headers=h_b)
+    assert dl.status_code == 200
+    info = client.get(f"/api/v1/files/{market_file_id}/info", headers=h_b)
+    assert info.status_code == 200
+    assert client.get(f"/api/v1/files/{ent_file_id}/download", headers=h_b).status_code == 404

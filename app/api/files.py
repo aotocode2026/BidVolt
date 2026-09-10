@@ -364,11 +364,14 @@ async def _get_file(session: AsyncSession, user: UserContext, file_id: int) -> F
     f = await session.scalar(
         select(FileObject).where(
             FileObject.id == file_id,
-            FileObject.enterprise_id == user.enterprise_id,
             FileObject.is_deleted.is_(False),
         )
     )
     if f is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    # 行情库文件（owner_type=3）为平台共享内容：任何登录用户可查看/下载原件与图片；
+    # 企业资料（1）/项目材料（2）仍严格按企业隔离，避免越权。
+    if f.owner_type != 3 and f.enterprise_id != user.enterprise_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
     return f
 

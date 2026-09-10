@@ -3,6 +3,44 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-10-1131-fix-market-file-download-isolation"></a>
+
+## 2026-09-10 11:31 · fix · 行情库原件/图片对所有登录用户可见
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-10-1131-fix-market-file-download-isolation |
+| datetime | 2026-09-10T11:31:00+08:00 |
+| type | fix |
+| status | released |
+| scope | files, market-knowledge |
+| related | issue #51 |
+
+### 为什么做这次更新
+
+非管理员（跨企业）账号预览行情库时，原件接口 `GET /files/{file_id}/download`（及 `/info`）返回 404。根因：行情库自 #34/#35 起为平台共享（`owner_type=3`，`enterprise_id` 仅上传者溯源），但 `_get_file` 仍强制企业校验。
+
+### 具体做了什么
+
+- `_get_file` 对 `owner_type=3` 跳过企业校验，任意登录用户可查看/下载行情库原件与图片；企业资料（1）/项目材料（2）仍严格按企业隔离；
+- 新增回归测试：跨企业普通用户下载行情库文件/info 200，同企业普通文件仍 404。
+
+### 影响范围
+
+- 文件信息/下载/签名下载接口对行情库文件的可见性（放宽到平台共享）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 相关 16 个用例全绿、ruff 通过；服务器已部署、`/healthz` ok。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-09-2348-feat-enterprise-classification-status"></a>
 
 ## 2026-09-09 23:48 · feat · 企业资料分类状态信号（分类中/完成）
