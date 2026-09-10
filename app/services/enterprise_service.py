@@ -17,7 +17,7 @@ _CLASSIFY_RULES: tuple[tuple[tuple[str, ...], str, tuple[tuple[str, float], ...]
     (("参数", "产品"), "产品参数", (("product_param", 0.6),)),
 )
 
-_CATEGORY_NAMES = ("证照", "资质", "业绩", "人员", "产品参数", "检测报告", "其他")
+_CATEGORY_NAMES = ("证照", "资质", "业绩", "人员", "产品参数", "检测报告", "其他", "源文件")
 
 
 def classify_asset_name(name: str) -> tuple[str, list[tuple[str, str, float]]]:

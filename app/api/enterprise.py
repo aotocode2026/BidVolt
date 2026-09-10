@@ -249,6 +249,18 @@ async def trigger_ingest(
         asset = await session.get(EnterpriseAsset, asset_id)
         if asset is None or asset.enterprise_id != user.enterprise_id:
             continue
+        if asset.asset_type == "源文件":
+            # 源压缩包无需业务内容分类：保留“源文件”身份与状态，跳过 AI 分类（discussion #55）
+            classified.append(
+                {
+                    "asset_id": asset.id,
+                    "category": "源文件",
+                    "confidence": 1.0,
+                    "source": "source_archive",
+                    "note": "源文件无需业务分类",
+                }
+            )
+            continue
         ai = await classify_asset_with_ai(session, asset)
         category = ai["category"]
         _, facts = _classify(asset.name)
@@ -312,6 +324,7 @@ async def classification_status(
             EnterpriseAsset.enterprise_id == user.enterprise_id,
             EnterpriseAsset.is_deleted.is_(False),
             EnterpriseAsset.status == 1,
+            EnterpriseAsset.asset_type != "源文件",
         )
     )
     running_ingests = await session.scalar(
@@ -346,6 +359,14 @@ async def classify_enterprise_asset(
     )
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料不存在")
+    if asset.asset_type == "源文件":
+        return {
+            "asset_id": asset.id,
+            "category": "源文件",
+            "confidence": 1.0,
+            "source": "source_archive",
+            "note": "源文件无需业务分类",
+        }
     task_id = body.get("task_id")
     if not task_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少 task_id")

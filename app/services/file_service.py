@@ -198,25 +198,32 @@ async def process_upload(
                 created_by=user.user_id,
             )
         )
-        # 上传即自动入库（Issue #6 auto_ingest 落地）：与 POST /enterprise/ingest 同一套
-        # 分类/事实抽取逻辑；/ingest 幂等（同名事实不重复插入），可随时手动重跑。
-        category, facts = classify_asset_name(filename)
         categories = await ensure_asset_categories(session, user.enterprise_id)
-        asset.category_id = categories.get(category)
-        asset.asset_type = category
-        # 保持 status=1 待分类：AI 分类完成前不显示“最终分类”，供前端“分类中”信号使用
-        # （文件名分类只是临时占位，AI 分类完成后由入库流程置为 2 待确认）
-        for fact_key, value, confidence in facts:
-            session.add(
-                EnterpriseFact(
-                    enterprise_id=user.enterprise_id,
-                    asset_id=asset.id,
-                    fact_key=fact_key,
-                    fact_value={"value": value},
-                    confidence=confidence,
-                    status=1,
+        if fobj.ext == ".zip":
+            # 源压缩包不参与业务内容分类：归入“源文件”，标记无需分类（discussion #55）。
+            # 解包子文件仍按内容分类；原包保留，不计入待分类数量。
+            asset.category_id = categories.get("源文件")
+            asset.asset_type = "源文件"
+            asset.status = 4  # 源文件（无需业务分类）
+        else:
+            # 上传即自动入库（Issue #6 auto_ingest 落地）：与 POST /enterprise/ingest 同一套
+            # 分类/事实抽取逻辑；/ingest 幂等（同名事实不重复插入），可随时手动重跑。
+            category, facts = classify_asset_name(filename)
+            asset.category_id = categories.get(category)
+            asset.asset_type = category
+            # 保持 status=1 待分类：AI 分类完成前不显示“最终分类”，供前端“分类中”信号使用
+            # （文件名分类只是临时占位，AI 分类完成后由入库流程置为 2 待确认）
+            for fact_key, value, confidence in facts:
+                session.add(
+                    EnterpriseFact(
+                        enterprise_id=user.enterprise_id,
+                        asset_id=asset.id,
+                        fact_key=fact_key,
+                        fact_value={"value": value},
+                        confidence=confidence,
+                        status=1,
+                    )
                 )
-            )
     else:
         material = ProjectMaterial(
             enterprise_id=user.enterprise_id,

@@ -3,6 +3,50 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-10-1458-feat-source-archive-category"></a>
+
+## 2026-09-10 14:58 · feat · 企业资料“源文件”分类与源包状态修复
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-10-1458-feat-source-archive-category |
+| datetime | 2026-09-10T14:58:00+08:00 |
+| type | feat |
+| status | released |
+| scope | enterprise, files |
+| related | issue #56, discussion #55 |
+
+### 为什么做这次更新
+
+上传保留的源压缩包无正式“源文件”身份：issue #48 后其 `status=1 待分类`，但源包不进入 AI 业务分类，
+导致 `classification-status.pending` 永久为 true（enterprise 159 的 7 个 ZIP 阻塞完成信号）。
+
+### 具体做了什么
+
+- 标准分类新增“源文件”（复用已有、不重复创建）；
+- 企业侧上传 zip：资产归入“源文件”、`asset_type=源文件`、`status=4`（源文件·无需业务分类），不抽初始业务事实；
+  解包子文件仍按内容分类；
+- `POST /enterprise/ingest` 与 MCP `classify_enterprise_asset` 跳过源文件（返回 `source=source_archive`）；
+- `pending_asset_count` 只统计 `status=1 且 asset_type != 源文件`；
+- 迁移 `0037`：所有企业补齐“源文件”分类；历史 zip 源包资产回填为源文件/status 4。
+
+### 影响范围
+
+- 企业资产状态语义（新增 status=4）、分类目录、分类状态统计、存量源包资产。
+
+### 迁移 / 破坏性变更
+
+- 迁移 `0037`：新增“源文件”分类并回填历史源包（仅 PG，含临时关闭两张 RLS 表后恢复）。
+
+### 验证方式
+
+- 新增/更新测试（zip 上传 → 源文件/status 4、pending 只算子文件、ingest 跳过源文件）；相关用例全绿、ruff 通过；
+  生产部署后核对 enterprise 159：7 个 ZIP 资产回填为源文件/status 4，`pending_asset_count=0`。
+
+### 回滚方式
+
+回退迁移 `0037` 与本次提交，重启 app/worker。
+
 <a id="2026-09-10-1200-docs-api-detail"></a>
 
 ## 2026-09-10 12:00 · docs · 前端对接接口文档补充最近更新接口的详细说明

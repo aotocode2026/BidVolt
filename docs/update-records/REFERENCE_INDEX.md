@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-10 14:58 | #55 | discussion | [企业资料“源文件”分类与源包状态修复](UPDATE_LOG.md#2026-09-10-1458-feat-source-archive-category) |
+| 2026-09-10 14:58 | #56 | issue | [企业资料“源文件”分类与源包状态修复](UPDATE_LOG.md#2026-09-10-1458-feat-source-archive-category) |
 | 2026-09-10 11:31 | #51 | issue | [行情库原件/图片对所有登录用户可见](UPDATE_LOG.md#2026-09-10-1131-fix-market-file-download-isolation) |
 | 2026-09-09 23:48 | #48 | issue | [企业资料分类状态信号（分类中/完成）](UPDATE_LOG.md#2026-09-09-2348-feat-enterprise-classification-status) |
 | 2026-09-09 23:21 | #35 | discussion | [国网公告 ZIP 混合编码文件名兼容，修复误报损坏](UPDATE_LOG.md#2026-09-09-2321-fix-zip-mixed-encoding) |
