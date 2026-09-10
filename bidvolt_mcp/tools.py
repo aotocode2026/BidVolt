@@ -170,10 +170,22 @@ def _get_review_items(args: dict) -> Any:
 
 
 def _submit_score_items(args: dict) -> Any:
+    """提交真实评分逐条结果（discussion #53）：后端校验并原子落库，不再转发 builtin 完整性检查。"""
+    payload = args.get("payload") or {}
+    items = args.get("items")
+    if items is None and isinstance(payload, dict):
+        items = payload.get("items") or payload.get("score_items") or []
+    if not isinstance(items, list):
+        items = []
+    body: dict = {"items": items}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key not in ("items", "score_items"):
+                body[key] = value
     with httpx.Client(base_url=BIDVOLT_API_BASE, timeout=30) as client:
         resp = client.post(
-            f"/api/v1/projects/{args['project_id']}/evaluate",
-            json=args.get("payload") or {},
+            f"/api/v1/projects/{args['project_id']}/substantive-items",
+            json=body,
             headers=_headers(),
         )
         resp.raise_for_status()
@@ -581,11 +593,12 @@ TOOL_DEFS: list[dict] = [
     },
     {
         "name": "submit_score_items",
-        "description": "提交模拟评标（snapshot + EvidenceRef 服务端校验）",
+        "description": "提交真实评分逐条结果（招标实质评分，服务端校验 requirement 归属与满分并原子落库）",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "integer"},
+                "items": {"type": "array"},
                 "payload": {"type": "object"},
             },
             "required": ["project_id"],

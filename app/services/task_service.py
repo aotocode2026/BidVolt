@@ -2687,10 +2687,18 @@ async def _market_knowledge_extract_dispatch(session: AsyncSession, task: Task) 
     await extract_handler(session, task)
 
 
+async def _substantive_evaluate_dispatch(session: AsyncSession, task: Task) -> None:
+    """Discussion #53：招标实质评分（LLM 逐条评审正式成果，与 builtin 完整性检查隔离）。"""
+    from app.services.review_service import run_substantive_evaluation  # noqa: PLC0415
+
+    await run_substantive_evaluation(session, task)
+
+
 HANDLERS: dict[str, object] = {
     TaskType.TENDER_PARSE: _tender_parse_handler,
     TaskType.TENDER_IMPORT: _tender_import_dispatch,
     TaskType.MARKET_KNOWLEDGE_EXTRACT: _market_knowledge_extract_dispatch,
+    TaskType.SUBSTANTIVE_EVALUATE: _substantive_evaluate_dispatch,
     TaskType.BID_GENERATE: _bid_generate_handler,
     TaskType.MATERIAL_MATCH: _material_match_handler,
     TaskType.CHAT: _chat_handler,

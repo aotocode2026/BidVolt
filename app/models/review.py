@@ -73,6 +73,8 @@ class ScoreRecord(Base, TimestampMixin):
     deliverable_versions: Mapped[dict | None] = mapped_column(JSONType)
     # 评分时冻结的正式 artifact 版本（artifact_id -> version_no，issue #22）
     artifact_versions: Mapped[dict | None] = mapped_column(JSONType)
+    # substantive=按招标评分细则的实质评分；builtin=内置完整性检查（不计入真实评分卡）
+    evaluation_type: Mapped[str] = mapped_column(String(20), nullable=False, default="builtin")
 
 
 class ReviewItem(Base, TimestampMixin):
@@ -105,6 +107,12 @@ class ReviewItem(Base, TimestampMixin):
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)  # 1 pending 2 confirmed 3 rejected 4 re_reviewed
     confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     expected_version: Mapped[str | None] = mapped_column(String(100))
+    # 真实评分结论与证据（discussion #53）
+    verdict: Mapped[str | None] = mapped_column(String(30))  # satisfied/partial/unsatisfied/insufficient_evidence/not_applicable
+    deduction_reason: Mapped[str | None] = mapped_column(Text)
+    rule_source: Mapped[dict | None] = mapped_column(JSONType)  # 招标标准来源 {quote, location, file}
+    response_source: Mapped[dict | None] = mapped_column(JSONType)  # 成果/证据来源 {quote, file, version}
+    missing_materials: Mapped[list | None] = mapped_column(JSONType)  # [{type, description}]
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=datetime.utcnow
     )

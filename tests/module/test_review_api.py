@@ -38,9 +38,10 @@ def test_evaluate_reports_missing_deliverables(client):
     assert body["scale"] == "builtin"
     assert body["full_marks"] == 30  # 完整性三份各 10 分
 
+    # discussion #53：builtin 完整性检查是内部自检，不进入前端评分卡
     scores = client.get(f"/api/v1/projects/{pid}/scores", headers=h)
-    assert scores.json()["score_id"] == body["score_id"]
-    assert scores.json()["scale"] == "builtin"
+    assert scores.status_code == 404
+    assert "暂无真实评分" in scores.json()["detail"]
     items = client.get(f"/api/v1/projects/{pid}/scores/{body['score_id']}/items", headers=h)
     assert len(items.json()) == 3
     assert all(i["status"] == 1 for i in items.json())
@@ -124,11 +125,31 @@ def test_latest_score_binds_artifact_versions_and_detects_stale(client):
             return int(art.id)
 
     aid = asyncio.run(_seed())
-    r = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h)
+    # discussion #53：/scores 只返回 substantive 真实评分，用 Agent 提交路径落库
+    r = client.post(
+        f"/api/v1/projects/{pid}/substantive-items",
+        json={
+            "items": [
+                {
+                    "requirement_id": None,
+                    "category": "评分细则",
+                    "problem_description": "售后服务方案",
+                    "got": 15.0,
+                    "full": 20.0,
+                    "verdict": "partial",
+                    "risk_level": 1,
+                    "suggestion": "补充响应时效承诺",
+                }
+            ]
+        },
+        headers=h,
+    )
     assert r.status_code == 200
+    assert r.json()["evaluation_type"] == "substantive"
 
     latest = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
     assert latest["has_score"] is True
+    assert latest["evaluation_type"] == "substantive"
     assert latest["artifact_versions"] == {str(aid): 1}
     assert any(a["artifact_id"] == aid for a in latest["scored_artifacts"])
     assert latest["is_stale"] is False
@@ -239,7 +260,8 @@ def test_confirm_batch_and_replay(client):
     )
     assert all(x["status"] == "skipped" for x in replay.json()["results"])
 
-def test_re_evaluate_improves_score_after_material(client):
+def test_re_evaluate_does_not_fake_improve_after_material(client):
+    """discussion #53：确认上传建议 + 项目存在任意材料，不得自动判满分。"""
     h, pid = _setup(client)
     body = client.post(f"/api/v1/projects/{pid}/evaluate", json={}, headers=h).json()
     missing_item = body["item_ids"][0]
@@ -260,9 +282,9 @@ def test_re_evaluate_improves_score_after_material(client):
         headers=h,
     )
     assert re.status_code == 200
-    assert re.json()["improved_count"] == 1
-    # 只建了 1 份成果：商务标提升到满分，技术与报价仍缺失 → 10/30
-    assert re.json()["total_score"] == round(10 / 30 * 100, 2)
+    # 不再“任意材料→满分”：真实改善只能来自重新实质评审，得分保持不变
+    assert re.json()["improved_count"] == 0
+    assert re.json()["total_score"] == 0.0
 
 
 def test_unconfirmed_material_does_not_change_score(client):

@@ -3,6 +3,61 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-10-1800-feat-substantive-scoring"></a>
+
+## 2026-09-10 18:00 · feat · 真实评分闭环（招标实质评分）与 builtin 完整性检查隔离
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-10-1800-feat-substantive-scoring |
+| datetime | 2026-09-10T18:00:00+08:00 |
+| type | feat |
+| status | released |
+| scope | review, task, api, mcp |
+| related | issue #57, discussion #53 |
+
+### 为什么做这次更新
+
+前端只接“招标评分标准 → 正式标书逐项评审 → 得分/扣分依据/提分建议 → 修改保存 → 重新评分”的实质评分闭环，
+不接完整性评分，也不以完整性评分降级兜底（discussion #53）。旧实现只有 `builtin_completeness`：三份成果各 10 分的
+完整性检查会进入 `/scores`；评分细则只按“前 10 字关键词命中”给满分或 0；`submit_score_items` 转发到 evaluate
+但未消费 payload；`re_evaluate` 还会因“确认上传建议 + 项目存在任意材料”自动判满分。
+
+### 具体做了什么
+
+- 迁移 `0038`：`score_record.evaluation_type`（`builtin`=内部完整性自检 / `substantive`=真实评分）；
+  `review_item` 新增 `verdict / deduction_reason / rule_source / response_source / missing_materials`；
+- 新任务类型 `substantive_evaluate`（worker 已注册）：冻结 score_rule 与正式 artifact（docx/xlsx）版本，
+  读取正式文件文本，逐条 LLM 实质评审（satisfied/partial/unsatisfied/insufficient_evidence/not_applicable，
+  双侧证据、扣分原因、缺失材料、提分建议）；缺标准、文件不可读、LLM 门禁关闭 → `not_scoreable` 失败关闭，
+  绝不回退 builtin；
+- 新接口 `POST /projects/{id}/substantive-evaluate`（异步，幂等键=规则修订+成果/artifact 版本）与
+  `POST /projects/{id}/substantive-items`（Agent 提交逐条落库：校验 requirement 归属与满分上限、逐条回执、
+  相同 payload 幂等）；MCP `submit_score_items` 改为提交真实评分；
+- `GET /projects/{id}/scores` 只返回最新 `substantive`；无真实评分返回 404“暂无真实评分”，builtin 记录不再冒充得分；
+  `/scores/{score_id}/items`、`/reviews/{run_id}` 返回 verdict/扣分原因/双侧证据/缺失材料/规则关联等新字段；
+- `re_evaluate` 删除“任意材料→满分”伪改善逻辑，并保留原评分的 `evaluation_type`；
+- 无依据不编分：`insufficient_evidence` 时 got/improvable 为空，不计入总分，汇总如实标注未评数量。
+
+### 影响范围
+
+- 评分读取口径（前端评分卡只看到真实评分）、评审任务类型、MCP `submit_score_items` 契约、评分明细字段。
+
+### 迁移 / 破坏性变更
+
+- 迁移 `0038`（可回滚）；`GET /scores` 在仅有 builtin 记录时由 200 变为 404（明确“暂无真实评分”）；
+  `submit_score_items` 不再转发 `/evaluate`，改走 `/substantive-items` 并实际消费 payload。
+
+### 验证方式
+
+- 新增 `tests/module/test_substantive_scoring.py`：Agent 提交落库与 builtin 隐藏、requirement 归属/满分上限/幂等、
+  缺规则与 LLM 门禁关闭 not_scoreable、mock LLM 全链路落库与读取、发起接口幂等；
+  更新 `test_review_api.py`（builtin 不再进入 /scores、re_evaluate 不再伪改善）；ruff 全绿。
+
+### 回滚方式
+
+回退迁移 `0038` 与本次提交，重启 app/worker；存量 builtin 记录保留但重新可见（前端旧口径）。
+
 <a id="2026-09-10-1458-feat-source-archive-category"></a>
 
 ## 2026-09-10 14:58 · feat · 企业资料“源文件”分类与源包状态修复

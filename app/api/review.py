@@ -7,11 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext, require_capability, require_permission
-from app.constants import Permission
+from app.constants import Permission, TaskType
 from app.db import get_session
 from app.models.review import ReviewItem, ReviewProvider, ReviewRun, ScoreRecord
 from app.services import review_service
 from app.services.audit import write_audit
+from app.services.task_service import create_task, public_event
 
 router = APIRouter(prefix="/projects", tags=["review"])
 providers_router = APIRouter(prefix="/review-providers", tags=["review"])
@@ -55,26 +56,112 @@ async def evaluate(
     return result
 
 
+@router.post("/{project_id}/substantive-evaluate")
+async def substantive_evaluate(
+    project_id: int,
+    body: dict | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("submit_score_items")),
+) -> dict:
+    """发起真实评分（discussion #53）：冻结规则与正式成果版本，异步逐条实质评审。
+
+    幂等：输入（规则修订/成果版本/artifact 版本）不变时重复点击返回同一任务；
+    能力未就绪（缺标准/文件不可读/LLM 门禁关闭）由任务以 not_scoreable 失败关闭，不回退 builtin。
+    """
+    body = body or {}
+    idempotency_key = body.get("idempotency_key")
+    if not idempotency_key:
+        idempotency_key = await review_service.substantive_idempotency_key(
+            session, user.enterprise_id, project_id
+        )
+    task, created = await create_task(
+        session,
+        enterprise_id=user.enterprise_id,
+        project_id=project_id,
+        task_type=TaskType.SUBSTANTIVE_EVALUATE,
+        payload={},
+        idempotency_key=idempotency_key,
+    )
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        project_id=project_id,
+        action="score.substantive_evaluate",
+        object_type="task",
+        object_id=task.id,
+    )
+    await session.commit()
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "created": created,
+        "progress": public_event(task),
+    }
+
+
+@router.post("/{project_id}/substantive-items")
+async def substantive_items(
+    project_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("submit_score_items")),
+) -> dict:
+    """Agent 提交的真实评分逐条落库（MCP submit_score_items 目标入口）。
+
+    校验 requirement 归属与满分上限，逐条回执；相同 payload 幂等，不执行 builtin 完整性检查。
+    """
+    try:
+        result = await review_service.submit_substantive_items(
+            session,
+            enterprise_id=user.enterprise_id,
+            project_id=project_id,
+            payload=body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    await write_audit(
+        session,
+        enterprise_id=user.enterprise_id,
+        user_id=user.user_id,
+        project_id=project_id,
+        action="score.substantive_items",
+        object_type="review_run",
+        object_id=result["run_id"],
+    )
+    await session.commit()
+    return result
+
+
 @router.get("/{project_id}/scores")
 async def latest_score(
     project_id: int,
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_latest_score")),
 ) -> dict:
+    """读取最新真实评分（evaluation_type=substantive）。
+
+    builtin 完整性检查是后端内部自检，不进入本接口（discussion #53）；不存在真实评分时
+    返回 404 且 detail 明确“暂无真实评分”，不以最新 builtin 记录冒充真实得分。
+    """
     score = await session.scalar(
         select(ScoreRecord)
         .where(
             ScoreRecord.enterprise_id == user.enterprise_id,
             ScoreRecord.project_id == project_id,
+            ScoreRecord.evaluation_type == "substantive",
         )
         .order_by(ScoreRecord.id.desc())
         .limit(1)
     )
     if score is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="尚未评标")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="暂无真实评分（请先发起真实评分；内置完整性检查不进入评分卡）",
+        )
     run = await session.get(ReviewRun, score.review_run_id) if score.review_run_id else None
-    from app.models.deliverable import Deliverable
     from app.models.agent import AgentArtifact
+    from app.models.deliverable import Deliverable
 
     current_deliverables = (
         await session.scalars(
@@ -118,6 +205,7 @@ async def latest_score(
     ]
     return {
         "has_score": True,
+        "evaluation_type": score.evaluation_type,
         "score_id": score.id,
         "review_run_id": score.review_run_id,
         "snapshot_id": run.snapshot_id if run else None,
@@ -243,6 +331,9 @@ async def review_run_detail(
         "items": [
             {
                 "item_id": i.id,
+                "requirement_id": i.requirement_id,
+                "criterion_id": i.criterion_id,
+                "ruleset_version": i.ruleset_version,
                 "category": i.category,
                 "problem_description": i.problem_description,
                 "got": float(i.got) if i.got is not None else None,
@@ -254,6 +345,11 @@ async def review_run_detail(
                 "effective_suggestion": i.suggestion_override or i.suggestion,
                 "action_type": i.action_type,
                 "evidence": i.evidence,
+                "verdict": i.verdict,
+                "deduction_reason": i.deduction_reason,
+                "rule_source": i.rule_source,
+                "response_source": i.response_source,
+                "missing_materials": i.missing_materials,
                 "status": i.status,
             }
             for i in items
@@ -287,6 +383,9 @@ async def review_items(
     return [
         {
             "item_id": i.id,
+            "requirement_id": i.requirement_id,
+            "criterion_id": i.criterion_id,
+            "ruleset_version": i.ruleset_version,
             "category": i.category,
             "problem_description": i.problem_description,
             "got": float(i.got) if i.got is not None else None,
@@ -298,6 +397,11 @@ async def review_items(
             "effective_suggestion": i.suggestion_override or i.suggestion,
             "action_type": i.action_type,
             "evidence": i.evidence,
+            "verdict": i.verdict,
+            "deduction_reason": i.deduction_reason,
+            "rule_source": i.rule_source,
+            "response_source": i.response_source,
+            "missing_materials": i.missing_materials,
             "status": i.status,
         }
         for i in rows

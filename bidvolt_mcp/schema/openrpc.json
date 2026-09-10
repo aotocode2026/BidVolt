@@ -728,7 +728,7 @@
     },
     {
       "name": "submit_score_items",
-      "summary": "提交模拟评标（snapshot + EvidenceRef 服务端校验）",
+      "summary": "提交真实评分逐条结果（招标实质评分，服务端校验 requirement 归属与满分并原子落库）",
       "params": [
         {
           "name": "args",
@@ -737,6 +737,9 @@
             "properties": {
               "project_id": {
                 "type": "integer"
+              },
+              "items": {
+                "type": "array"
               },
               "payload": {
                 "type": "object"

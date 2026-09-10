@@ -102,6 +102,7 @@ class TaskType:
     # 图片描述（入库后台任务）：sha256 缓存，每张图只描述一次
     IMAGE_DESCRIBE = "image_describe"
     MARKET_KNOWLEDGE_EXTRACT = "market_knowledge_extract"
+    SUBSTANTIVE_EVALUATE = "substantive_evaluate"
 
     ALL = {
         ENTERPRISE_INGESTION,
@@ -116,4 +117,5 @@ class TaskType:
         AGENT_PIPELINE,
         IMAGE_DESCRIBE,
         MARKET_KNOWLEDGE_EXTRACT,
+        SUBSTANTIVE_EVALUATE,
     }

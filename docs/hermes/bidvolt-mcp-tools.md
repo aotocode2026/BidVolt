@@ -141,9 +141,15 @@
 - 返回：`[{item_id, category, problem_description, got, full, improvable, risk_level, suggestion, action_type, evidence:[EvidenceRef], missing_material_types, related_deliverable_node, status, confidence, material_links:[{material_id, match_basis, confidence}]}]`
 
 ### submit_score_items
-- 描述：提交评分项（ReviewProvider 产出），**evidence 必须为服务端生成的 EvidenceRef**（产品决策 D-G）。
-- 参数：`project_id: string`、`snapshot_id: string`、`ruleset_version: string`、`items: [{category, problem_description, got, full, improvable, suggestion, action_type, evidence: EvidenceRef[], risk_level, confidence, requirement_id?, related_deliverable_node?}]`
-- 约束：evidence 非空且服务端校验通过，否则丢弃并提示；初始 status = pending_confirm。
+- 描述：提交**真实评分**（招标实质评分）逐条结果（discussion #53）。后端校验 requirement 归属与满分上限并原子落库，
+  不再转发 builtin 完整性检查，也不忽略 payload。
+- 参数：`project_id: string`、`items: [{requirement_id?, category, problem_description, got, full, verdict?,
+  deduction_reason?, risk_level?, suggestion?, action_type?, missing_materials?, rule_source?, response_source?, evidence?}]`
+  （兼容旧字段 `payload.items`）
+- 返回：`{run_id, score_id, snapshot_id, total_score, missing_count, unrated_count, accepted, results[]}`；
+  相同 payload 幂等（`duplicate=true`）。
+- 约束：无依据不编分——`insufficient_evidence` 时 `got=null`；未提供证据的条目保留“证据不足”结论，服务端不臆造证据；
+  每条结果逐条回执（succeeded/skipped + reason），不因 HTTP 200 一律视为成功。
 
 ### confirm_review_items
 - 描述：单条或批量确认 review_items（confirm/reject），会触发受影响成果的合并写入。（**批量接口**，body 传 item_ids 列表即可）

@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-10 18:00 | #53 | discussion | [真实评分闭环（招标实质评分）与 builtin 完整性检查隔离](UPDATE_LOG.md#2026-09-10-1800-feat-substantive-scoring) |
+| 2026-09-10 18:00 | #57 | issue | [真实评分闭环（招标实质评分）与 builtin 完整性检查隔离](UPDATE_LOG.md#2026-09-10-1800-feat-substantive-scoring) |
 | 2026-09-10 14:58 | #55 | discussion | [企业资料“源文件”分类与源包状态修复](UPDATE_LOG.md#2026-09-10-1458-feat-source-archive-category) |
 | 2026-09-10 14:58 | #56 | issue | [企业资料“源文件”分类与源包状态修复](UPDATE_LOG.md#2026-09-10-1458-feat-source-archive-category) |
 | 2026-09-10 11:31 | #51 | issue | [行情库原件/图片对所有登录用户可见](UPDATE_LOG.md#2026-09-10-1131-fix-market-file-download-isolation) |
