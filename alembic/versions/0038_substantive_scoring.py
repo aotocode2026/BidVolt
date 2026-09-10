@@ -8,6 +8,7 @@ Create Date: 2026-09-10
 from __future__ import annotations
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -15,6 +16,8 @@ revision = "0038"
 down_revision = "0037"
 branch_labels = None
 depends_on = None
+
+json_type = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
 
 
 def upgrade() -> None:
@@ -24,9 +27,9 @@ def upgrade() -> None:
     )
     op.add_column("review_item", sa.Column("verdict", sa.String(length=30), nullable=True))
     op.add_column("review_item", sa.Column("deduction_reason", sa.Text(), nullable=True))
-    op.add_column("review_item", sa.Column("rule_source", sa.JSON(), nullable=True))
-    op.add_column("review_item", sa.Column("response_source", sa.JSON(), nullable=True))
-    op.add_column("review_item", sa.Column("missing_materials", sa.JSON(), nullable=True))
+    op.add_column("review_item", sa.Column("rule_source", json_type, nullable=True))
+    op.add_column("review_item", sa.Column("response_source", json_type, nullable=True))
+    op.add_column("review_item", sa.Column("missing_materials", json_type, nullable=True))
 
 
 def downgrade() -> None:
