@@ -45,6 +45,43 @@ async def _get_agent_task(session: AsyncSession, user: UserContext, project_id: 
     return task
 
 
+def _display_type_for_event(kind: str, reply_to_seq: int | None) -> str:
+    """把历史/实时事件映射为前端可渲染的 display_type（discussion #52）。
+
+    保留原 kind 字段兼容旧前端；display_type 用于区分：
+    用户消息 / 正式答复 / 可公开操作日志 / 内部记录。
+    """
+    kind = str(kind or "").strip()
+    if kind == "user":
+        return "user"
+    if kind == "error":
+        return "error"
+    if kind == "hermes":
+        # 有明确回复关联的 hermes 视为正式答复；其余主会话输出暂作为可公开日志，
+        # 避免把内部分析、工具回显误渲染成用户聊天气泡。
+        return "assistant_reply" if reply_to_seq is not None else "operation_log"
+    if kind == "service":
+        return "operation_log"
+    if kind == "tool":
+        return "internal"
+    return "operation_log"
+
+
+def _event_payload(r: AgentSessionEvent) -> dict:
+    """统一事件序列化：补齐历史契约需要的时间、关联、分类字段。"""
+    display_type = _display_type_for_event(r.kind, r.reply_to_seq)
+    return {
+        "seq": int(r.seq),
+        "kind": r.kind,
+        "display_type": display_type,
+        "visibility": "internal" if display_type == "internal" else "public",
+        "content": r.content,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "reply_to_seq": r.reply_to_seq,
+        "client_message_id": r.client_message_id,
+    }
+
+
 @router.post("/{project_id}/agent-run", status_code=status.HTTP_201_CREATED)
 async def agent_run(
     project_id: int,
@@ -340,7 +377,7 @@ async def agent_run_stream(
             ).all()
             for r in rows:
                 last_seq = max(last_seq, r.seq)
-                yield f"event: message\ndata: {json.dumps({'seq': r.seq, 'kind': r.kind, 'content': r.content}, ensure_ascii=False)}\n\n"
+                yield f"event: message\ndata: {json.dumps(_event_payload(r), ensure_ascii=False)}\n\n"
             await session.refresh(task)
             if task.status in terminal:
                 # 终态任务：按 seq 游标持续补读，直到某一批为空才发 end，
@@ -361,7 +398,7 @@ async def agent_run_stream(
                         break
                     for r in more:
                         last_seq = max(last_seq, r.seq)
-                        yield f"event: message\ndata: {json.dumps({'seq': r.seq, 'kind': r.kind, 'content': r.content}, ensure_ascii=False)}\n\n"
+                        yield f"event: message\ndata: {json.dumps(_event_payload(r), ensure_ascii=False)}\n\n"
                 r = task.result or {}
                 yield (
                     "event: end\ndata: "
@@ -467,9 +504,12 @@ async def project_pre_chat_messages(
             {
                 "seq": r.seq,
                 "kind": r.kind,
+                "display_type": _display_type_for_event(r.kind, r.reply_to_seq),
+                "visibility": "internal" if _display_type_for_event(r.kind, r.reply_to_seq) == "internal" else "public",
                 "content": r.content,
                 "session_id": r.session_id,
                 "reply_to_seq": r.reply_to_seq,
+                "client_message_id": r.client_message_id,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows

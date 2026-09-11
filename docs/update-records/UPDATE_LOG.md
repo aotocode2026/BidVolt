@@ -3,6 +3,53 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-11-1715-fix-agent-history-contract"></a>
+
+## 2026-09-11 17:15 · fix · 历史消息契约补齐分类、关联与时间字段
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-11-1715-fix-agent-history-contract |
+| datetime | 2026-09-11T17:15:00+08:00 |
+| type | fix |
+| status | proposed |
+| scope | agent, api |
+| related | discussion #52 |
+
+### 为什么做这次更新
+
+刷新后正式回复可能被归入内部运行记录，问卡位置漂移。根因是主任务 SSE 与历史补读只返回
+`seq/kind/content`，没有返回已有的时间、关联和身份字段，前端只能依赖正文/终端标题判断消息身份。
+
+### 具体做了什么
+
+- 新增统一事件序列化 `_event_payload` 与 `_display_type_for_event`：
+  - 返回 `display_type`（user / assistant_reply / operation_log / internal / error）与 `visibility`；
+  - 返回 `created_at`、`reply_to_seq`、`client_message_id`；
+  - 保留原 `kind/content/seq` 兼容旧前端。
+- 主任务 SSE 实时与历史补读都使用统一序列化；
+- 任务前对话 `GET /pre-chat/messages` 同样补齐 `display_type/visibility/client_message_id`；
+- 问卡 `/questions` 每条新增 `event_seq`（该问卡创建前最近的公开事件序号），便于前端稳定排序。
+
+### 影响范围
+
+- `GET /projects/{project_id}/agent-run/{task_id}/stream`
+- `GET /projects/{project_id}/pre-chat/messages`
+- `GET /projects/{project_id}/agent-run/{task_id}/questions`
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；均为新增响应字段，旧字段保留。
+
+### 验证方式
+
+- 更新长历史补读测试，断言事件含 `display_type/visibility/created_at/reply_to_seq/client_message_id`；
+- ruff 通过；相关流式用例通过。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-11-1630-fix-artifact-version-history"></a>
 
 ## 2026-09-11 16:30 · fix · 版本列表合并覆盖归档版本，修复历史版本缺失

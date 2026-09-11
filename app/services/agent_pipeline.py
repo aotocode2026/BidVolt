@@ -99,6 +99,17 @@ async def _customer_state(session, task_id: int, limit: int = 400) -> dict:
     asks: list[dict] = []
     action_list: list[str] = []
     for r in rows:
+        event_seq = None
+        if r.created_at is not None:
+            event_seq = await session.scalar(
+                _sa_select(AgentSessionEvent.seq)
+                .where(
+                    AgentSessionEvent.task_id == int(task_id),
+                    AgentSessionEvent.created_at <= r.created_at,
+                )
+                .order_by(AgentSessionEvent.seq.desc())
+                .limit(1)
+            )
         entry = {
             "ask_id": r.id,
             "kind": r.kind,
@@ -106,6 +117,7 @@ async def _customer_state(session, task_id: int, limit: int = 400) -> dict:
             "answered": bool(r.answered),
             "answer": r.answer,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "event_seq": int(event_seq) if event_seq is not None else None,
             "window_minutes": int(r.window_minutes or 0),
             "timeout_notified": bool(r.timeout_notified),
         }

@@ -286,6 +286,17 @@ def test_stream_replays_entire_long_history(client, monkeypatch):
     payload = json.loads(lines[end_idx + 1].removeprefix("data: "))
     assert payload["last_seq"] == 450
 
+    # discussion #52：消息事件补齐 display_type/visibility/time/关联字段
+    msg_idx = [i for i, ln in enumerate(lines) if ln.startswith("event: message")][0]
+    msg = json.loads(lines[msg_idx + 1].removeprefix("data: "))
+    assert msg["seq"] == 1
+    assert msg["kind"] == "hermes"
+    assert msg["display_type"] in {"assistant_reply", "operation_log"}
+    assert msg["visibility"] in {"public", "internal"}
+    assert "created_at" in msg
+    assert "reply_to_seq" in msg
+    assert "client_message_id" in msg
+
 
 class _FakeProc:
     def __init__(self, out: bytes, rc: int = 0):
