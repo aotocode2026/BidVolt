@@ -12,7 +12,7 @@
 | id | 2026-09-11-1500-feat-substantive-scoring-type-normalization |
 | datetime | 2026-09-11T15:00:00+08:00 |
 | type | feat |
-| status | proposed |
+| status | released |
 | scope | review, task, api, docs |
 | related | discussion #59, discussion #53 |
 
@@ -50,6 +50,9 @@ scoring_business / weight_price / price_rule`，且这些 requirement 的 `struc
   覆盖 `scoring_technical + weight_price`、`structured=null` 长文本拆项、`not_applicable` 参考规则、
   `weight_config` 返回；`tests/module/test_substantive_scoring.py` 与 `test_review_api.py` 全绿；
   ruff 全绿。
+- 已部署生产：服务器 HEAD `179f2ded`、alembic `0038 (head)`、app/worker 重启后 `healthz ok`；
+  服务器临时工作区复跑 `test_substantive_scoring.py + test_review_api.py` 17 passed；
+  openapi 含 `substantive-evaluate / substantive-items` 路由。
 
 ### 回滚方式
 
