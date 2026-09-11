@@ -12,7 +12,7 @@
 | id | 2026-09-11-1745-feat-qwen3-vl-plus-classify-concurrency |
 | datetime | 2026-09-11T17:45:00+08:00 |
 | type | feat |
-| status | proposed |
+| status | released |
 | scope | vision, enterprise |
 | related | discussion #58 |
 
@@ -39,6 +39,7 @@
 ### 验证方式
 
 - 新增 16 文件并发分类用例：最大并发恰好 4；`test_enterprise_api.py` 全绿；ruff 通过。
+- 生产压测：16 份不同 PNG 并发分类全部成功（16/16，40.56s），无 429/限流错误。
 
 ### 回滚方式
 
