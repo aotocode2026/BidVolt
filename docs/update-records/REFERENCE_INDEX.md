@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-11 18:30 | #39 | discussion | [Agent 生成进度按真实阶段返回 stage 与最近活动](UPDATE_LOG.md#2026-09-11-1830-fix-agent-progress-stage) |
+| 2026-09-11 18:30 | #61 | issue | [Agent 生成进度按真实阶段返回 stage 与最近活动](UPDATE_LOG.md#2026-09-11-1830-fix-agent-progress-stage) |
 | 2026-09-11 18:00 | #54 | discussion | [项目基础信息自动回填 tender_no/deadline](UPDATE_LOG.md#2026-09-11-1800-fix-project-meta-backfill) |
 | 2026-09-11 18:00 | #60 | issue | [项目基础信息自动回填 tender_no/deadline](UPDATE_LOG.md#2026-09-11-1800-fix-project-meta-backfill) |
 | 2026-09-11 17:45 | #58 | discussion | [视觉模型切换 qwen3-vl-plus 并增加企业分类并发限流](UPDATE_LOG.md#2026-09-11-1745-feat-qwen3-vl-plus-classify-concurrency) |

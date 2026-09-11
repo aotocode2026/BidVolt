@@ -430,6 +430,28 @@ def _repl_submit(master_fd: int, text: str) -> None:
         logger.warning("REPL 提交失败：%s", exc)
 
 
+def _progress_stage(
+    n_asks: int,
+    n_ans: int,
+    n_art: int,
+    n_zip: int,
+    last_text: str,
+) -> tuple[str, str]:
+    """按可观测信号推导用户可理解的业务阶段，不用时间增长冒充进度。"""
+    if n_zip:
+        return "packaging", f"交付包已生成（第 {n_zip} 版），正在收尾复核"
+    if n_art:
+        text = last_text or ""
+        if any(k in text for k in ("评审", "评分", "审核", "校核", "验收")):
+            return "reviewing", f"正在评审与质量校核（已生成 {n_art} 份成文产物）"
+        return "writing", f"正在撰写与校验成文产物（已生成 {n_art} 份）"
+    if n_asks:
+        if n_ans < n_asks:
+            return "waiting_user", f"等待用户回答提问（{n_ans}/{n_asks} 组已答）"
+        return "analyzing", "提问已完成，正在继续分析材料"
+    return "analyzing", "正在读取招标材料并制定编制计划"
+
+
 async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     """执行 Agent 主会话（长驻 REPL）：喂入任务书后由主 agent 自主完成
     解析→撰写→校验→评审→交付循环，输出完成标记后收尾。"""
@@ -823,8 +845,10 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     task.progress = {
         "phase": "agent_pipeline",
         "status": "running",
+        "stage": "accepted",
         "percent": 5,
         "current_work": "Agent 主会话启动（todo 计划 + 子任务编排，全程自主）…",
+        "last_activity_at": None,
     }
     await session.commit()
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
@@ -1112,7 +1136,7 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                         from sqlalchemy import select as _sa_sel_p
 
                         from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
-                        from app.models.agent import AgentArtifact, AgentCustomerAsk
+                        from app.models.agent import AgentArtifact, AgentCustomerAsk, AgentSessionEvent
                         from app.services.task_service import _set_rls_context  # noqa: PLC0415
 
                         # 与 pending_chat/提问超时同理：独立短命会话——主泵会话事务
@@ -1145,24 +1169,29 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                 ))
                                 or 0
                             )
-                            _n_zip = int(
-                                (await _s4.scalar(
-                                    _sa_sel_p(sa_func.count(AgentArtifact.id)).where(
-                                        AgentArtifact.task_id == task.id,
-                                        AgentArtifact.kind == "zip",
-                                    )
-                                ))
-                                or 0
+                        _n_zip = int(
+                            (await _s4.scalar(
+                                _sa_sel_p(sa_func.count(AgentArtifact.id)).where(
+                                    AgentArtifact.task_id == task.id,
+                                    AgentArtifact.kind == "zip",
+                                )
+                            ))
+                            or 0
+                        )
+                        _last_row = (
+                            await _s4.execute(
+                                _sa_sel_p(AgentSessionEvent.content, AgentSessionEvent.created_at)
+                                .where(AgentSessionEvent.task_id == task.id)
+                                .order_by(AgentSessionEvent.seq.desc())
+                                .limit(1)
                             )
-                        _elapsed = int(loop.time() - started_at)
-                        if _n_zip:
-                            _pct, _work = 85, f"交付包已生成（第 {_n_zip} 版），主会话复核收尾中…"
-                        elif _n_art:
-                            _pct, _work = min(70, 40 + _n_art * 2), f"成文产物 {_n_art} 份落库：撰写/校验/评审推进中…"
-                        elif _n_asks:
-                            _pct, _work = 15, f"提问关已发起（{_n_ans}/{_n_asks} 组已答，超时未答主会话将自行决定），并行推进中…"
-                        else:
-                            _pct, _work = 5 + min(5, _elapsed // 300), "Agent 主会话启动（todo 计划 + 子任务编排，全程自主）…"
+                        ).first()
+                        _last_text = str(_last_row[0] or "") if _last_row else ""
+                        _last_at = _last_row[1] if _last_row else None
+                        _stage, _work = _progress_stage(
+                            _n_asks, _n_ans, _n_art, _n_zip, _last_text
+                        )
+                        _pct = None
                         async with _PumpSessionLocal() as _s5:
                             await asyncio.wait_for(_set_rls_context(_s5, task.enterprise_id), timeout=30)
                             _row = (
@@ -1180,6 +1209,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
                                     "status": "running",
                                     "percent": _pct,
                                     "current_work": _work,
+                                    "stage": _stage,
+                                    "last_activity_at": _last_at.isoformat() if _last_at else None,
                                 }
                                 await asyncio.wait_for(_s5.commit(), timeout=30)
                     except Exception:  # noqa: BLE001 进度纯观感，失败下轮再试
@@ -1446,6 +1477,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "status": "done",
             "percent": 100,
             "current_work": "Agent 主会话完成（全部验收门通过）",
+            "stage": "done",
+            "last_activity_at": None,
         }
     elif marker == MARK_INCOMPLETE:
         # 主会话自主判定未闭环（如实标注，未冒充完成）：这是流程的最终结论，
@@ -1483,6 +1516,8 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
             "status": "failed",
             "percent": 100,
             "current_work": "主会话判定未闭环（原因见 result.reason）",
+            "stage": "failed",
+            "last_activity_at": None,
         }
     else:
         raise ValueError(

@@ -3,6 +3,46 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-11-1830-fix-agent-progress-stage"></a>
+
+## 2026-09-11 18:30 · fix · Agent 生成进度按真实阶段返回 stage 与最近活动
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-11-1830-fix-agent-progress-stage |
+| datetime | 2026-09-11T18:30:00+08:00 |
+| type | fix |
+| status | released |
+| scope | agent, api |
+| related | issue #61, discussion #39 |
+
+### 为什么做这次更新
+
+无提问/无成果时，进度按 elapsed 从 5% 涨到 10%，用户无法判断 Agent 在分析、撰写、审核还是等待。
+
+### 具体做了什么
+
+- 进度增加 `stage`：`accepted / analyzing / waiting_user / writing / reviewing / packaging / done / failed`；
+- 增加 `last_activity_at`：最近真实业务事件时间；
+- 无真实里程碑时 `percent=null`，不再用时间增长伪造完成量；
+- 阶段由提问、成文产物、zip、最近公开事件文本推导。
+
+### 影响范围
+
+- `GET /projects/{project_id}/agent-run/{task_id}` 的 `progress` 返回结构。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；`progress.percent` 在早期阶段可能为 null。
+
+### 验证方式
+
+- 新增 `_progress_stage` 单元测试 4 项；ruff 通过。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-11-1800-fix-project-meta-backfill"></a>
 
 ## 2026-09-11 18:00 · fix · 项目基础信息自动回填 tender_no/deadline
