@@ -24,7 +24,7 @@
 Hermes Agent（同容器独立进程 / 独立容器，ADR D17）
    ├─ bidvolt MCP server（stdio，本仓库实现）→ 业务数据能力
    ├─ anysearch MCP server → 网络搜索
-   ├─ 模型：deepseek-v4-flash（主推理）/ qwen-vl-max（vision_model）/ deepseek-v4-flash（轻量）
+   ├─ 模型：deepseek-v4-flash（主推理）/ qwen3-vl-plus（vision_model）/ deepseek-v4-flash（轻量）
    └─ Skills：5 个业务 SKILL.md（本目录）
 ```
 
@@ -36,7 +36,7 @@ providers:
   dashscope: {}               # 视觉模型 provider（qwen-vl）
 models:
   main: deepseek-v4-flash     # 主推理
-  vision: qwen-vl-max         # 扫描件/图片理解（4.3）
+  vision: qwen3-vl-plus         # 扫描件/图片理解（4.3）
   cheap: deepseek-v4-flash    # 轻量任务
 
 mcp_servers:
@@ -93,7 +93,7 @@ skills:
 
 > **部署状态（2026-08-13）：已在服务器容器完成部署并验证。** Hermes Agent（NousResearch/hermes-agent，
 > v0.19.0）安装在 `/data/hermes`（venv + 数据 + skills），supervisor `[program:hermes]` 守护
-> `hermes serve` headless gateway（127.0.0.1:9119）；主推理 MiniMax-Text-01、视觉辅助百炼 qwen-vl-max、
+> `hermes serve` headless gateway（127.0.0.1:9119）；主推理 MiniMax-Text-01、视觉辅助百炼 qwen3-vl-plus、
 > bidvolt MCP（24 工具）与 5 个 `bidvolt-*` Skill 均已配置并实测可用（真实搜索调用返回中文招标结果）。
 
 需要三块才能把 Agent 闭环跑起来：

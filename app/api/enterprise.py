@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import UserContext, _set_rls_context, get_current_user, require_capability, require_permission
+from app.config import settings
 from app.constants import Permission, TaskStatus, TaskType
-from app.db import get_session
+from app.db import SessionLocal, get_session
 from app.models.enterprise_domain import (
     EnterpriseAsset,
     EnterpriseAssetCategory,
@@ -28,6 +31,27 @@ from app.services.enterprise_service import (
 )
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
+
+_CLASSIFY_SEMAPHORE = asyncio.Semaphore(max(1, int(settings.enterprise_classify_concurrency or 4)))
+
+
+async def _classify_one_in_new_session(enterprise_id: int, asset_id: int) -> dict:
+    """在独立短命会话中完成单个资产的 AI 分类，供并发 gather 使用。
+
+    全局信号量把跨用户、跨请求的总并发限制在配置上限内；分类只读，
+    结果由主请求会话统一写库，避免 AsyncSession 跨并发任务共享。
+    """
+    async with _CLASSIFY_SEMAPHORE:
+        async with SessionLocal() as s:
+            asset = await s.get(EnterpriseAsset, int(asset_id))
+            if asset is None or int(asset.enterprise_id) != int(enterprise_id):
+                return {
+                    "asset_id": int(asset_id),
+                    "status": "skipped",
+                    "reason": "资产不存在或不属于本企业",
+                }
+            ai = await classify_asset_with_ai(s, asset)
+            return {"asset_id": int(asset_id), "status": "ok", "ai": ai}
 
 
 @router.get("/categories")
@@ -244,10 +268,24 @@ async def trigger_ingest(
     await _set_rls_context(session, user.enterprise_id)
 
     categories = await _ensure_categories(session, user.enterprise_id)
+    ai_results = await asyncio.gather(
+        *(_classify_one_in_new_session(user.enterprise_id, int(asset_id)) for asset_id in asset_ids),
+        return_exceptions=True,
+    )
+
     classified: list[dict] = []
-    for asset_id in asset_ids:
+    for raw in ai_results:
+        if isinstance(raw, BaseException):
+            classified.append({"status": "failed", "reason": str(raw)[:200]})
+            continue
+        if raw.get("status") != "ok":
+            classified.append(raw)
+            continue
+        asset_id = int(raw["asset_id"])
+        ai = raw["ai"]
         asset = await session.get(EnterpriseAsset, asset_id)
         if asset is None or asset.enterprise_id != user.enterprise_id:
+            classified.append({"asset_id": asset_id, "status": "skipped", "reason": "资产不存在或不属于本企业"})
             continue
         if asset.asset_type == "源文件":
             # 源压缩包无需业务内容分类：保留“源文件”身份与状态，跳过 AI 分类（discussion #55）
@@ -380,7 +418,8 @@ async def classify_enterprise_asset(
     if task is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非企业资料导入任务，拒绝分类")
 
-    ai = await classify_asset_with_ai(session, asset)
+    async with _CLASSIFY_SEMAPHORE:
+        ai = await classify_asset_with_ai(session, asset)
     category = ai["category"]
     _, facts = _classify(asset.name)
     categories = await _ensure_categories(session, user.enterprise_id)

@@ -248,7 +248,7 @@ supervisorctl status                            # postgres/app/worker/hermes/cla
 - 位置：`/data/hermes`（venv + 数据 + skills），supervisor `[program:hermes]` 守护
   `hermes serve` headless gateway（127.0.0.1:9119）
 - 模型：主推理 **deepseek-v4-flash**（`deepseek` provider，max_tokens=32768，忙时输入模式=queue/steer）；
-  视觉辅助 = 百炼 qwen-vl-max（`auxiliary.vision` custom + DashScope 兼容端点；
+  视觉辅助 = 百炼 qwen3-vl-plus（`auxiliary.vision` custom + DashScope 兼容端点；
   入库图片描述后台任务也走此模型）；**编号二次识别专用** = qwen2.5-vl-72b-instruct
   （`DASHSCOPE_VL_VERIFY_MODEL`，支持 vl_high_resolution_images 高分辨率自切块，形近字符读数更稳）
 - MCP：`bidvolt`（45 工具，stdio），调用后端需 `BIDVOLT_INTERNAL_TOKEN` + 任务级 capability token

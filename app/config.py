@@ -52,7 +52,9 @@ class Settings(BaseSettings):
     agent_pipeline_enabled: int = 0
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    dashscope_vl_model: str = "qwen-vl-max"
+    dashscope_vl_model: str = "qwen3-vl-plus"
+    # 企业资料分类并发上限：全局跨请求限流，避免多用户同时分类触发上游限流
+    enterprise_classify_concurrency: int = 4
     # 编号二次识别专用 VL 模型（空=与主模型一致）。qwen2.5-vl 系列支持
     # vl_high_resolution_images 高分辨率自切块，形近字符读数更稳。
     dashscope_vl_verify_model: str = ""

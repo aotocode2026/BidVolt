@@ -29,7 +29,7 @@
 ### 3. MCP 契约与命名统一（Issue 二.11、P0-3）
 
 - MCP 工具 Schema 由同一 IDL（OpenRPC + JSON Schema）生成，客户端/服务端/测试共用；五条 Skill 路径端到端契约测试清单落地
-- Skill 名统一为 `bidvolt-*`（连字符）风格，模型配置统一为 deepseek-v4-flash / qwen-vl-max，修正 README 与模块文档不一致处
+- Skill 名统一为 `bidvolt-*`（连字符）风格，模型配置统一为 deepseek-v4-flash / qwen3-vl-plus，修正 README 与模块文档不一致处
 - HistoryPriceProvider 契约补全：`query_history` / `get_material_samples` / `get_source_metadata` 三类只读能力（含 MCP 工具与 REST 端点）
 
 ### 4. Issue 七 交付物

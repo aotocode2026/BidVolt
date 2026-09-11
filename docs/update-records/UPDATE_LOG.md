@@ -3,6 +3,47 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-11-1745-feat-qwen3-vl-plus-classify-concurrency"></a>
+
+## 2026-09-11 17:45 · feat · 视觉模型切换 qwen3-vl-plus 并增加企业分类并发限流
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-11-1745-feat-qwen3-vl-plus-classify-concurrency |
+| datetime | 2026-09-11T17:45:00+08:00 |
+| type | feat |
+| status | proposed |
+| scope | vision, enterprise |
+| related | discussion #58 |
+
+### 为什么做这次更新
+
+百炼计划下线 `qwen-vl-max`；同时多用户同时触发企业资料分类可能叠加并发，触发上游视觉/文本模型限流。
+
+### 具体做了什么
+
+- 视觉模型默认值改为 `qwen3-vl-plus`，同步更新 README、部署/模块/Hermes 文档与 install-hermes.sh；
+- 新增配置 `enterprise_classify_concurrency`（默认 4）；
+- 企业资料 ingest 改为有界并发分类：独立短命会话读取 + 主会话统一写库，单文件失败不阻塞其余文件；
+- 单资产分类入口同样受全局信号量约束，避免多用户重叠请求超过上游限制；
+- 并发上限覆盖跨用户、跨请求的全局限流。
+
+### 影响范围
+
+- 企业资料分类吞吐与限流；视觉模型名称；相关文档。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；`DASHSCOPE_VL_MODEL` 环境变量默认值变化（如有显式旧值需同步更新）。
+
+### 验证方式
+
+- 新增 16 文件并发分类用例：最大并发恰好 4；`test_enterprise_api.py` 全绿；ruff 通过。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-11-1715-fix-agent-history-contract"></a>
 
 ## 2026-09-11 17:15 · fix · 历史消息契约补齐分类、关联与时间字段

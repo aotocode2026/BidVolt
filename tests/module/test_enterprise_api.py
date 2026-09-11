@@ -3,6 +3,9 @@ from __future__ import annotations
 import io
 import zipfile
 
+from app.api import enterprise as enterprise_api
+from app.config import settings
+
 
 def _headers(client):
     r = client.post(
@@ -108,3 +111,46 @@ def test_zip_upload_is_source_archive_and_never_pending(client):
     detail = client.get(f"/api/v1/enterprise/assets/{zip_asset['asset_id']}", headers=h).json()
     assert detail["status"] == 4
     assert detail["asset_type"] == "源文件"
+
+
+def test_ingest_classification_is_bounded_concurrent(client, monkeypatch):
+    """discussion #58：同一批资产分类受全局并发上限约束，不因资产数线性放大。"""
+    h = _headers(client)
+    monkeypatch.setattr(settings, "enterprise_classify_concurrency", 4)
+
+    asset_ids = []
+    for i in range(16):
+        item = client.post(
+            "/api/v1/files/upload",
+            data={"target": "enterprise"},
+            files=[("files", (f"资料{i}.txt", io.BytesIO(f"文件 {i}".encode()), "text/plain"))],
+            headers=h,
+        ).json()["files"][0]
+        asset_ids.append(item["asset_id"])
+
+    state = {"active": 0, "max_active": 0}
+
+    async def fake_classify(session, asset):
+        state["active"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        try:
+            await __import__("asyncio").sleep(0.05)
+            return {
+                "category": "其他",
+                "confidence": 0.8,
+                "source": "test",
+                "evidence": {},
+            }
+        finally:
+            state["active"] -= 1
+
+    monkeypatch.setattr(enterprise_api, "classify_asset_with_ai", fake_classify)
+
+    r = client.post(
+        "/api/v1/enterprise/ingest",
+        json={"asset_ids": asset_ids},
+        headers=h,
+    )
+    assert r.status_code == 202
+    assert state["max_active"] == 4
+    assert len(r.json()["classified"]) == 16

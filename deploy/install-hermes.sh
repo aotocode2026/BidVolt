@@ -77,7 +77,7 @@ with open(cfg_path, encoding="utf-8") as f:
 aux = cfg.setdefault("auxiliary", {}).setdefault("vision", {})
 aux.update({
     "provider": "custom",
-    "model": "qwen-vl-max",
+    "model": "qwen3-vl-plus",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "api_key": os.environ.get("DASHSCOPE_API_KEY", ""),
 })

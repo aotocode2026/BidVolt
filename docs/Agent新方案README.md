@@ -141,7 +141,7 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 - skill：`/data/hermes/skills/bidvolt/agent-pipeline/SKILL.md`（frontmatter `name: bidvolt-agent-pipeline`）；
 - Hermes ≥ v0.19（依赖 `delegation`/`todo` 内建工具集）；
 - 模型：`/data/hermes/config.yaml`（当前 `deepseek-v4-flash`/`deepseek`，max_tokens=32768，
-  `display.busy_input_mode: queue`；视觉 `auxiliary.vision` = qwen-vl-max）；
+  `display.busy_input_mode: queue`；视觉 `auxiliary.vision` = qwen3-vl-plus）；
 - 环境：`.env` 中 `AGENT_PIPELINE_ENABLED=1`；worker 进程需能访问 `/data/hermes/venv/bin/hermes`；
   `DEEPSEEK_API_KEY` 在 supervisor `environment=` 注入（不进 .env）；
 - ⚠️ Python 3.10：`asyncio.wait_for` 抛 `asyncio.TimeoutError`（≠内建 `TimeoutError`），
