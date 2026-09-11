@@ -1541,6 +1541,35 @@ async def run_agent_pipeline(session: AsyncSession, task: Task) -> None:
     except Exception:  # noqa: BLE001 记录刷新失败不影响任务结论
         logger.warning("收尾刷新会话记录失败（task=%s）", task.id, exc_info=True)
 
+    # 生成完成即自动触发真实评分（discussion #59）。评分失败不影响生成任务终态。
+    try:
+        from app.db import SessionLocal as _PumpSessionLocal  # noqa: PLC0415
+        from app.services import review_service as _review_service  # noqa: PLC0415
+        from app.services.task_service import _set_rls_context, create_task  # noqa: PLC0415
+
+        async with _PumpSessionLocal() as _s8:
+            await asyncio.wait_for(_set_rls_context(_s8, task.enterprise_id), timeout=30)
+            key = await asyncio.wait_for(
+                _review_service.substantive_idempotency_key(
+                    _s8, task.enterprise_id, task.project_id
+                ),
+                timeout=30,
+            )
+            _, _created = await asyncio.wait_for(
+                create_task(
+                    _s8,
+                    enterprise_id=task.enterprise_id,
+                    project_id=task.project_id,
+                    task_type="substantive_evaluate",
+                    payload={"triggered_by": "agent_pipeline", "source_task_id": task.id},
+                    idempotency_key=f"{key}-postgen",
+                ),
+                timeout=30,
+            )
+            await asyncio.wait_for(_s8.commit(), timeout=30)
+    except Exception:  # noqa: BLE001 自动评分失败不影响生成任务
+        logger.warning("生成后自动触发真实评分失败（task=%s）", task.id, exc_info=True)
+
 
 async def _export_session_json(hermes_bin: str, env: dict, session_id: str) -> dict | None:
     """导出一个 Hermes 会话的最新 jsonl 记录。失败返回 None。

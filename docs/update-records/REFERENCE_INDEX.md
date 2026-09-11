@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-11 15:00 | #53 | discussion | [真实评分兼容散乱评分类型并拆解无结构化细则](UPDATE_LOG.md#2026-09-11-1500-feat-substantive-scoring-type-normalization) |
+| 2026-09-11 15:00 | #59 | discussion | [真实评分兼容散乱评分类型并拆解无结构化细则](UPDATE_LOG.md#2026-09-11-1500-feat-substantive-scoring-type-normalization) |
 | 2026-09-10 18:00 | #53 | discussion | [真实评分闭环（招标实质评分）与 builtin 完整性检查隔离](UPDATE_LOG.md#2026-09-10-1800-feat-substantive-scoring) |
 | 2026-09-10 18:00 | #57 | issue | [真实评分闭环（招标实质评分）与 builtin 完整性检查隔离](UPDATE_LOG.md#2026-09-10-1800-feat-substantive-scoring) |
 | 2026-09-10 14:58 | #55 | discussion | [企业资料“源文件”分类与源包状态修复](UPDATE_LOG.md#2026-09-10-1458-feat-source-archive-category) |

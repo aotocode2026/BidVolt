@@ -246,6 +246,85 @@ def test_substantive_evaluate_with_mocked_llm(client, monkeypatch):
     assert items[0]["missing_materials"][0]["type"] == "考核细则"
 
 
+def test_substantive_evaluate_recognizes_scoring_type_aliases_and_decomposes_text(
+    client, monkeypatch
+):
+    """discussion #59：评分引擎识别 scoring_technical/weight_price 等类型，并拆解无 structured 的长文本。"""
+    h, pid = _setup(client)
+
+    client.post(
+        f"/api/v1/projects/{pid}/requirements/upsert",
+        json={
+            "requirements": [
+                {
+                    "req_type": "scoring_technical",
+                    "content": "技术评分：1.总体方案 6-10 分；2.项目团队 12-20 分",
+                    "structured": None,
+                    "coordinates": [{"file_id": 1}],
+                },
+                {
+                    "req_type": "weight_price",
+                    "content": "分值权重：商:技:价 = 10:60:30",
+                    "structured": None,
+                    "coordinates": [{"file_id": 1}],
+                },
+            ]
+        },
+        headers=h,
+    )
+    reqs = client.get("/api/v1/requirements", params={"project_id": pid}, headers=h).json()
+    tech_req = next(r for r in reqs if r["req_type"] == "scoring_technical")
+    _seed_artifact(pid, _docx_bytes("总体方案完整，项目团队齐全。"))
+
+    monkeypatch.setattr("app.services.llm.llm_enabled", lambda: True)
+
+    decomposition = [
+        {"element": "总体方案", "criterion": "总体方案 6-10 分", "weight": 10, "category": "技术"},
+        {"element": "项目团队", "criterion": "项目团队 12-20 分", "weight": 20, "category": "技术"},
+    ]
+    scoring = {
+        "verdict": "partial",
+        "got": 8,
+        "deduction_reason": "总体方案有但深度不足",
+        "risk_level": 1,
+        "suggestion": "补充总体架构说明",
+        "missing_materials": [],
+        "rule_quote": "总体方案 6-10 分",
+        "response_quote": "总体方案完整",
+    }
+
+    async def fake_chat(self, system, user):
+        if user.startswith("评分标准正文："):
+            return json.dumps(decomposition, ensure_ascii=False)
+        return json.dumps(scoring, ensure_ascii=False)
+
+    monkeypatch.setattr("app.services.llm.LLMClient.chat", fake_chat)
+
+    task = SimpleNamespace(enterprise_id=1, project_id=pid, progress={}, result=None)
+
+    async def _run() -> None:
+        async with _session() as s:
+            await review_service.run_substantive_evaluation(s, task)
+            await s.commit()
+
+    asyncio.run(_run())
+    assert task.result["evaluation_type"] == "substantive"
+
+    latest = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
+    assert latest["detail"]["weight_config"] == {"商务": 10, "技术": 60, "价格": 30}
+    assert any(r["reference_kind"] == "weight_price" for r in latest["detail"]["reference_rules"])
+
+    items = client.get(
+        f"/api/v1/projects/{pid}/scores/{latest['score_id']}/items", headers=h
+    ).json()
+    scored = [i for i in items if i["verdict"] != "not_applicable"]
+    refs = [i for i in items if i["verdict"] == "not_applicable"]
+    assert len(scored) == 2
+    assert {i["requirement_id"] for i in scored} == {int(tech_req["req_id"])}
+    assert len(refs) == 1
+    assert refs[0]["requirement_id"] != int(tech_req["req_id"])
+
+
 def test_substantive_evaluate_endpoint_idempotent(client):
     h, pid = _setup(client)
     _score_rule(client, h, pid)

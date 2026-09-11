@@ -3,6 +3,58 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-11-1500-feat-substantive-scoring-type-normalization"></a>
+
+## 2026-09-11 15:00 · feat · 真实评分兼容散乱评分类型并拆解无结构化细则
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-11-1500-feat-substantive-scoring-type-normalization |
+| datetime | 2026-09-11T15:00:00+08:00 |
+| type | feat |
+| status | proposed |
+| scope | review, task, api, docs |
+| related | discussion #59, discussion #53 |
+
+### 为什么做这次更新
+
+项目 217 已有评分细则，但真实评分任务 `9603` 失败为 `not_scoreable`。根因是评分引擎只认
+`Requirement.req_type == "score_rule"`，而该项目的评分标准被解析为 `scoring_technical /
+scoring_business / weight_price / price_rule`，且这些 requirement 的 `structured` 大多为 null，
+正文是一整段多项细则。因此即使类型能识别，也无法逐项打分。
+
+### 具体做了什么
+
+- 评分引擎增加评分相关 `req_type` 等价集合：`score_rule / scoring_technical / scoring_business /
+  weight_price / price_rule / scoring / 评分细则 / 评分规则 / quote_rule`；
+- `_decompose_scoring_rules` 把一条评分 requirement 归一化为评分计划：已有 `structured.score_rule`
+  时直接使用；历史长文本且 `structured=null` 时用 LLM 拆项；`weight_price/price_rule` 作为
+  reference 规则进入评分计划（不逐项打分，`verdict=not_applicable`，权重/公式保留在 detail）；
+- `POST /substantive-evaluate`、`POST /substantive-items` 的规则查询与幂等键改为使用等价类型集合，
+  同时为拆项规则生成稳定 `criterion_id`；
+- `GET /scores` 的 `detail` 新增 `weight_config`、`reference_rules`，并保留冻结的 `rules` 评分计划；
+- Agent 主会话完成（`COMPLETE`）收尾时自动创建 `substantive_evaluate` 任务，生成完成即评分，
+  评分失败不影响生成任务终态（discussion #59 产品流程要求）。
+
+### 影响范围
+
+- 真实评分任务的规则识别与评分计划生成；`/scores` 返回结构；生成完成后的自动评分触发。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。历史 requirement 不重写，评分引擎兼容识别旧类型。
+
+### 验证方式
+
+- 新增 `test_substantive_evaluate_recognizes_scoring_type_aliases_and_decomposes_text`：
+  覆盖 `scoring_technical + weight_price`、`structured=null` 长文本拆项、`not_applicable` 参考规则、
+  `weight_config` 返回；`tests/module/test_substantive_scoring.py` 与 `test_review_api.py` 全绿；
+  ruff 全绿。
+
+### 回滚方式
+
+回退本次提交即可；已有 `builtin/substantive` 评分记录不受影响。
+
 <a id="2026-09-10-1800-feat-substantive-scoring"></a>
 
 ## 2026-09-10 18:00 · feat · 真实评分闭环（招标实质评分）与 builtin 完整性检查隔离

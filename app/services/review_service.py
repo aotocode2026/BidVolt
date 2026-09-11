@@ -540,6 +540,25 @@ SUBSTANTIVE_PROVIDER_CODE = "substantive_llm"
 _LLM_MAX_FILE_CHARS = 12000
 _LLM_MAX_TOTAL_CHARS = 30000
 
+# 评分引擎可识别的评分相关 req_type 集合（discussion #59）。
+# 上游解析/Agent 写入的 req_type 是自由字符串，历史数据存在大量等价别名；
+# 评分引擎不能只认 score_rule，否则会误判“无评分标准”。
+_SCORING_REQ_TYPES = frozenset(
+    {
+        "score_rule",
+        "scoring_technical",
+        "scoring_business",
+        "weight_price",
+        "price_rule",
+        "scoring",
+        "评分细则",
+        "评分规则",
+        "quote_rule",
+    }
+)
+# 这些类型描述权重/公式，不是一条可逐项打分的细则。
+_SCORING_REFERENCE_TYPES = frozenset({"weight_price", "price_rule"})
+
 _SUBSTANTIVE_SYSTEM = (
     "你是资深招投标评审专家，对投标文件按招标评分标准逐条实质评审。\n"
     "规则：\n"
@@ -597,6 +616,172 @@ def _rule_category(content: str, criterion: str) -> str:
     if any(k in text for k in ("商务", "资质", "业绩", "资格", "财务", "纳税", "信用", "承诺")):
         return "商务"
     return "综合"
+
+
+def _rule_type_category(req_type: str, content: str = "") -> str:
+    """按 req_type 归一评分分类，正文关键词兜底。"""
+    req_type = str(req_type or "").strip()
+    if req_type in ("scoring_technical",):
+        return "技术"
+    if req_type in ("scoring_business",):
+        return "商务"
+    if req_type in ("weight_price", "price_rule", "quote_rule"):
+        return "价格"
+    return _rule_category(content, "")
+
+
+def _criterion_id_for(requirement_id: int, element: str | None) -> str:
+    """为一条拆项后的评分项生成稳定 criterion_id。
+
+    优先用 requirement_id；有子项名称时追加短哈希，保证同一条长文本拆出的多个
+    评分项在多次评审中保持身份稳定。
+    """
+    element = str(element or "").strip()
+    if not element:
+        return str(int(requirement_id))
+    digest = sha256(element.encode("utf-8")).hexdigest()[:8]
+    return f"{int(requirement_id)}-{digest}"
+
+
+def _parse_weight_config(reference_rules: list[dict]) -> dict:
+    """从 weight_price 类规则正文抽取商/技/价权重配置（保守解析，无则留空）。"""
+    import re as _re
+
+    for rule in reference_rules:
+        if rule.get("reference_kind") != "weight_price":
+            continue
+        text = str(rule.get("content") or "")
+        m = _re.search(r"商\s*[:：]\s*技\s*[:：]\s*价\s*=\s*(\d+)\s*[:：]\s*(\d+)\s*[:：]\s*(\d+)", text)
+        if m:
+            return {
+                "商务": int(m.group(1)),
+                "技术": int(m.group(2)),
+                "价格": int(m.group(3)),
+            }
+    return {}
+
+
+async def _decompose_scoring_rules(req: Requirement) -> list[dict]:
+    """把一条评分相关 requirement 归一化为可逐项评审的规则列表。
+
+    - structured.score_rule 已有 weight/criterion 时直接使用；
+    - 历史数据 structured 常为 null，正文是一整段多项细则，此时用 LLM 拆项；
+    - 权重/公式类条目（weight_price/price_rule）不拆成可打分项，单独标记为 reference。
+    """
+    req_type = str(req.req_type or "").strip()
+    structured = req.structured or {}
+    score_rule = structured.get("score_rule") if isinstance(structured, dict) else None
+    category = _rule_type_category(req_type, req.content)
+
+    if req_type in _SCORING_REFERENCE_TYPES:
+        return [
+            {
+                "requirement_id": int(req.id),
+                "req_key": req.req_key,
+                "revision": int(req.revision),
+                "content": req.content,
+                "criterion": req.content,
+                "weight": 0.0,
+                "category": category,
+                "element": None,
+                "formula": None,
+                "scope": None,
+                "coordinates": req.coordinates,
+                "source_file_id": req.source_file_id,
+                "is_reference": True,
+                "reference_kind": req_type,
+            }
+        ]
+
+    if isinstance(score_rule, dict) and (
+        _coerce_float(score_rule.get("weight")) not in (None, 0.0)
+        or str(score_rule.get("criterion") or "").strip()
+    ):
+        weight = _coerce_float(score_rule.get("weight")) or 0.0
+        criterion = str(score_rule.get("criterion") or req.content)
+        element = str(score_rule.get("element") or "").strip() or None
+        return [
+            {
+                "requirement_id": int(req.id),
+                "req_key": req.req_key,
+                "revision": int(req.revision),
+                "content": req.content,
+                "criterion": criterion,
+                "weight": round(weight, 2),
+                "category": str(score_rule.get("category") or "").strip() or category,
+                "element": element,
+                "formula": score_rule.get("formula"),
+                "scope": score_rule.get("scope"),
+                "coordinates": req.coordinates,
+                "source_file_id": req.source_file_id,
+                "is_reference": False,
+            }
+        ]
+
+    # 历史散乱数据：正文是长文本、structured 为 null。调用 LLM 拆成逐条评分项。
+    from app.services.llm import LLMClient, try_extract_json
+
+    system = (
+        "你是招标评分标准解析助手。请把用户给出的评分标准正文拆成逐条评分项，"
+        "输出 JSON 数组，每项为："
+        '{"element":"评分项名称","criterion":"评审内容/档位描述","weight":分值上限数字,'
+        '"category":"技术|商务|价格","formula":公式或null,"scope":适用范围或null}。'
+        "表格每行对应一条；分值取区间上限；只写材料里有的内容；没有可拆的评分项时输出 []。"
+    )
+    try:
+        reply = await LLMClient().chat(system, f"评分标准正文：\n{req.content[:12000]}")
+        parsed = try_extract_json(reply)
+        items = parsed if isinstance(parsed, list) else []
+    except Exception:  # noqa: BLE001 拆项失败不阻断评审，降级为单条零权规则
+        items = []
+
+    normalized: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        element = str(item.get("element") or "").strip()
+        criterion = str(item.get("criterion") or item.get("content") or "").strip()
+        if not criterion:
+            continue
+        weight = _coerce_float(item.get("weight")) or 0.0
+        normalized.append(
+            {
+                "requirement_id": int(req.id),
+                "req_key": req.req_key,
+                "revision": int(req.revision),
+                "content": criterion,
+                "criterion": criterion,
+                "weight": round(weight, 2),
+                "category": str(item.get("category") or "").strip() or category,
+                "element": element or None,
+                "formula": item.get("formula"),
+                "scope": item.get("scope"),
+                "coordinates": req.coordinates,
+                "source_file_id": req.source_file_id,
+                "is_reference": False,
+            }
+        )
+    if normalized:
+        return normalized
+
+    return [
+        {
+            "requirement_id": int(req.id),
+            "req_key": req.req_key,
+            "revision": int(req.revision),
+            "content": req.content,
+            "criterion": req.content,
+            "weight": 0.0,
+            "category": category,
+            "element": None,
+            "formula": None,
+            "scope": None,
+            "coordinates": req.coordinates,
+            "source_file_id": req.source_file_id,
+            "is_reference": False,
+            "unstructured": True,
+        }
+    ]
 
 
 async def ensure_substantive_provider(session: AsyncSession, enterprise_id: int) -> ReviewProvider:
@@ -814,7 +999,8 @@ def _item_from_llm_result(rule: dict, parsed: dict) -> dict:
         "category": rule.get("category") or "评分细则",
         "problem_description": rule.get("content") or "",
         "requirement_id": rule.get("requirement_id"),
-        "criterion_id": rule.get("req_key")
+        "criterion_id": rule.get("criterion_id")
+        or rule.get("req_key")
         or (str(rule.get("requirement_id")) if rule.get("requirement_id") else None),
         "got": round(got, 2) if got is not None else None,
         "full": round(full, 2) if full is not None else None,
@@ -865,6 +1051,7 @@ async def _persist_substantive_score(
     deliverable_versions: dict[int, int],
     rules_list: list[dict],
     run_hash: str,
+    plan_meta: dict | None = None,
 ) -> dict:
     """原子落库 run + score + items（均为 evaluation_type=substantive）。"""
     run = ReviewRun(
@@ -920,7 +1107,11 @@ async def _persist_substantive_score(
             "items_count": len(items_data),
             "unrated_count": unrated_count,
             "scale": "score_rules" if total_full else "not_applicable",
-            "method": "按招标评分细则逐条实质评审（预评估，不代表采购方最终专家评分）",
+            "method": (plan_meta or {}).get(
+                "method", "按招标评分细则逐条实质评审（预评估，不代表采购方最终专家评分）"
+            ),
+            "weight_config": (plan_meta or {}).get("weight_config") or {},
+            "reference_rules": (plan_meta or {}).get("reference_rules") or [],
             "category_scores": category_scores,
             "rules": rules_list,
         },
@@ -973,20 +1164,32 @@ async def _persist_substantive_score(
     }
 
 
+async def _scoring_requirements(
+    session: AsyncSession, enterprise_id: int, project_id: int
+) -> list[Requirement]:
+    """当前生效的全部评分相关 requirement（兼容散乱的等价 req_type）。"""
+    from sqlalchemy import or_
+
+    rows = (
+        await session.scalars(
+            select(Requirement)
+            .where(
+                Requirement.enterprise_id == enterprise_id,
+                Requirement.project_id == project_id,
+                Requirement.current.is_(True),
+                or_(*[Requirement.req_type == t for t in _SCORING_REQ_TYPES]),
+            )
+            .order_by(Requirement.id)
+        )
+    ).all()
+    return list(rows)
+
+
 async def substantive_idempotency_key(
     session: AsyncSession, enterprise_id: int, project_id: int
 ) -> str:
     """按当前输入（规则修订/成果版本/artifact 版本）生成幂等键：输入不变重复点击返回同一任务。"""
-    rules = (
-        await session.scalars(
-            select(Requirement).where(
-                Requirement.enterprise_id == enterprise_id,
-                Requirement.project_id == project_id,
-                Requirement.current.is_(True),
-                Requirement.req_type == "score_rule",
-            )
-        )
-    ).all()
+    rules = await _scoring_requirements(session, enterprise_id, project_id)
     deliverables = (
         await session.scalars(
             select(Deliverable).where(
@@ -1034,21 +1237,10 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
         await session.commit()
         await _set_rls_context(session, enterprise_id)
 
-    rules = (
-        await session.scalars(
-            select(Requirement)
-            .where(
-                Requirement.enterprise_id == enterprise_id,
-                Requirement.project_id == project_id,
-                Requirement.current.is_(True),
-                Requirement.req_type == "score_rule",
-            )
-            .order_by(Requirement.id)
-        )
-    ).all()
-    if not rules:
+    requirements = await _scoring_requirements(session, enterprise_id, project_id)
+    if not requirements:
         raise TerminalTaskError(
-            "暂不可评分：尚未解析到评分标准（score_rule）。请先完成招标解析并确认评分细则。",
+            "暂不可评分：尚未解析到评分标准。请先完成招标解析并确认评分细则。",
             code="not_scoreable",
         )
 
@@ -1067,28 +1259,24 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
             code="not_scoreable",
         )
 
-    await _progress(20, f"已读取 {len(rules)} 条评分细则与 {len(readable)} 份正式成果，开始逐条评审…")
+    await _progress(20, f"已读取 {len(requirements)} 条评分相关要求与 {len(readable)} 份正式成果，正在拆解评分计划…")
 
     frozen_rules: list[dict] = []
-    for r in rules:
-        structured = (r.structured or {}).get("score_rule") or {}
-        weight = _coerce_float(structured.get("weight"))
-        weight = weight if weight is not None and weight > 0 else 0.0
-        criterion = str(structured.get("criterion") or r.content)
-        frozen_rules.append(
-            {
-                "requirement_id": int(r.id),
-                "req_key": r.req_key,
-                "revision": int(r.revision),
-                "content": r.content,
-                "criterion": criterion,
-                "weight": round(weight, 2),
-                "category": str(structured.get("category") or "").strip()
-                or _rule_category(r.content, criterion),
-                "coordinates": r.coordinates,
-                "source_file_id": r.source_file_id,
-            }
+    reference_rules: list[dict] = []
+    for r in requirements:
+        for rule in await _decompose_scoring_rules(r):
+            rule["criterion_id"] = _criterion_id_for(rule["requirement_id"], rule.get("element"))
+            if rule.get("is_reference"):
+                reference_rules.append(rule)
+            else:
+                frozen_rules.append(rule)
+    if not frozen_rules:
+        raise TerminalTaskError(
+            "暂不可评分：评分标准仅含权重/公式说明，暂无可逐项评审的评分细则。",
+            code="not_scoreable",
         )
+
+    await _progress(26, f"评分计划已生成：{len(frozen_rules)} 条可评审细则 / {len(reference_rules)} 条权重/公式说明。")
 
     deliverables = (
         await session.scalars(
@@ -1127,6 +1315,40 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
         parsed = await _score_rule_with_llm(rule, readable)
         items_data.append(_item_from_llm_result(rule, parsed))
 
+    # 权重/公式类规则不逐项打分，作为 not_applicable 条目进入评分计划，
+    # 让前端能展示“方法/权重/公式”，但不会产生无依据的价格分。
+    for rule in reference_rules:
+        items_data.append(
+            {
+                "category": rule["category"],
+                "problem_description": rule["content"],
+                "requirement_id": rule["requirement_id"],
+                "criterion_id": rule["criterion_id"],
+                "got": None,
+                "full": None,
+                "improvable": None,
+                "risk_level": 0,
+                "suggestion": None,
+                "action_type": "manual_review",
+                "missing_material_types": None,
+                "verdict": "not_applicable",
+                "deduction_reason": None,
+                "rule_source": {
+                    "requirement_id": rule["requirement_id"],
+                    "quote": rule["content"],
+                    "location": rule["coordinates"],
+                    "file_id": rule["source_file_id"],
+                },
+                "response_source": None,
+                "missing_materials": [],
+                "evidence": {
+                    "engine": "scoring_plan_reference",
+                    "reference_kind": rule.get("reference_kind"),
+                },
+                "confidence": None,
+            }
+        )
+
     run_hash = sha256(
         json.dumps(
             {
@@ -1150,6 +1372,8 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
         rules_list=[
             {
                 "rule_id": r["requirement_id"],
+                "criterion_id": r["criterion_id"],
+                "element": r.get("element"),
                 "content": r["content"],
                 "criterion": r["criterion"],
                 "weight": r["weight"],
@@ -1158,6 +1382,20 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
             }
             for r in frozen_rules
         ],
+        plan_meta={
+            "method": "按招标评分细则逐条实质评审（预评估，不代表采购方最终专家评分）",
+            "weight_config": _parse_weight_config(reference_rules),
+            "reference_rules": [
+                {
+                    "rule_id": r["requirement_id"],
+                    "criterion_id": r["criterion_id"],
+                    "reference_kind": r.get("reference_kind"),
+                    "content": r["content"],
+                    "category": r["category"],
+                }
+                for r in reference_rules
+            ],
+        },
         run_hash=run_hash,
     )
     task.result = result
@@ -1184,16 +1422,7 @@ async def submit_substantive_items(
 
     rules_by_id = {
         int(r.id): r
-        for r in (
-            await session.scalars(
-                select(Requirement).where(
-                    Requirement.enterprise_id == enterprise_id,
-                    Requirement.project_id == project_id,
-                    Requirement.current.is_(True),
-                    Requirement.req_type == "score_rule",
-                )
-            )
-        ).all()
+        for r in await _scoring_requirements(session, enterprise_id, project_id)
     }
     provider = await ensure_substantive_provider(session, enterprise_id)
     artifact_versions = await _project_artifact_versions(session, enterprise_id, project_id)
@@ -1257,8 +1486,8 @@ async def submit_substantive_items(
                     {"index": index, "status": "skipped", "reason": "requirement_id 不存在或不属于本项目"}
                 )
                 continue
-            structured = (rule.structured or {}).get("score_rule") or {}
-            rule_weight = _coerce_float(structured.get("weight"))
+            structured = (rule.structured or {}).get("score_rule") if isinstance(rule.structured, dict) else None
+            rule_weight = _coerce_float(structured.get("weight")) if isinstance(structured, dict) else None
 
         full = _coerce_float(entry.get("full"))
         if full is None:
@@ -1387,7 +1616,11 @@ async def submit_substantive_items(
             r.get("reason", "") for r in results if r.get("status") == "skipped"
         )[:200])
 
-    matched_rules = [rules_by_id[i["requirement_id"]] for i in items_data if i.get("requirement_id") in rules_by_id]
+    matched_rules = list(
+        {int(i["requirement_id"]): rules_by_id[int(i["requirement_id"])]
+         for i in items_data
+         if i.get("requirement_id") in rules_by_id}.values()
+    )
     snapshot = ProjectSnapshot(
         enterprise_id=enterprise_id,
         project_id=project_id,
@@ -1416,10 +1649,11 @@ async def submit_substantive_items(
         rules_list=[
             {
                 "rule_id": int(r.id),
+                "criterion_id": str(r.id),
                 "content": r.content,
                 "criterion": str((r.structured or {}).get("score_rule", {}).get("criterion") or r.content),
                 "weight": _coerce_float((r.structured or {}).get("score_rule", {}).get("weight")) or 0.0,
-                "category": "评分细则",
+                "category": _rule_type_category(r.req_type, r.content),
                 "revision": int(r.revision),
             }
             for r in matched_rules
