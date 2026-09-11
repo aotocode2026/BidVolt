@@ -53,6 +53,9 @@ scoring_business / weight_price / price_rule`，且这些 requirement 的 `struc
 - 已部署生产：服务器 HEAD `179f2ded`、alembic `0038 (head)`、app/worker 重启后 `healthz ok`；
   服务器临时工作区复跑 `test_substantive_scoring.py + test_review_api.py` 17 passed；
   openapi 含 `substantive-evaluate / substantive-items` 路由。
+- 项目 217 手动触发真实评分：任务 `9604` 成功完成，`score_id=256`，`evaluation_type=substantive`，
+  `total_score=92.00`，生成 25 条评分明细（含 21 条拆项规则 + 1 条权重规则 + 3 条价格公式规则），
+  权重配置 `{商务:10,技术:60,价格:30}` 与 `reference_rules` 已落库。
 
 ### 回滚方式
 
