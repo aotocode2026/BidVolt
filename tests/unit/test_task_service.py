@@ -473,3 +473,55 @@ def test_heartbeat_keeps_lease_fresh_during_handler(monkeypatch):
     assert task.status == int(TaskStatus.DONE)
     assert task.result == {"slow": True}
     assert observed.get("renewed") is True, "handler 执行期间心跳未成功续期"
+
+
+def test_derive_tender_meta_extracts_project_fields():
+    text = (
+        "虚拟电厂数据融合系统 采购编号：SG26230735 招标人：中国电力科学研究院有限公司\n"
+        "响应截止时间：2026年06月15日 09:00\n公开招标"
+    )
+    meta = asyncio.run(task_service._derive_tender_meta(text))
+    assert meta.get("project_name") == "虚拟电厂数据融合系统"
+    assert meta.get("buyer") == "中国电力科学研究院有限公司"
+    assert meta.get("tender_no") == "SG26230735"
+    assert meta.get("deadline") is not None
+    assert meta["deadline"].year == 2026
+    assert meta["deadline"].month == 6
+    assert meta["deadline"].day == 15
+
+
+def test_persist_project_meta_fills_only_empty_fields():
+    from app.models.project import Project
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{TEST_DB}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def scenario():
+        async with factory() as session:
+            project = Project(
+                enterprise_id=1,
+                name="原始名称",
+                tender_no=None,
+                deadline=None,
+                status=1,
+            )
+            session.add(project)
+            await session.flush()
+            meta = {
+                "project_name": "材料中的项目名",
+                "tender_no": "TG-001",
+                "deadline": datetime(2026, 8, 1, 9, 30, tzinfo=timezone.utc),
+            }
+            updated = await task_service._persist_project_meta(
+                session, 1, project.id, meta
+            )
+            await session.commit()
+            return project, updated
+
+    project, updated = asyncio.run(scenario())
+    engine.sync_engine.dispose()
+    assert updated == {"tender_no": "TG-001", "deadline": "2026-08-01T09:30:00+00:00"}
+    assert project.tender_no == "TG-001"
+    assert project.deadline == datetime(2026, 8, 1, 9, 30, tzinfo=timezone.utc)
+    # 已有项目名不被自动覆盖
+    assert project.name == "原始名称"

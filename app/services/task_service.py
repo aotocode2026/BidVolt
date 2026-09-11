@@ -587,6 +587,7 @@ async def _derive_tender_meta(material_text: str) -> dict:
     确定性正则优先（封面常按"名称 编号 招标人 采购方式"连排），LLM 小窗口兜底。
     材料里没有的保持 None——系统项目名只是工作台标签，不能写进应答函/委托书等正式字段。"""
     import re as _re
+    from datetime import datetime, timedelta, timezone
 
     from app.services.llm import llm_enabled, try_extract_json
 
@@ -606,37 +607,116 @@ async def _derive_tender_meta(material_text: str) -> dict:
             meta["project_name"] = m.group(1)
         if m.group(3) not in ("采购人", "招标人") and len(m.group(3)) >= 4:
             meta["buyer"] = m.group(3)
+        meta["tender_no"] = m.group(2).strip()
     # 显式标注兜底（排除模板自引用"项目名称：（项目名称）"这类占位）
     if not meta.get("project_name"):
         m2 = _re.search(r"项目名称[：:]\s*([^\s\n，,。；;（）()]{6,60})", head)
         if m2:
             meta["project_name"] = m2.group(1)
+    if not meta.get("project_name"):
+        m2b = _re.search(
+            r"([^\s\n，,。；;：:（）()]{6,60}?)\s*采购编号[：:\s]",
+            head,
+        )
+        if m2b:
+            meta["project_name"] = m2b.group(1).strip()
     if not meta.get("buyer"):
         m3 = _re.search(r"(?:招标人|采购人)[：:]\s*([^\s\n，,。；;（）()]{4,40})", head)
         if m3:
             meta["buyer"] = m3.group(1)
+    if not meta.get("tender_no"):
+        m_no = _re.search(
+            r"(?:采购编号|招标编号|项目编号|采购项目编号)[：:\s]*([A-Za-z0-9][A-Za-z0-9\-/]{4,40})",
+            head,
+        )
+        if m_no:
+            meta["tender_no"] = m_no.group(1).strip()
+    if not meta.get("deadline"):
+        m_dl = _re.search(
+            r"(?:响应截止|投标截止|递交截止|开启时间)(?:时间)?[：:\s]*"
+            r"(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})日?"
+            r"(?:\s*(\d{1,2})[：:](\d{2}))?",
+            head,
+        )
+        if m_dl:
+            year, month, day = int(m_dl.group(1)), int(m_dl.group(2)), int(m_dl.group(3))
+            hour = int(m_dl.group(4) or 9)
+            minute = int(m_dl.group(5) or 0)
+            try:
+                meta["deadline"] = datetime(
+                    year, month, day, hour, minute, tzinfo=timezone(timedelta(hours=8))
+                )
+            except Exception:  # noqa: BLE001 日期非法时保持 None
+                pass
     if llm_enabled():
         try:
             reply = await _chat_with_retry(
-                "阅读招标文件开头的封面与采购公告，找出采购项目名称与招标人名称，"
-                '输出 JSON：{"project_name": "...", "buyer": "..."}；材料里没有的填 null。输出 JSON 本身。',
+                "阅读招标文件开头的封面与采购公告，找出采购项目名称、招标人名称、"
+                "采购编号和响应/投标截止时间。"
+                '输出 JSON：{"project_name": "...", "buyer": "...", "tender_no": "...", "deadline": "YYYY-MM-DDTHH:MM"}；'
+                "材料里没有的填 null。输出 JSON 本身。",
                 "招标文件开头：\n" + head,
             )
             llm_meta = try_extract_json(reply)
             if isinstance(llm_meta, dict):
-                for k in ("project_name", "buyer"):
+                for k in ("project_name", "buyer", "tender_no", "deadline"):
                     v = str(llm_meta.get(k) or "").strip()
-                    if v and v not in ("null", "None") and not meta.get(k):
+                    if not v or v in ("null", "None"):
+                        continue
+                    if k == "deadline" and not meta.get(k):
+                        try:
+                            dl = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                            if dl.tzinfo is None:
+                                dl = dl.replace(tzinfo=timezone(timedelta(hours=8)))
+                            meta[k] = dl
+                        except Exception:  # noqa: BLE001 无法解析的时间不采纳
+                            pass
+                    elif not meta.get(k):
                         meta[k] = v
         except Exception:  # noqa: BLE001 抽取失败保持确定性结果
             pass
     # 清洗：纯占位符（如"（采购人）"）或过短的值不采纳；含真实文字的括号（如"（第一批）"）保留
     for k in list(meta):
-        v = str(meta[k])
-        core = v.strip("（）()【】")
-        if "_" in v or len(core) < 4 or core in ("采购人", "招标人", "项目名称", "响应供应商名称"):
+        v = meta[k]
+        if isinstance(v, datetime):
+            continue
+        text = str(v)
+        core = text.strip("（）()【】")
+        if "_" in text or len(core) < 4 or core in ("采购人", "招标人", "项目名称", "响应供应商名称"):
             meta.pop(k, None)
     return meta
+
+
+async def _persist_project_meta(
+    session: AsyncSession, enterprise_id: int, project_id: int, meta: dict
+) -> dict:
+    """把解析出的基础信息回填到项目表（只填空值，不覆盖用户已确认的值）。"""
+    from datetime import datetime
+
+    from sqlalchemy import select as _sa_select
+
+    from app.models.project import Project
+
+    project = await session.scalar(
+        _sa_select(Project).where(
+            Project.id == int(project_id),
+            Project.enterprise_id == int(enterprise_id),
+        )
+    )
+    if project is None:
+        return {}
+    updated = {}
+    if not project.name:
+        if meta.get("project_name"):
+            project.name = str(meta["project_name"]).strip()
+            updated["name"] = project.name
+    if not project.tender_no and meta.get("tender_no"):
+        project.tender_no = str(meta["tender_no"]).strip()
+        updated["tender_no"] = project.tender_no
+    if not project.deadline and isinstance(meta.get("deadline"), datetime):
+        project.deadline = meta["deadline"]
+        updated["deadline"] = project.deadline.isoformat()
+    return updated
 
 
 async def _chat_with_retry(system: str, user: str, times: int = 2) -> str:
@@ -1240,6 +1320,12 @@ async def _tender_parse_handler(session: AsyncSession, task: Task) -> None:
         _sa_select(_DB).where(_DB.file_id.in_(parsed_ids))
     )
     full_text = _dedup_block_texts(list(template_blocks), limit=160000)
+    tender_meta = await _derive_tender_meta(full_text)
+    await _persist_project_meta(
+        session, task.enterprise_id, task.project_id, tender_meta
+    )
+    await session.commit()
+    await _set_rls_context(session, task.enterprise_id)
     templates = _extract_template_blocks(full_text)
     template_count = 0
     for role in ("business", "technical", "price"):
@@ -1664,6 +1750,10 @@ async def _bid_generate_handler(session: AsyncSession, task: Task) -> None:
         project_name = tender_meta["project_name"]
     if tender_meta.get("buyer"):
         buyer_name = tender_meta["buyer"]
+    if project is not None:
+        await _persist_project_meta(session, task.enterprise_id, project_id, tender_meta)
+        await session.commit()
+        await _set_rls_context(session, task.enterprise_id)
 
 
     # 历史知识检索（Issue #4）：为技术标提供专业写法素材（来源可追溯，结果仅入任务元数据）
