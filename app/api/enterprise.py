@@ -50,6 +50,12 @@ async def _classify_one_in_new_session(enterprise_id: int, asset_id: int) -> dic
                     "status": "skipped",
                     "reason": "资产不存在或不属于本企业",
                 }
+            if asset.asset_type == "源文件":
+                return {
+                    "asset_id": int(asset_id),
+                    "status": "source_archive",
+                    "asset_type": "源文件",
+                }
             ai = await classify_asset_with_ai(s, asset)
             return {"asset_id": int(asset_id), "status": "ok", "ai": ai}
 
@@ -279,6 +285,17 @@ async def trigger_ingest(
             classified.append({"status": "failed", "reason": str(raw)[:200]})
             continue
         if raw.get("status") != "ok":
+            if raw.get("status") == "source_archive":
+                classified.append(
+                    {
+                        "asset_id": raw["asset_id"],
+                        "category": "源文件",
+                        "confidence": 1.0,
+                        "source": "source_archive",
+                        "note": "源文件无需业务分类",
+                    }
+                )
+                continue
             classified.append(raw)
             continue
         asset_id = int(raw["asset_id"])
@@ -299,7 +316,15 @@ async def trigger_ingest(
                 }
             )
             continue
-        ai = await classify_asset_with_ai(session, asset)
+        if asset.status == 3:
+            classified.append(
+                {
+                    "asset_id": asset.id,
+                    "status": "skipped",
+                    "reason": "已人工确认，跳过自动分类",
+                }
+            )
+            continue
         category = ai["category"]
         _, facts = _classify(asset.name)
         asset.category_id = categories.get(category)
