@@ -12,7 +12,7 @@
 | id | 2026-09-11-1715-fix-agent-history-contract |
 | datetime | 2026-09-11T17:15:00+08:00 |
 | type | fix |
-| status | proposed |
+| status | released |
 | scope | agent, api |
 | related | discussion #52 |
 
@@ -45,6 +45,8 @@
 
 - 更新长历史补读测试，断言事件含 `display_type/visibility/created_at/reply_to_seq/client_message_id`；
 - ruff 通过；相关流式用例通过。
+- 生产已部署：HEAD `aa4de7c`、app/worker 重启后 `healthz ok`；项目 217 任务流实测事件包含
+  `display_type/visibility/created_at/reply_to_seq/client_message_id`。
 
 ### 回滚方式
 
