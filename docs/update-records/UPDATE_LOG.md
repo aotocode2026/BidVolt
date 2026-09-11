@@ -3,6 +3,48 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-11-1630-fix-artifact-version-history"></a>
+
+## 2026-09-11 16:30 · fix · 版本列表合并覆盖归档版本，修复历史版本缺失
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-11-1630-fix-artifact-version-history |
+| datetime | 2026-09-11T16:30:00+08:00 |
+| type | fix |
+| status | released |
+| scope | assembly, artifacts |
+| related | discussion #49 |
+
+### 为什么做这次更新
+
+项目 217《技术文件/（二）专项响应文件.docx》当前为 V7，但版本接口只返回当前 V7，未返回 V1–V6。
+核对后根因是 `list_artifact_versions` 只查询 `agent_artifact` 的逻辑版本链，未合并覆盖保存时归档到
+`agent_artifact_content_version` 的旧版本。
+
+### 具体做了什么
+
+- `list_artifact_versions` 同时合并当前 artifact 的归档版本；
+- 覆盖保存产生的 V1..V(n-1) 以 `status=archived` 返回，下载链接指向指定版本下载接口；
+- 现有“另存为新版本”逻辑版本链保持兼容。
+
+### 影响范围
+
+- `GET /projects/{project_id}/assembly/artifacts/{artifact_id}/versions` 返回结构。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 更新 `test_assembly_service.py`：覆盖保存后版本接口返回 `[1,2]`，下载 V1 正常；
+- 生产项目 217 artifact 948 实测返回 V1–V7（V1–V6 archived、V7 ready）。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-11-1500-feat-substantive-scoring-type-normalization"></a>
 
 ## 2026-09-11 15:00 · feat · 真实评分兼容散乱评分类型并拆解无结构化细则
