@@ -3,6 +3,48 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-11-1800-fix-project-meta-backfill"></a>
+
+## 2026-09-11 18:00 · fix · 项目基础信息自动回填 tender_no/deadline
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-11-1800-fix-project-meta-backfill |
+| datetime | 2026-09-11T18:00:00+08:00 |
+| type | fix |
+| status | released |
+| scope | project, task |
+| related | issue #60, discussion #54 |
+
+### 为什么做这次更新
+
+项目 217 等项目的 `tender_no/deadline` 一直为 null：解析链路只抽取 `project_name/buyer`，
+未抽取并持久化采购编号与截止时间。
+
+### 具体做了什么
+
+- `_derive_tender_meta` 增加 `tender_no/deadline` 抽取，兼容“首次响应截止时间/上午/下午”格式；
+- 解析与生成链路在读取招标材料后自动回填项目基础信息；
+- 只填充空值，不覆盖用户已确认的值；
+- 对项目 217 执行存量回填验证。
+
+### 影响范围
+
+- `tender_parse` / `bid_generate` 等读取招标材料的任务链路；项目详情/列表返回字段。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- 新增单元测试：`_derive_tender_meta` 抽取字段、`_persist_project_meta` 只填空值；
+- 项目 217 实测回填后接口返回 `tender_no=412623-1`、`deadline=2026-06-15T01:00:00Z`。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker。
+
 <a id="2026-09-11-1745-feat-qwen3-vl-plus-classify-concurrency"></a>
 
 ## 2026-09-11 17:45 · feat · 视觉模型切换 qwen3-vl-plus 并增加企业分类并发限流

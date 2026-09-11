@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-11 18:00 | #54 | discussion | [项目基础信息自动回填 tender_no/deadline](UPDATE_LOG.md#2026-09-11-1800-fix-project-meta-backfill) |
+| 2026-09-11 18:00 | #60 | issue | [项目基础信息自动回填 tender_no/deadline](UPDATE_LOG.md#2026-09-11-1800-fix-project-meta-backfill) |
 | 2026-09-11 17:45 | #58 | discussion | [视觉模型切换 qwen3-vl-plus 并增加企业分类并发限流](UPDATE_LOG.md#2026-09-11-1745-feat-qwen3-vl-plus-classify-concurrency) |
 | 2026-09-11 17:15 | #52 | discussion | [历史消息契约补齐分类、关联与时间字段](UPDATE_LOG.md#2026-09-11-1715-fix-agent-history-contract) |
 | 2026-09-11 16:30 | #49 | discussion | [版本列表合并覆盖归档版本，修复历史版本缺失](UPDATE_LOG.md#2026-09-11-1630-fix-artifact-version-history) |
