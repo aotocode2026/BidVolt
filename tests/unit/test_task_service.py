@@ -478,7 +478,7 @@ def test_heartbeat_keeps_lease_fresh_during_handler(monkeypatch):
 def test_derive_tender_meta_extracts_project_fields():
     text = (
         "虚拟电厂数据融合系统 采购编号：SG26230735 招标人：中国电力科学研究院有限公司\n"
-        "响应截止时间：2026年06月15日 09:00\n公开招标"
+        "5.1首次响应文件提交的截止时间（首次响应截止时间，下同）：2026年6月15日上午9:00\n公开招标"
     )
     meta = asyncio.run(task_service._derive_tender_meta(text))
     assert meta.get("project_name") == "虚拟电厂数据融合系统"

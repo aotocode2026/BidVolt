@@ -633,15 +633,20 @@ async def _derive_tender_meta(material_text: str) -> dict:
             meta["tender_no"] = m_no.group(1).strip()
     if not meta.get("deadline"):
         m_dl = _re.search(
-            r"(?:响应截止|投标截止|递交截止|开启时间)(?:时间)?[：:\s]*"
+            r"(?:首次响应截止|响应截止|投标截止|递交截止|开启时间|截止时间)(?:时间)?[：:\s]*(.{0,30}?)"
             r"(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})日?"
-            r"(?:\s*(\d{1,2})[：:](\d{2}))?",
+            r"(?:\s*(上午|下午)?\s*(\d{1,2})[：:](\d{2}))?",
             head,
         )
         if m_dl:
-            year, month, day = int(m_dl.group(1)), int(m_dl.group(2)), int(m_dl.group(3))
-            hour = int(m_dl.group(4) or 9)
-            minute = int(m_dl.group(5) or 0)
+            year, month, day = int(m_dl.group(2)), int(m_dl.group(3)), int(m_dl.group(4))
+            meridiem = m_dl.group(5)
+            hour = int(m_dl.group(6) or 9)
+            minute = int(m_dl.group(7) or 0)
+            if meridiem == "下午" and hour < 12:
+                hour += 12
+            elif meridiem == "上午" and hour == 12:
+                hour = 0
             try:
                 meta["deadline"] = datetime(
                     year, month, day, hour, minute, tzinfo=timezone(timedelta(hours=8))
