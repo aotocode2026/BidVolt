@@ -742,10 +742,15 @@ async def list_artifact_versions(
     project_id: int,
     artifact_id: int,
 ) -> dict:
-    """同一逻辑文件的版本链（issue #21）：另存为链条上的全部 artifact，按逻辑版本排序。"""
+    """同一逻辑文件的版本链（issue #21 + discussion #49）。
+
+    兼容两类历史：
+    - “另存为新版本”产生的不同 artifact（逻辑文件链）；
+    - “覆盖保存”归档到 AgentArtifactContentVersion 的同 artifact 旧版本。
+    """
     from sqlalchemy import select as _sa_select
 
-    from app.models.agent import AgentArtifact
+    from app.models.agent import AgentArtifact, AgentArtifactContentVersion
 
     art = await session.scalar(
         _sa_select(AgentArtifact).where(
@@ -757,7 +762,7 @@ async def list_artifact_versions(
     if art is None:
         raise ValueError("产物不存在或不属于本项目")
     root_id = int(art.logical_file_id or art.id)
-    rows = (
+    chain_rows = (
         await session.scalars(
             _sa_select(AgentArtifact).where(
                 AgentArtifact.enterprise_id == int(enterprise_id),
@@ -769,8 +774,26 @@ async def list_artifact_versions(
             )
         )
     ).all()
-    versions = [_artifact_meta(a, project_id) for a in rows]
-    versions.sort(key=lambda v: (int(v["logical_version_no"]), int(v["artifact_id"])))
+    current_art = next((a for a in chain_rows if int(a.id) == int(art.id)), art)
+    versions = [_artifact_meta(a, project_id) for a in chain_rows]
+
+    archived_rows = (
+        await session.scalars(
+            _sa_select(AgentArtifactContentVersion).where(
+                AgentArtifactContentVersion.artifact_id.in_(
+                    [int(a.id) for a in chain_rows]
+                ),
+                AgentArtifactContentVersion.version_no != int(art.version_no or 1),
+            )
+        )
+    ).all()
+    for row in archived_rows:
+        owner = next(
+            (a for a in chain_rows if int(a.id) == int(row.artifact_id)), current_art
+        )
+        versions.append(_archived_artifact_meta(owner, row, project_id))
+
+    versions.sort(key=lambda v: (int(v.get("version_no") or 1), int(v["artifact_id"])))
     return {
         "artifact_id": int(artifact_id),
         "logical_file_id": root_id,
@@ -1384,6 +1407,37 @@ def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
         "updated_at": art.updated_at.isoformat() if art.updated_at else None,
         "status": "packaged" if art.kind == "zip" else "ready",
         "download_url": f"/api/v1/projects/{int(project_id)}/agent-artifact/{int(art.id)}/download",
+    }
+
+
+def _archived_artifact_meta(art: Any, row: Any, project_id: int) -> dict[str, Any]:
+    """归档内容版本（AgentArtifactContentVersion）→ 与产物元数据一致的版本项。"""
+    name = str(art.name or "")
+    parts = name.split("/", 1)
+    group = parts[0] if len(parts) > 1 else ""
+    filename = parts[-1]
+    version_no = int(row.version_no or 1)
+    return {
+        "artifact_id": int(art.id),
+        "project_id": int(project_id),
+        "task_id": int(art.task_id),
+        "kind": art.kind,
+        "name": name,
+        "group": group,
+        "filename": filename,
+        "mime": art.mime,
+        "bytes": len(row.content or b""),
+        "version_no": version_no,
+        "logical_file_id": int(art.logical_file_id or art.id),
+        "logical_version_no": int(art.logical_version_no or 1),
+        "parent_artifact_id": art.parent_artifact_id,
+        "is_internal": group.startswith("内部管理文件"),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.created_at.isoformat() if row.created_at else None,
+        "status": "archived",
+        "download_url": (
+            f"/api/v1/projects/{int(project_id)}/agent-artifact/{int(art.id)}/versions/{version_no}/download"
+        ),
     }
 
 

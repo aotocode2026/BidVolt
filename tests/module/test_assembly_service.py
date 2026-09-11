@@ -174,7 +174,7 @@ def test_artifact_versions_endpoints(client):
     assert r.status_code == 200
     payload = r.json()
     assert payload["logical_file_id"] == aid
-    assert [v["version_no"] for v in payload["versions"]] == [2]
+    assert [v["version_no"] for v in payload["versions"]] == [1, 2]
 
     dl = client.get(
         f"/api/v1/projects/{pid}/agent-artifact/{aid}/versions/1/download", headers=h
