@@ -55,6 +55,8 @@ def test_preview_kind_mapping():
     assert preview_service.preview_kind_for_ext("PDF") == "pdf"
     assert preview_service.preview_kind_for_ext(".xlsx") == "sheet"
     assert preview_service.preview_kind_for_ext(".xls") == "sheet"
+    assert preview_service.preview_kind_for_ext(".pptx") == "pdf"
+    assert preview_service.preview_kind_for_ext(".ppt") == "pdf"
     assert preview_service.preview_kind_for_ext(".zip") == "unsupported"
     assert preview_service.preview_kind_for_ext(None) == "unsupported"
 
@@ -124,3 +126,49 @@ def test_unsupported_preview_reports_reason(client):
     body = client.get(f"/api/v1/files/{entry['file_id']}/preview", headers=h).json()
     assert body["kind"] == "unsupported"
     assert "下载" in body["reason"]
+
+
+def test_presentation_preview_converts_to_pdf(client, monkeypatch):
+    """issue #64：演示文稿（.ppt/.pptx）经 LibreOffice Impress 转 PDF 预览。"""
+    import asyncio
+    import os
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    calls = {"n": 0}
+
+    def fake_convert(data: bytes, filename: str, target_ext: str) -> bytes:
+        calls["n"] += 1
+        assert target_ext == "pdf"
+        assert filename.endswith((".ppt", ".pptx"))
+        return b"%PDF-1.4\n%fake\n%%EOF\n"
+
+    monkeypatch.setattr(preview_service, "_soffice_convert_sync", fake_convert)
+
+    async def _run():
+        engine = create_async_engine(os.environ["DATABASE_URL"])
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            src = preview_service.PreviewSource(
+                source_type="file",
+                source_id=990001,
+                enterprise_id=1,
+                filename="供应商投标注意事项.pptx",
+                ext=".pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                version_key="test-pptx-1",
+                data=b"PK\x03\x04fake-pptx",
+            )
+            manifest = await preview_service.build_manifest(session, src)
+            pdf, mime = await preview_service.get_pdf(session, src)
+            cached_manifest = await preview_service.build_manifest(session, src)
+        await engine.dispose()
+        return manifest, pdf, mime, cached_manifest
+
+    manifest, pdf, mime, cached_manifest = asyncio.run(_run())
+    assert manifest["kind"] == "pdf"
+    assert manifest["converted"] is True
+    assert mime == "application/pdf"
+    assert pdf.startswith(b"%PDF-")
+    assert cached_manifest["cached"] is True
+    assert calls["n"] == 1  # 内容未变只转换一次

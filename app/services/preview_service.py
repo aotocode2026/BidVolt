@@ -3,6 +3,7 @@
 策略：
 
 - docx / doc / odt / rtf → 服务端 LibreOffice headless 转 PDF，前端用 PDF 查看器渲染；
+- pptx / ppt（旧版演示文稿）→ 同样经 LibreOffice Impress 转 PDF；
 - xlsx / xlsm / xltx（含 .xls 经 LibreOffice 转 xlsx）→ openpyxl 转单元格 JSON，前端表格渲染
   （Excel 直接转 PDF 受打印区域/分页影响，观感不可控）；
 - pdf → 原件直出；
@@ -29,7 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.file import FilePreview
 
+# 经 LibreOffice 转 PDF 预览：文字处理（Writer）+ 演示文稿（Impress）
 DOC_EXTS = (".docx", ".doc", ".odt", ".rtf")
+PRESENTATION_EXTS = (".pptx", ".ppt")
+PDF_CONVERT_EXTS = DOC_EXTS + PRESENTATION_EXTS
 SHEET_EXTS = (".xlsx", ".xlsm", ".xltx")
 LEGACY_SHEET_EXTS = (".xls",)
 PDF_EXTS = (".pdf",)
@@ -56,7 +60,7 @@ def _normalize_ext(ext: str | None) -> str:
 def preview_kind_for_ext(ext: str | None) -> str:
     """预览类型：pdf（转 PDF 或原件）/ sheet（表格网格）/ unsupported。"""
     value = _normalize_ext(ext)
-    if value in PDF_EXTS or value in DOC_EXTS:
+    if value in PDF_EXTS or value in PDF_CONVERT_EXTS:
         return "pdf"
     if value in SHEET_EXTS or value in LEGACY_SHEET_EXTS:
         return "sheet"

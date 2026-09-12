@@ -11,8 +11,9 @@ set -euo pipefail
 # 不依赖符号链接；旧部署若在 /opt/bidvolt 且 /data/bidvolt 不存在会自动迁移。
 REPO="${REPO:-/data/bidvolt}"
 HERMES_HOME="${HERMES_HOME:-/data/hermes}"
-# libreoffice-writer 用于 docx→PDF 预览；libreoffice-calc 用于 .xls→.xlsx 预览（issue #63）
-SYSTEM_PKGS="python3 python3-pip python3-venv postgresql postgresql-contrib supervisor cron clamav-daemon libreoffice-writer libreoffice-calc unzip p7zip-full rclone curl"
+# libreoffice-writer/calc/impress 用于旧版 Office 解析与浏览器预览（issue #63/#64）：
+# writer→docx/PDF、calc→.xls/xlsx、impress→.ppt/.pptx 转 PDF
+SYSTEM_PKGS="python3 python3-pip python3-venv postgresql postgresql-contrib supervisor cron clamav-daemon libreoffice-writer libreoffice-calc libreoffice-impress unzip p7zip-full rclone curl"
 
 echo "==> 0/6 预检（Issue #3：配置 fail-fast）"
 if [ ! -f "$REPO/.env" ]; then

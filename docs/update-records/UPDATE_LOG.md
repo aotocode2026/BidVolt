@@ -3,6 +3,51 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-12-1400-feat-presentation-preview"></a>
+
+## 2026-09-12 14:00 · feat · 补齐旧版 .ppt 解析与 .ppt/.pptx 预览
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-12-1400-feat-presentation-preview |
+| datetime | 2026-09-12T14:00:00+08:00 |
+| type | feat |
+| status | proposed |
+| scope | files, preview, deploy |
+| related | issue #64, issue #63 |
+
+### 为什么做这次更新
+
+与 `.xls` 同类的既有缺口：`.ppt` 在允许上传列表里，解析走 `LibreOffice → pptx`，但服务器只装了
+writer/calc，缺 `libreoffice-impress`，因此 `.ppt` 上传在解析阶段即失败。同时 `.pptx` 解析正常，
+但浏览器预览此前返回 `unsupported`。
+
+### 具体做了什么
+
+- `preview_service` 新增 `PRESENTATION_EXTS = (".pptx", ".ppt")` 并纳入转 PDF 预览集合
+  （`PDF_CONVERT_EXTS = DOC_EXTS + PRESENTATION_EXTS`）；
+- `deploy/install.sh` 增补 `libreoffice-impress`；
+- 服务器安装 `libreoffice-impress`。
+
+### 影响范围
+
+- 文件/产物的 `preview_kind`：`.ppt`/`.pptx` 由 `unsupported` 变为 `pdf`；
+- 旧版 `.ppt` 上传解析可用（此前失败）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移。
+
+### 验证方式
+
+- `tests/module/test_preview_api.py` 新增演示文稿转 PDF 用例，扩展 `preview_kind` 映射断言；
+- 服务器实测：真实 `.pptx`（项目 217 供应商投标注意事项）Impress 转 PDF 成功；
+  由该 pptx 转出真实 `.ppt`（OLE2 头 `d0cf11e0a1b11ae1`）后上传，解析成功且预览返回 PDF。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker（`libreoffice-impress` 保留不影响其它功能）。
+
 <a id="2026-09-12-1200-feat-office-preview"></a>
 
 ## 2026-09-12 12:00 · feat · 浏览器内 Office 预览（docx→PDF、xlsx→表格）
