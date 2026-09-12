@@ -380,6 +380,21 @@ def _seed_image_desc(maker, sha: str, desc: dict) -> None:
     asyncio.run(_run())
 
 
+def test_draft_item_top_names_prefers_chapter_line():
+    """issue #67：骨架扫描必须锚定「（X）条目」行，不能被目录/正文里同名提及带偏。"""
+    from app.services.export_service import draft_item_top_names
+
+    texts = [
+        "目录：本章含专用资格响应、专项响应文件说明",  # 干扰行（短、含关键词，但不是条目行）
+        "（二）专项响应文件（上传招投标交易平台信息系统路径：……）",
+        "1.业绩文件",
+        "2.项目团队情况",
+        "（三）其他条目",
+    ]
+    names = draft_item_top_names(texts, "专项响应文件")
+    assert names == ["业绩文件", "项目团队情况"], names
+
+
 def test_package_ignores_conflict_value_that_is_substring_of_longer_number(client, monkeypatch):
     """issue #68 第二类误判：conflict 里的截断值不能命中交付件里的完整编号（子串匹配误伤）。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)

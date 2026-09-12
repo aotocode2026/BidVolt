@@ -591,12 +591,19 @@ def draft_item_top_names(texts, item_key: str, limit: int = 30) -> list[str]:
     """
     if not item_key:
         return []
+    # 优先锚定「（X）条目」行——底稿的目录/正文里也会出现条目名，锚错会把别的条目清单算进来
     start = None
     for i, t in enumerate(texts):
         s = (t or "").strip()
-        if item_key in s and len(s) <= 60:
+        if item_key in s and len(s) <= 60 and _CHAPTER_LINE_RE.match(s):
             start = i
             break
+    if start is None:
+        for i, t in enumerate(texts):
+            s = (t or "").strip()
+            if item_key in s and len(s) <= 60:
+                start = i
+                break
     if start is None:
         return []
     out: list[str] = []
