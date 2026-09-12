@@ -12,7 +12,7 @@
 | id | 2026-09-12-1200-feat-office-preview |
 | datetime | 2026-09-12T12:00:00+08:00 |
 | type | feat |
-| status | proposed |
+| status | released |
 | scope | files, assembly, api |
 | related | issue #63, discussion #16, discussion #50 |
 
@@ -47,6 +47,10 @@
 
 - 新增 `tests/module/test_preview_api.py`：xlsx 网格、docx 转 PDF 与缓存命中、unsupported 原因、
   ext→preview_kind 映射；相关文件/产物用例回归通过；ruff 通过。
+- 生产验证（项目 217 真实产物）：docx 小件（商务偏差表）转 PDF 1 页 26.9KB；技术卷
+  （21MB / 455 页）首次转换 15.4s 产出 27.7MB PDF、二次取用命中缓存 0.65s；
+  xlsx（报价单）返回 2 个工作表单元格网格；zip 返回 unsupported 并提示下载。
+- 服务器 HEAD `7732baf`、迁移 `0039 (head)`、app/worker 重启后 `healthz ok`。
 
 ### 回滚方式
 
