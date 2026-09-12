@@ -28,8 +28,13 @@ def _setup(client):
 
 
 def _docx_bytes(paragraphs: list[str]) -> bytes:
-    """构造合规字体 docx（宋体 eastAsia + Times New Roman——打包字体硬门禁要求）。"""
+    """构造合规字体 docx（宋体 eastAsia + Times New Roman——打包字体硬门禁要求）。
+
+    同时过一遍交付归一化（页码页脚 + 大纲噪声，issue #65/#66）：生产环境所有产物都要经过
+    seal/upload/replace 入口归一化，测试直落产物库时保持同一形态，否则会被新门禁拦下。
+    """
     from docx.oxml.ns import qn
+    from app.services import docx_normalize
 
     doc = Document()
     for p in paragraphs:
@@ -39,7 +44,8 @@ def _docx_bytes(paragraphs: list[str]) -> bytes:
         run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
     buf = io.BytesIO()
     doc.save(buf)
-    return buf.getvalue()
+    normalized, _ = docx_normalize.normalize_docx(buf.getvalue())
+    return normalized
 
 
 def _docx_bytes_with_deleted_bare(paragraphs: list[str]) -> bytes:

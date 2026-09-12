@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-12 19:00 | #16 | discussion | [交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定](UPDATE_LOG.md#2026-09-12-1900-fix-deliverable-pagenum-outline) |
+| 2026-09-12 19:00 | #65 | issue | [交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定](UPDATE_LOG.md#2026-09-12-1900-fix-deliverable-pagenum-outline) |
+| 2026-09-12 19:00 | #66 | issue | [交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定](UPDATE_LOG.md#2026-09-12-1900-fix-deliverable-pagenum-outline) |
 | 2026-09-12 14:00 | #64 | issue | [补齐旧版 .ppt 解析与 .ppt/.pptx 预览](UPDATE_LOG.md#2026-09-12-1400-feat-presentation-preview) |
 | 2026-09-12 14:00 | #63 | issue | [补齐旧版 .ppt 解析与 .ppt/.pptx 预览](UPDATE_LOG.md#2026-09-12-1400-feat-presentation-preview) |
 | 2026-09-12 12:00 | #16 | discussion | [浏览器内 Office 预览（docx→PDF、xlsx→表格）](UPDATE_LOG.md#2026-09-12-1200-feat-office-preview) |

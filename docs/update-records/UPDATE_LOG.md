@@ -3,6 +3,81 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-12-1900-fix-deliverable-pagenum-outline"></a>
+
+## 2026-09-12 19:00 · fix · 交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-12-1900-fix-deliverable-pagenum-outline |
+| datetime | 2026-09-12T19:00:00+08:00 |
+| type | fix |
+| status | released |
+| scope | assembly, deliverable, hermes-skill, preview |
+| related | issue #65, issue #66, discussion #16 |
+
+### 为什么做这次更新
+
+前端反馈交付文件看不到页码（PDF 预览与下载的 docx 都没有）。生产库核查出两套成因：
+
+- **整文件直写通道产物**（项目 217 的 8 份正式 docx）：`build_docx_from_recipe.py` / `assemble.py`
+  用 `Document()` 从零新建，包里没有任何 header/footer 部件，也没有 PAGE 域。
+- **底稿裁剪通道产物**（项目 202 的 759/760/763/769）：包里 10 个 header/footer 部件与 10 条
+  rels 关系**全部在**，但 `document.xml` 里 `footerReference` 数为 **0**——被 Hermes 技能的
+  「统一修复链：清全部 sectPr 内 headerReference/footerReference」删空。渲染自然无页码。
+
+另在项目 217 `商务文件/（四）补充文件.docx`（artifact 949）发现大纲污染：334 条 `w:outlineLvl`
+段落中 **306 条是图片题注**（`val="8"`），把 Word 导航窗格与 PDF 书签冲成一堆「图：…-第N页」，
+真正的结构性条目只有 28 条。
+
+### 具体做了什么
+
+- 新增 `app/services/docx_normalize.py`：
+  - `ensure_page_footer()`——已有含 PAGE 域的页脚引用则幂等返回；有部件但引用空心化则**把引用接回去**
+    （202 场景）；部件缺失则按模板口径**注入页脚部件**（居中、9pt、`sz=18`、宋体/Times New Roman、
+    单个 `PAGE \* MERGEFORMAT` 域；同步 `[Content_Types].xml` Override + `document.xml.rels` +
+    每个 sectPr 的 default/first 引用，`evenAndOddHeaders` 时补 even）；`w:pgNumType w:start="0"`
+    归零为正常起始（首页 = 1）。
+  - `strip_outline_noise()`——删除 `outlineLvl ≥ 6` 的段落级别，以及题注型段落
+    （正文以 `图：/表：/附件：/附图：/附表：/照片：/扫描件：` 开头）上的任何大纲级别。纯属性删除，
+    不动文字 / 图片 / 表格，幂等。
+  - `audit_docx()`——只读体检（页码覆盖率 + 大纲噪声），供门禁使用。
+- 归一化挂到 **4 个产物入口**：`seal_slice` / `upload_artifact_file` / `replace_artifact_file` /
+  `save_artifact_file`（docx 一律过一遍，与成文通道无关）；回执新增 `normalize` 计数。
+- `package_zip` 新增两条硬门禁：正式 docx **缺页码页脚**、**存在大纲级别噪声**即拒绝打包并列出文件名。
+- Hermes 侧 `docs/hermes/skills/bidvolt-pipeline-mechanics/scripts/fix_docx_render.py` 重写：
+  删引用前先判悬空（**只删目标部件不存在的引用**），有效引用保留并在删内嵌 sectPr 之前
+  **上提到 body sectPr**；回执改为 `hf_ref_dropped` / `hf_ref_kept` / `hf_ref_restored` 三个计数；
+  SKILL.md 同步更正教学文本（含 202 实测证据）。
+- MCP 工具说明同步（`upload_deliverable_file` 归一化行为、`package_response_zip` 新增门禁）。
+
+### 影响范围
+
+- `POST /assembly/upload-file`、`PUT /assembly/artifacts/{id}`、`POST /assembly/artifacts/{id}/save`、
+  `POST /assembly/slices/{id}/seal` 的响应新增 `normalize` 字段（原有字段不变）；
+- 上传/覆盖/封存的 docx 内容会被服务端规范化（加页码页脚、清大纲噪声），**字节不再等于本地文件**；
+- `POST /assembly/package` 新增两条拒绝条件（缺页码 / 大纲噪声）；
+- 历史产物在下次覆盖上传或回修时被规范化；预览缓存按 `v{版本号}` 寻址，覆盖后自动重转 PDF。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；无接口破坏性变更（仅新增可选字段与新的失败分支）。
+- 直接写入产物表（绕过上述入口）的历史数据不受影响，但打包时会被新门禁拦下，需覆盖上传一次。
+
+### 验证方式
+
+- 新增 `tests/module/test_docx_normalize.py`（7 例：注入页脚 / 空心页脚接回 / 幂等 / pgNumType
+  归零 / 大纲噪声清除 / 题注清除 / 端到端）；`tests/module/test_assembly_service.py` 21 例全绿
+  （测试夹具改为按生产形态先归一化再落库）。
+- 服务器实测：项目 217 的 8 份正式 docx + 2 份内部 docx 归一化后覆盖上传，`render_qa_docx`
+  逐页渲染确认页码出现、页数稳定；949 的 `outline_noise` 由 306 降为 0。
+- 202 的四份交付件（部件在、引用空）用新脚本验证：引用接回、LibreOffice 正常渲染。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker；已归一的产物可用 `PUT /assembly/artifacts/{id}` 覆盖回旧版本，
+或从 `agent_artifact_content_version` 历史版本读回。
+
 <a id="2026-09-12-1400-feat-presentation-preview"></a>
 
 ## 2026-09-12 14:00 · feat · 补齐旧版 .ppt 解析与 .ppt/.pptx 预览

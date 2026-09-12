@@ -31,6 +31,15 @@
 
 **不暴露给 Hermes**：报价应用（apply）、导出、删除、编辑锁管理、权限管理。
 
+> **成文工具链**（`resolve_template_draft` / `get_template_outline` / `slice_template_item` /
+> `fill_template_slice` / `append_template_slice` / `verify_template_slice` / `seal_template_item` /
+> `build_quote_xlsx` / `upload_deliverable_file` / `package_response_zip` 等）不在上表，
+> 契约见 `docs/Agent新方案README.md` §5.1 与 `bidvolt_mcp/assembly_tools.py`。
+> **2026-09-12 起（issue #65 / #66）**：写入 docx 的入口（seal / upload / replace / save）
+> 由服务端自动做交付归一化——按模板口径补/接回页码页脚（居中、9pt、单个 PAGE 域，每页都显示）、
+> 清除题注与超深大纲级别噪声（`outlineLvl ≥ 6`），回执带 `normalize` 计数；
+> `package_response_zip` 对**缺页码**或**含大纲级别噪声**的正式 docx 直接拒绝打包并列出文件名。
+
 > 进度展示说明：不设进度类 MCP 工具。Hermes 流式输出经后端**过滤为白名单事件**（phase/status/percent/当前工作/简短依据/操作提示）后 SSE 推送前端；**禁止透传思维链、工具参数、返回值、内部ID、凭据、错误栈**（产品决策 D-E）。
 
 ---

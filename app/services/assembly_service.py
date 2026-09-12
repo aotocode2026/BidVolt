@@ -28,6 +28,18 @@ _SLICE_CAP = 40
 _SLICE_TTL = 3600.0
 
 
+def _normalize_deliverable_docx(data: bytes) -> tuple[bytes, dict]:
+    """交付 docx 归一化：页码页脚 + 大纲级别噪声（issue #65 / #66）。
+
+    所有产物入口统一过一遍（切片封存 / 整文件直写上传 / 覆盖 / 远端保存），
+    与成文通道无关——正式 docx 一律带页码（模板口径：居中纯数字 9pt），
+    题注/图注一律不进大纲。非 docx 原样返回。
+    """
+    from app.services import docx_normalize  # noqa: PLC0415 局部导入避免循环
+
+    return docx_normalize.normalize_docx(data)
+
+
 def _prune_slices() -> None:
     now = time.time()
     for sid in [s for s, v in _SLICES.items() if now - v["created"] > _SLICE_TTL]:
@@ -426,6 +438,8 @@ async def seal_slice(
     # 未显式填空也走一遍规则：带标签空位无资料原位【待补充】（诚实标注）
     sess.apply_to_doc()
     data = sess.finish()
+    # 页码页脚 + 大纲噪声归一化（issue #65/#66）：封存前统一过一遍
+    data, norm = _normalize_deliverable_docx(data)
 
     from app.models.agent import AgentArtifact
     from app.services.task_service import _set_rls_context  # noqa: PLC0415
@@ -458,6 +472,7 @@ async def seal_slice(
         "req_title": s.get("title") or "",
         "matched_title": s.get("matched_title") or "",
         "was_verified": bool(s.get("verified")),
+        "normalize": norm,
     }
 
 
@@ -515,6 +530,7 @@ async def upload_artifact_file(
         raise ValueError("文件超过 60MB 上限")
     stem = name.rsplit("/", 1)[-1]
     ext = stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
+    norm: dict | None = None
     if ext == "docx":
         try:
             with _zip.ZipFile(_io.BytesIO(data)) as zf:
@@ -524,6 +540,8 @@ async def upload_artifact_file(
             raise ValueError("docx 结构无效（不是有效的 Word 文件）") from exc
         kind = "item_docx"
         mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        # 页码页脚 + 大纲噪声归一化（issue #65/#66）
+        data, norm = _normalize_deliverable_docx(data)
     elif ext == "xlsx":
         kind = "xlsx"
         mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -548,7 +566,13 @@ async def upload_artifact_file(
     session.add(art)
     await session.commit()
     await _set_rls_context(session, enterprise_id)
-    return {"artifact_id": art.id, "name": art.name, "bytes": len(data), "kind": kind}
+    return {
+        "artifact_id": art.id,
+        "name": art.name,
+        "bytes": len(data),
+        "kind": kind,
+        "normalize": norm,
+    }
 
 
 async def replace_artifact_file(
@@ -583,6 +607,7 @@ async def replace_artifact_file(
         raise ValueError("产物不存在或不属于本项目")
     stem = (art.name or "").rsplit("/", 1)[-1]
     ext = stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
+    norm: dict | None = None
     if ext == "docx":
         try:
             with _zip.ZipFile(_io.BytesIO(data)) as zf:
@@ -597,6 +622,9 @@ async def replace_artifact_file(
             raise ValueError("pdf 文件头无效")
     else:
         raise ValueError("仅支持 docx/xlsx/pdf 产物覆盖")
+    # 页码页脚 + 大纲噪声归一化（issue #65/#66）：覆盖内容先归一，再归档旧版本
+    if ext == "docx":
+        data, norm = _normalize_deliverable_docx(data)
     # 覆盖前归档当前版本内容（issue #21）：覆盖后可回读历史版本
     await _archive_artifact_content(session, enterprise_id, art)
     art.content = data
@@ -609,6 +637,7 @@ async def replace_artifact_file(
         "bytes": len(data),
         "replaced": True,
         "version_no": int(art.version_no or 0),
+        "normalize": norm,
     }
 
 
@@ -674,6 +703,7 @@ async def save_artifact_file(
         raise ValueError("产物不存在或不属于本项目")
     stem = (art.name or "").rsplit("/", 1)[-1]
     ext = stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
+    norm: dict | None = None
     if ext == "docx":
         try:
             with _zip.ZipFile(_io.BytesIO(data)) as zf:
@@ -688,6 +718,10 @@ async def save_artifact_file(
             raise ValueError("pdf 文件头无效")
     else:
         raise ValueError("仅支持 docx/xlsx/pdf 产物保存")
+
+    # 页码页脚 + 大纲噪声归一化（issue #65/#66）
+    if ext == "docx":
+        data, norm = _normalize_deliverable_docx(data)
 
     if mode == "new":
         new_art = AgentArtifact(
@@ -715,6 +749,7 @@ async def save_artifact_file(
             "logical_version_no": int(new_art.logical_version_no),
             "parent_artifact_id": int(new_art.parent_artifact_id),
             "mode": "new",
+            "normalize": norm,
         }
 
     # 覆盖前归档当前版本内容（issue #21）：覆盖后可回读历史版本
@@ -735,6 +770,7 @@ async def save_artifact_file(
         "logical_version_no": int(art.logical_version_no or 1),
         "parent_artifact_id": art.parent_artifact_id,
         "mode": "overwrite",
+        "normalize": norm,
     }
 
 
@@ -1111,6 +1147,34 @@ async def package_zip(
             "设成了中文字体——Windows 上会渲染错乱）。请为中文 run 显式设置 eastAsia 中文字体"
             "（按模板原字体，如宋体/仿宋/黑体）后重新打包："
             + "；".join(font_files[:8])
+        )
+    # 页码/大纲硬门禁（issue #65/#66）：正式 docx 每个节都必须有指向「含 PAGE 域的页脚」的
+    # 引用（上传/封存入口已自动归一化，这里仍缺失=有路径绕过了归一化）；
+    # 题注/图注写入大纲级别同样拒绝——它会把 Word 导航与 PDF 书签冲成一堆图注。
+    from app.services import docx_normalize as _docx_norm  # noqa: PLC0415
+
+    no_pagenum: list[str] = []
+    outline_noise_files: list[str] = []
+    for a in item_arts:
+        info = _docx_norm.audit_docx(a.content or b"")
+        if not info.get("is_docx"):
+            continue
+        if not info.get("has_page_footer"):
+            no_pagenum.append(
+                f"{a.name}（{info['sections']} 节中 "
+                f"{info['sections_without_page_footer']} 节无页码页脚）"
+            )
+        if info.get("outline_noise"):
+            outline_noise_files.append(f"{a.name}（{info['outline_noise']} 处）")
+    if no_pagenum:
+        raise ValueError(
+            "交付件缺少页码（正式 docx 每个节都必须有含 PAGE 域的页脚："
+            "按模板口径居中、9pt、纯数字）：" + "；".join(no_pagenum[:8])
+        )
+    if outline_noise_files:
+        raise ValueError(
+            "交付件存在大纲级别噪声（题注/图注不得写入大纲级别，正文最多 6 级标题）："
+            + "；".join(outline_noise_files[:8])
         )
     # 编号冲突值硬门禁（R12 教训：二次识别冲突值如 C1601J0253904821 未经对照原件处理
     # 就留在交付件里——服务端按资料库 numbers_conflict 扫描，命中即拒绝）

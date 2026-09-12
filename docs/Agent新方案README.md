@@ -126,6 +126,12 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 
 机制保真红线：切片=复制原件；改动=修订+批注；校验=原文逐字⊂底稿。写什么、按什么顺序、封存哪些条目，全部由主会话决定。
 
+**交付 docx 归一化（2026-09-12 起，issue #65/#66）**：所有写入 docx 的入口
+（`seal_template_item` / `upload_deliverable_file` / 覆盖上传 / 远端保存）由服务端自动做一遍归一化——
+按模板口径补或接回**页码页脚**（居中、9pt、单个 `PAGE \* MERGEFORMAT` 域，每页都显示），
+并清除**题注与超深大纲级别噪声**（`w:outlineLvl ≥ 6`）；回执带 `normalize` 计数。
+`package_response_zip` 对缺页码或含大纲噪声的正式 docx 直接拒绝打包。
+
 开关：`AGENT_PIPELINE_ENABLED=1`（关闭时新接口返回 409，旧功能不受影响）。
 
 ## 6. 安全

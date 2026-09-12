@@ -419,6 +419,10 @@ ASSEMBLY_TOOL_DEFS = [
             "服务端不介入内容生成。local_path 为服务器本地绝对路径（/data/hermes/... 或 /tmp/...）；"
             "name 为包内路径名（如 技术文件/（二）专项响应文件.docx；覆盖时可不传）。"
             "上传后与切片产物同样参与打包与审计。"
+            "**服务端会自动做交付归一化（无需自己处理）**：docx 按模板口径补/接回页码页脚"
+            "（居中、9pt、单个 PAGE 域，每页都显示），并清除题注/图注与超深大纲级别噪声；"
+            "回执带 normalize 计数（outline_noise_removed / created_part / refs_added 等）。"
+            "但不要指望它兜底内容问题：正式 docx 缺页码或含大纲噪声时 package_response_zip 会拒绝打包。"
         ),
         "inputSchema": {
             "type": "object",
@@ -442,6 +446,9 @@ ASSEMBLY_TOOL_DEFS = [
             "成文工具（机制）：把已封存产物（item_docx/xlsx 的 artifact_ids）打包为响应文件包 zip，"
             "自动附 会话记录/主会话记录.md 与 manifest.json，返回 zip 的 artifact_id"
             "（客户下载端点 /response-package 将直接取它）。"
+            "**硬门禁（命中即拒绝打包并列出文件名）**：is_file_item 清单未全覆盖 / 竖线假表格 / "
+            "中文 run 字体不合规 / 二次识别冲突编号 / 17 位信用代码 / "
+            "**正式 docx 缺页码页脚（issue #65）** / **题注与超深大纲级别噪声（issue #66）**。"
         ),
         "inputSchema": {
             "type": "object",
