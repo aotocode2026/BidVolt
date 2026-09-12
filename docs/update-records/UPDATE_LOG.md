@@ -51,6 +51,9 @@
   （21MB / 455 页）首次转换 15.4s 产出 27.7MB PDF、二次取用命中缓存 0.65s；
   xlsx（报价单）返回 2 个工作表单元格网格；zip 返回 unsupported 并提示下载。
 - 服务器 HEAD `7732baf`、迁移 `0039 (head)`、app/worker 重启后 `healthz ok`。
+- 旧版 `.xls` 支持补全：服务器安装 `libreoffice-calc`（此前只有 writer，`.xls` 在**解析阶段**即失败，
+  属预览功能之前就存在的缺口）。实测把 xlsx 转成真实 `.xls`（OLE2 头 `d0cf11e0`）后上传：
+  解析成功（`status=3`、无 error）、`preview_kind=sheet`、预览返回 2 个工作表完整单元格网格。
 
 ### 回滚方式
 
