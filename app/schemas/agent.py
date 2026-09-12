@@ -25,6 +25,7 @@ class AgentArtifactSummary(BaseModel):
     parent_artifact_id: int | None
     is_internal: bool
     status: str
+    preview_kind: str
     created_at: datetime
     updated_at: datetime
     download_url: str
@@ -59,6 +60,7 @@ class AgentArtifactInspect(BaseModel):
     parent_artifact_id: int | None
     is_internal: bool
     status: str
+    preview_kind: str
     created_at: datetime
     updated_at: datetime
     download_url: str

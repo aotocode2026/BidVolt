@@ -17,6 +17,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import preview_service
+
 logger = logging.getLogger(__name__)
 
 # 内存切片仓：一个切片持有 (Document + 持久 _FillSession/editor)，保证替换记录全局连续。
@@ -1388,6 +1390,7 @@ def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
     parts = name.split("/", 1)
     group = parts[0] if len(parts) > 1 else ""
     filename = parts[-1]
+    ext = ("." + filename.rsplit(".", 1)[1].lower()) if "." in filename else ""
     return {
         "artifact_id": int(art.id),
         "project_id": int(project_id),
@@ -1406,6 +1409,8 @@ def _artifact_meta(art: Any, project_id: int) -> dict[str, Any]:
         "created_at": art.created_at.isoformat() if art.created_at else None,
         "updated_at": art.updated_at.isoformat() if art.updated_at else None,
         "status": "packaged" if art.kind == "zip" else "ready",
+        # issue #63：浏览器内预览方式（pdf=转 PDF 查看；sheet=表格渲染；unsupported=仅下载）
+        "preview_kind": preview_service.preview_kind_for_ext(ext),
         "download_url": f"/api/v1/projects/{int(project_id)}/agent-artifact/{int(art.id)}/download",
     }
 
@@ -1417,6 +1422,7 @@ def _archived_artifact_meta(art: Any, row: Any, project_id: int) -> dict[str, An
     group = parts[0] if len(parts) > 1 else ""
     filename = parts[-1]
     version_no = int(row.version_no or 1)
+    ext = ("." + filename.rsplit(".", 1)[1].lower()) if "." in filename else ""
     return {
         "artifact_id": int(art.id),
         "project_id": int(project_id),
@@ -1435,6 +1441,7 @@ def _archived_artifact_meta(art: Any, row: Any, project_id: int) -> dict[str, An
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.created_at.isoformat() if row.created_at else None,
         "status": "archived",
+        "preview_kind": preview_service.preview_kind_for_ext(ext),
         "download_url": (
             f"/api/v1/projects/{int(project_id)}/agent-artifact/{int(art.id)}/versions/{version_no}/download"
         ),

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,13 +18,20 @@ from app.models.enterprise_domain import EnterpriseAsset, EnterpriseFact
 from app.models.file import FileObject, UploadBatch, UploadBatchItem
 from app.models.project_material import ProjectMaterial
 from app.schemas.project import Page
-from app.services import file_service
+from app.services import file_service, preview_service
 from app.services.audit import write_audit
 from app.services.quota_service import QuotaExceeded
 from app.services.storage import StorageProvider
 
 router = APIRouter(prefix="/files", tags=["files"])
 storage = StorageProvider()
+
+
+def _inline_disposition(filename: str) -> str:
+    """RFC 5987 inline：中文文件名安全，浏览器内联渲染而不是触发下载。"""
+    name = str(filename or "")
+    fallback = name.encode("ascii", "ignore").decode("ascii").strip() or "preview"
+    return f'inline; filename="{fallback}"; filename*=UTF-8\'\'{quote(name)}'
 
 
 def _file_dict(f: FileObject) -> dict:
@@ -38,6 +47,8 @@ def _file_dict(f: FileObject) -> dict:
         "document_role": f.document_role,
         # 存量解析失败文件在资料列表红字标注原因（新上传已直接拒绝，不会产生 status=4）
         "parse_status": f.parse_status,
+        # issue #63：浏览器内预览方式（pdf=转 PDF 查看；sheet=表格渲染；unsupported=仅下载）
+        "preview_kind": preview_service.preview_kind_for_ext(f.ext),
     }
 
 
@@ -78,6 +89,8 @@ async def upload_files(
                     "document_role": fobj.document_role,
                     # Issue #13：解析失败原因随上传响应返回，前端即时提示（此前原因只落库不展示）
                     "parse_status": fobj.parse_status,
+                    # issue #63：上传响应即告知能否在浏览器内预览
+                    "preview_kind": preview_service.preview_kind_for_ext(fobj.ext),
                 }
                 if target == "enterprise":
                     # Issue #6 P0：企业上传明确返回 asset_id 与是否自动 ingest。
@@ -429,6 +442,68 @@ async def signed_download(
     if not storage.verify_signed(file_id, user.enterprise_id, exp, sig):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="签名无效或已过期")
     return await _serve_download(file_id, session, user)
+
+
+async def _preview_source_for_file(
+    session: AsyncSession, user: UserContext, file_id: int
+) -> preview_service.PreviewSource:
+    """加载原件字节并归一为预览输入（权限与下载一致）。
+
+    缓存归属用【访问者企业】而不是文件所有者：行情库文件（owner_type=3）是平台共享，
+    按所有者写库会撞访问者的 RLS。
+    """
+    f = await _get_file(session, user, file_id)
+    try:
+        path = storage.open(f.bucket, f.object_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="存储对象缺失") from exc
+    return preview_service.PreviewSource(
+        source_type="file",
+        source_id=int(f.id),
+        enterprise_id=int(user.enterprise_id),
+        filename=f.original_name,
+        ext=(f.ext or "").lower(),
+        mime=f.mime_type or "application/octet-stream",
+        version_key=str(f.sha256),
+        data=path.read_bytes(),
+    )
+
+
+@router.get("/{file_id}/preview")
+async def preview_file(
+    file_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("download_project_material")),
+) -> dict:
+    """浏览器内预览清单：docx→PDF、xlsx→表格网格、pdf→原件、其余→unsupported（issue #63）。"""
+    src = await _preview_source_for_file(session, user, file_id)
+    try:
+        return await preview_service.build_manifest(session, src)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.get("/{file_id}/preview.pdf")
+async def preview_file_pdf(
+    file_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_capability("download_project_material")),
+) -> Response:
+    """预览用 PDF 字节：docx/doc 走服务端转换（结果缓存），pdf 原件直出。"""
+    src = await _preview_source_for_file(session, user, file_id)
+    try:
+        content, mime = await preview_service.get_pdf(session, src)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": _inline_disposition(src.display_name)},
+    )
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

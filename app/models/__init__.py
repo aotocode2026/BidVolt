@@ -28,7 +28,7 @@ from app.models.enterprise_domain import (
     EnterpriseIngestionTask,
 )
 from app.models.export import ExportJob, FinalCheck
-from app.models.file import ArchiveJob, FileObject
+from app.models.file import ArchiveJob, FileObject, FilePreview
 from app.models.market_knowledge import (
     MarketKnowledgeArticle,
     MarketKnowledgeImage,
@@ -84,6 +84,7 @@ __all__ = [
     "DeliverableContent",
     "DeliverableVersion",
     "FileObject",
+    "FilePreview",
     "FinalCheck",
     "HistoryPriceSnapshot",
     "MaterialMatchResult",

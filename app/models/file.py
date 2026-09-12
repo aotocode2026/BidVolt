@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, BigInt, JSONType, TimestampMixin
@@ -110,3 +121,33 @@ class ImageDescription(Base, TimestampMixin):
     described_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class FilePreview(Base, TimestampMixin):
+    """浏览器内 Office 预览缓存（issue #63）：docx→PDF 转换结果按内容寻址缓存。
+
+    派生数据、非业务原件：`source_key` 用文件 sha256 或 `v<artifact 版本号>`，
+    内容一变即视为新的缓存键，旧行可随时清理。
+    """
+
+    __tablename__ = "file_preview"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id",
+            "source_type",
+            "source_key",
+            "kind",
+            name="uq_file_preview_source",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInt, primary_key=True)
+    enterprise_id: Mapped[int] = mapped_column(BigInt, nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)  # file / artifact
+    source_id: Mapped[int] = mapped_column(BigInt, nullable=False)
+    source_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="pdf")
+    mime: Mapped[str] = mapped_column(String(100), nullable=False, default="application/pdf")
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, default=b"")
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    byte_size: Mapped[int] = mapped_column(BigInt, nullable=False, default=0)

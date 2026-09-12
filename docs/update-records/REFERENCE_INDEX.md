@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-12 12:00 | #16 | discussion | [浏览器内 Office 预览（docx→PDF、xlsx→表格）](UPDATE_LOG.md#2026-09-12-1200-feat-office-preview) |
+| 2026-09-12 12:00 | #50 | discussion | [浏览器内 Office 预览（docx→PDF、xlsx→表格）](UPDATE_LOG.md#2026-09-12-1200-feat-office-preview) |
+| 2026-09-12 12:00 | #63 | issue | [浏览器内 Office 预览（docx→PDF、xlsx→表格）](UPDATE_LOG.md#2026-09-12-1200-feat-office-preview) |
 | 2026-09-11 18:30 | #39 | discussion | [Agent 生成进度按真实阶段返回 stage 与最近活动](UPDATE_LOG.md#2026-09-11-1830-fix-agent-progress-stage) |
 | 2026-09-11 18:30 | #61 | issue | [Agent 生成进度按真实阶段返回 stage 与最近活动](UPDATE_LOG.md#2026-09-11-1830-fix-agent-progress-stage) |
 | 2026-09-11 18:00 | #54 | discussion | [项目基础信息自动回填 tender_no/deadline](UPDATE_LOG.md#2026-09-11-1800-fix-project-meta-backfill) |

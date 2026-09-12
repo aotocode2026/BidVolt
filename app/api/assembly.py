@@ -18,7 +18,7 @@ from app.constants import Permission
 from app.db import get_session
 from app.models.agent import AgentArtifact
 from app.schemas.agent import AgentArtifactInspect, AgentArtifactListResponse
-from app.services import assembly_service
+from app.services import assembly_service, preview_service
 
 router = APIRouter(prefix="/projects", tags=["agent-assembly"])
 
@@ -27,6 +27,12 @@ def _content_disposition(filename: str) -> str:
     """RFC 5987：ASCII 回退 + percent-encoded UTF-8 filename*，避免中文文件名撞 latin-1 头编码。"""
     fallback = filename.encode("ascii", "ignore").decode("ascii").strip() or "download"
     return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename)}'
+
+
+def _inline_disposition(filename: str) -> str:
+    """RFC 5987 inline：浏览器内联渲染（issue #63 预览用）。"""
+    fallback = filename.encode("ascii", "ignore").decode("ascii").strip() or "preview"
+    return f'inline; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename)}'
 
 
 async def _ensure_project(session: AsyncSession, enterprise_id: int, project_id: int) -> None:
@@ -426,4 +432,88 @@ async def download_artifact_version(
         headers={
             "Content-Disposition": _content_disposition(f"v{version_no}_{filename}")
         },
+    )
+
+
+def _ext_of(name: str) -> str:
+    base = str(name or "").rsplit("/", 1)[-1]
+    return ("." + base.rsplit(".", 1)[1].lower()) if "." in base else ""
+
+
+async def _artifact_preview_source(
+    session: AsyncSession,
+    user: UserContext,
+    project_id: int,
+    artifact_id: int,
+    version_no: int | None,
+) -> preview_service.PreviewSource:
+    """加载指定版本产物字节并归一为预览输入（issue #63；默认当前版本）。"""
+    art = await session.scalar(
+        select(AgentArtifact).where(
+            AgentArtifact.id == artifact_id,
+            AgentArtifact.enterprise_id == user.enterprise_id,
+            AgentArtifact.project_id == project_id,
+        )
+    )
+    if art is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成文产物不存在")
+    effective = int(version_no) if version_no is not None else int(art.version_no or 1)
+    try:
+        content, _mime, filename = await assembly_service.read_artifact_version(
+            session, user.enterprise_id, project_id, artifact_id, effective
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return preview_service.PreviewSource(
+        source_type="artifact",
+        source_id=int(art.id),
+        enterprise_id=int(user.enterprise_id),
+        filename=filename or art.name or "",
+        ext=_ext_of(filename or art.name or ""),
+        mime=art.mime or "application/octet-stream",
+        version_key=f"v{effective}",
+        data=content or b"",
+    )
+
+
+@router.get("/{project_id}/agent-artifact/{artifact_id}/preview")
+async def preview_artifact(
+    project_id: int,
+    artifact_id: int,
+    version_no: int | None = Query(default=None, description="留空为当前版本"),
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> dict:
+    """产物浏览器内预览清单：docx→PDF、xlsx→表格网格、pdf→原件、其余→unsupported。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    src = await _artifact_preview_source(session, user, project_id, artifact_id, version_no)
+    try:
+        return await preview_service.build_manifest(session, src)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.get("/{project_id}/agent-artifact/{artifact_id}/preview.pdf")
+async def preview_artifact_pdf(
+    project_id: int,
+    artifact_id: int,
+    version_no: int | None = Query(default=None, description="留空为当前版本"),
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_permission(Permission.FILE_READ)),
+) -> Response:
+    """产物预览 PDF 字节（docx 走服务端转换并缓存，pdf 原件直出）。"""
+    await _ensure_project(session, user.enterprise_id, project_id)
+    src = await _artifact_preview_source(session, user, project_id, artifact_id, version_no)
+    try:
+        content, mime = await preview_service.get_pdf(session, src)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": _inline_disposition(src.display_name)},
     )

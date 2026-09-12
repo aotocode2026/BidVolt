@@ -3,6 +3,55 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-12-1200-feat-office-preview"></a>
+
+## 2026-09-12 12:00 · feat · 浏览器内 Office 预览（docx→PDF、xlsx→表格）
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-12-1200-feat-office-preview |
+| datetime | 2026-09-12T12:00:00+08:00 |
+| type | feat |
+| status | proposed |
+| scope | files, assembly, api |
+| related | issue #63, discussion #16, discussion #50 |
+
+### 为什么做这次更新
+
+前端要求不安装 Office 插件、直接在浏览器查看 docx/xlsx（discussion #16 T02）。此前只能下载原件。
+
+### 具体做了什么
+
+- 新增 `file_preview` 表（迁移 `0039`，含 RLS）：docx→PDF 转换结果按内容寻址缓存
+  （source_key = 文件 sha256 或 `v<artifact 版本号>`）；
+- 新增预览服务：docx/doc/odt/rtf → LibreOffice headless 转 PDF；xlsx/xlsm → openpyxl 单元格网格；
+  pdf → 原件直出；其余格式 → unsupported + 原因；
+- 转换在线程池执行（不阻塞事件循环），每次用独立工作目录与独立 LibreOffice profile；
+- 新增 4 个接口：
+  `GET /files/{file_id}/preview`、`GET /files/{file_id}/preview.pdf`、
+  `GET /projects/{id}/agent-artifact/{artifact_id}/preview`、
+  `GET /projects/{id}/agent-artifact/{artifact_id}/preview.pdf`（产物支持 `version_no`）；
+- 文件/产物元数据新增 `preview_kind`（pdf / sheet / unsupported），上传响应同步返回；
+- `deploy/install.sh` 增补 `libreoffice-calc`（.xls → .xlsx 预览用）。
+
+### 影响范围
+
+- 文件与成文产物的读取口径（新增只读预览接口）；`file_object` 列表/上传响应与
+  `assembly/artifacts` 列表/详情新增 `preview_kind` 字段。
+
+### 迁移 / 破坏性变更
+
+- 迁移 `0039` 新增 `file_preview` 表 + RLS；均为增量字段与接口，旧接口不变。
+
+### 验证方式
+
+- 新增 `tests/module/test_preview_api.py`：xlsx 网格、docx 转 PDF 与缓存命中、unsupported 原因、
+  ext→preview_kind 映射；相关文件/产物用例回归通过；ruff 通过。
+
+### 回滚方式
+
+回退本次提交，`alembic downgrade 0038`（移除预览缓存表），重启 app/worker。
+
 <a id="2026-09-11-1830-fix-agent-progress-stage"></a>
 
 ## 2026-09-11 18:30 · fix · Agent 生成进度按真实阶段返回 stage 与最近活动
