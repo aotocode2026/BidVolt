@@ -1329,6 +1329,17 @@ async def package_zip(
         conflict_values = set()
         confirmed_values = set()
     conflict_hits: list[str] = []
+    # 词元级匹配（issue #68 第二类误判）：冲突值必须作为**独立编号**出现——
+    # 前后不能再是字母/数字。反例：conflict 里的 17 位截断值 1100111730005250777 是交付件中
+    # 完整发票号 11001117300052507773 的子串，裸 `in` 匹配会把正确件拦死（同 202 的 '1815' 碎片）。
+    def _token_hit(value: str, text: str) -> bool:
+        return (
+            _re.compile(
+                r"(?<![0-9A-Za-z])" + _re.escape(value) + r"(?![0-9A-Za-z])"
+            ).search(text)
+            is not None
+        )
+
     if conflict_values:
         for a in item_arts:
             try:
@@ -1338,7 +1349,7 @@ async def package_zip(
             except Exception:  # noqa: BLE001
                 continue
             for v in conflict_values:
-                if v in full:
+                if _token_hit(v, full):
                     conflict_hits.append(f"{a.name}（编号 {v}）")
                     break
     if conflict_hits:
@@ -1357,7 +1368,7 @@ async def package_zip(
             except Exception:  # noqa: BLE001
                 continue
             for v in confirmed_values:
-                if v in full:
+                if _token_hit(v, full):
                     confirmed_hits.append(f"{a.name}（编号 {v}）")
                     break
     # 信用代码长度硬门禁（福建 R4 教训：91 开头 17 位误读变体 9111011318157964Q

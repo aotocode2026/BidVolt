@@ -380,6 +380,30 @@ def _seed_image_desc(maker, sha: str, desc: dict) -> None:
     asyncio.run(_run())
 
 
+def test_package_ignores_conflict_value_that_is_substring_of_longer_number(client, monkeypatch):
+    """issue #68 第二类误判：conflict 里的截断值不能命中交付件里的完整编号（子串匹配误伤）。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    tid = _seed_pkg(
+        maker,
+        pid,
+        [
+            (
+                "价格文件/（一）响应函及报价汇总表.docx",
+                _docx_bytes(["（一）响应函及报价汇总表", "发票号码 11001117300052507773"]),
+            ),
+            ("价格文件/（二）报价明细表.docx", _docx_bytes(["（二）报价明细表", "明细报价如下……"])),
+        ],
+    )
+    # 冲突候选是 17 位截断值（从未被 verified），但它在交付件里只是完整号码的子串
+    _seed_image_desc(maker, "f" * 64, {"numbers_conflict": ["1100111730005250777"]})
+    result = _pack(maker, pid, tid)
+    assert result["artifact_id"] > 0
+    asyncio.run(engine.dispose())
+
+
 def test_package_blocks_unconfirmed_conflict_number(client, monkeypatch):
     """issue #68：真·未处理候选（conflict 且从未被任何图 verified 过）继续拒绝打包。"""
     monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
