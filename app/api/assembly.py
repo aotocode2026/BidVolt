@@ -136,9 +136,21 @@ async def append_template_slice(
 ) -> dict:
     await _ensure_project(session, user.enterprise_id, project_id)
     try:
-        return assembly_service.append_slice(
-            slice_id, _cap_task(request), body.get("nodes"), body.get("comment"), body.get("heading")
+        # 图片节点先解析成内联字节（企业资料库 file_id / 本地 path），再交给同步的 append
+        nodes, img_stats = await assembly_service.resolve_image_nodes(
+            session, user.enterprise_id, project_id, body.get("nodes")
         )
+        res = assembly_service.append_slice(
+            slice_id,
+            _cap_task(request),
+            nodes,
+            body.get("comment"),
+            body.get("heading"),
+            page_break=body.get("page_break"),
+        )
+        if img_stats.get("images_resolved"):
+            res["images_resolved"] = img_stats["images_resolved"]
+        return res
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

@@ -40,6 +40,113 @@ def _normalize_deliverable_docx(data: bytes) -> tuple[bytes, dict]:
     return docx_normalize.normalize_docx(data)
 
 
+# 证据图片本地路径白名单：只接受临时目录与 Hermes 工作区（与 MCP 工具同一口径）
+_IMAGE_PATH_PREFIXES = ("/tmp/", "/data/hermes/")
+_IMAGE_MAX_BYTES = 12 * 1024 * 1024
+_IMAGE_DIRECT_EXTS = {"png", "jpg", "jpeg", "gif", "bmp"}
+
+
+def _path_allowed(path: str) -> bool:
+    import tempfile  # noqa: PLC0415
+
+    p = str(path or "").replace("\\", "/")
+    if not p:
+        return False
+    if any(p.startswith(pref) for pref in _IMAGE_PATH_PREFIXES):
+        return True
+    tmp = tempfile.gettempdir().replace("\\", "/").rstrip("/") + "/"
+    return p.startswith(tmp)
+
+
+def _image_bytes_from_file(path: str, page: int | None = None) -> tuple[bytes, str]:
+    """从本地文件取图片字节：PDF 取指定页（150dpi 渲染 PNG），图片按原格式直用
+    （tiff/webp 等转 PNG——python-docx 对内嵌图片格式有限制）。"""
+    import io as _io
+    import os as _os
+
+    ext = _os.path.splitext(str(path))[1].lower().lstrip(".")
+    if ext == "pdf":
+        import fitz  # noqa: PLC0415 PyMuPDF（服务端已装）
+
+        idx = max(int(page or 1) - 1, 0)
+        with fitz.open(str(path)) as doc:
+            if idx >= doc.page_count:
+                raise ValueError(f"PDF 只有 {doc.page_count} 页，取不到第 {idx + 1} 页")
+            data = doc[idx].get_pixmap(dpi=150).tobytes("png")
+        return data, "png"
+    with open(str(path), "rb") as f:
+        data = f.read()
+    if ext in _IMAGE_DIRECT_EXTS:
+        return data, ext
+    from PIL import Image as _PILImage  # noqa: PLC0415
+
+    with _PILImage.open(_io.BytesIO(data)) as im:
+        buf = _io.BytesIO()
+        im.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue(), "png"
+
+
+async def resolve_image_nodes(
+    session: AsyncSession,
+    enterprise_id: int,
+    project_id: int,
+    nodes: list[dict] | None,
+) -> tuple[list[dict], dict]:
+    """把 append 节点里的 image 节点解析成内联字节（`_data`/`_ext`），供同步的
+    `append_supplement` 直接插图（issue #67：大卷走底稿骨架通道要能追加证据图）。
+
+    两种来源：
+    - `file_id`（+ 可选 `page`）：企业资料库原件——PDF 取指定页、图片直用；
+    - `path`：服务器本地路径，仅允许 `/tmp/`、`/data/hermes/`（及系统临时目录）下的图片。
+
+    解析失败（缺来源 / 路径越界 / 文件不存在 / 超体积上限）一律报错，不静默跳过——
+    证据图缺失属于判不过的硬缺陷。
+    """
+    from app.models.file import FileObject  # noqa: PLC0415
+    from app.services.storage import StorageProvider  # noqa: PLC0415
+
+    out: list[dict] = []
+    resolved = 0
+    for node in nodes or []:
+        if not isinstance(node, dict) or node.get("type") != "image":
+            out.append(node)
+            continue
+        item = dict(node)
+        file_id = item.get("file_id")
+        local_path = item.get("path")
+        if file_id:
+            fobj = await session.get(FileObject, int(file_id))
+            if fobj is None or fobj.enterprise_id != enterprise_id or fobj.is_deleted:
+                raise ValueError(f"图片来源 file_id={file_id} 不可用（不属于本企业/已删除）")
+            real_path = StorageProvider().open(fobj.bucket, fobj.object_key)
+            data, ext = _image_bytes_from_file(str(real_path), item.get("page"))
+        elif local_path:
+            import os as _os  # noqa: PLC0415
+
+            if not _path_allowed(str(local_path)):
+                raise ValueError(
+                    "图片 path 仅允许 /tmp/、/data/hermes/ 或系统临时目录下的文件："
+                    f"{local_path}"
+                )
+            if not _os.path.exists(str(local_path)):
+                raise ValueError(f"图片文件不存在：{local_path}")
+            data, ext = _image_bytes_from_file(str(local_path), item.get("page"))
+        else:
+            raise ValueError(
+                "图片节点缺少来源：请给 file_id（企业资料库原件，可带 page）或 path（本地图片）"
+            )
+        if len(data) > _IMAGE_MAX_BYTES:
+            raise ValueError(
+                f"单张图片超过 {_IMAGE_MAX_BYTES // (1024 * 1024)}MB 上限（{len(data)} 字节），"
+                "请先压缩（宽 ≤1240px、JPEG q72 量级）再 append"
+            )
+        item["_data"] = data
+        item["_ext"] = ext
+        out.append(item)
+        resolved += 1
+    return out, {"images_resolved": resolved}
+
+
 def _prune_slices() -> None:
     now = time.time()
     for sid in [s for s, v in _SLICES.items() if now - v["created"] > _SLICE_TTL]:
@@ -367,7 +474,14 @@ def fill_slice(slice_id: str, task_id: int, fields: dict | None, fills: list[dic
     }
 
 
-def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment: str | None, heading: str | None = None) -> dict:
+def append_slice(
+    slice_id: str,
+    task_id: int,
+    nodes: list[dict] | None,
+    comment: str | None,
+    heading: str | None = None,
+    page_break: bool | None = None,
+) -> dict:
     """追加撰写内容：直接追加为正文（无修订无批注；节点形状兼容段落/标题/表格/裸字符串）。
     heading 由主会话按投标文体自定（方案类条目的正文追加用）；不传时用中性默认"响应内容"。"""
     s = _slice(slice_id, task_id)
@@ -375,9 +489,19 @@ def append_slice(slice_id: str, task_id: int, nodes: list[dict] | None, comment:
     sess.append_supplement(
         nodes or [],
         heading_text=(str(heading).strip() if heading else "响应内容"),
+        # 大卷走底稿骨架通道时逐条目标题 append，不需要每次强制分页（issue #67）
+        page_break=True if page_break is None else bool(page_break),
     )
     s["verified"] = False  # 信息信号：内容有改动，was_verified 置否（agent 应重验后再封存）
-    return {"slice_id": slice_id, "appended_nodes": len(nodes or []), "heading": heading or "响应内容"}
+    images = sum(
+        1 for n in (nodes or []) if isinstance(n, dict) and n.get("type") == "image"
+    )
+    return {
+        "slice_id": slice_id,
+        "appended_nodes": len(nodes or []),
+        "appended_images": images,
+        "heading": heading or "响应内容",
+    }
 
 
 def verify_slice(slice_id: str, task_id: int) -> dict:
@@ -1333,6 +1457,39 @@ async def package_zip(
                     f"但说明中 A2={a2}——请按限价锚定重算后重新打包"
                 )
         break
+    # 骨架覆盖审计信号（issue #67，只提示不拦截）：对照底稿该条目的顶层条目名，
+    # 报出成品里没出现的条目——交付件可能用了「章节号」体系（与底稿条目标号不同），
+    # 按名称硬判会误杀，所以这里只给信号，由验收/评审子 agent 判断。
+    skeleton_scan: dict[str, dict] = {}
+    try:
+        from app.services.export_service import (  # noqa: PLC0415
+            draft_item_top_names,
+            draft_paragraph_texts,
+        )
+        from app.services.storage import StorageProvider as _SP  # noqa: PLC0415
+
+        draft_id = draft_file_id
+        if not draft_id:
+            cand = await list_draft_candidates(session, enterprise_id, project_id)
+            draft_id = cand.get("recommended_file_id")
+        fobj_draft = await session.get(FileObject, int(draft_id)) if draft_id else None
+        if fobj_draft is not None:
+            path = _SP().open(fobj_draft.bucket, fobj_draft.object_key)
+            draft_texts = draft_paragraph_texts(str(path))
+            for a in item_arts:
+                names = draft_item_top_names(draft_texts, _item_key(_stem(a)))
+                if not names:
+                    continue
+                full = _norm(texts.get(a.id) or "")
+                missing = [n for n in names if _norm(n) not in full]
+                skeleton_scan[a.name] = {
+                    "draft_item": _item_key(_stem(a)),
+                    "draft_top_items": names,
+                    "missing": missing,
+                }
+    except Exception:  # noqa: BLE001 扫描失败不阻塞打包（信号类）
+        logger.warning("骨架覆盖扫描失败", exc_info=True)
+
     audit = {
         "checked": len(item_arts),
         "coverage_ok": not missing_items,
@@ -1344,6 +1501,7 @@ async def package_zip(
         "bare_pending": bare_pending,
         "bare_pending_count": sum(len(v) for v in bare_pending.values()),
         "docx_quality": docx_quality,
+        "skeleton_scan": skeleton_scan,
     }
 
     buf = _io.BytesIO()

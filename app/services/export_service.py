@@ -494,8 +494,55 @@ class _FillSession:
                         run = cell.paragraphs[0].add_run(fill(str(row[ci])) if ci < len(row) else "")
                         run.font.size = Pt(10.5)
                         run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
+            elif ntype == "image":
+                self.add_image_block(
+                    node.get("_data"),
+                    width_cm=node.get("width_cm"),
+                    caption=node.get("caption"),
+                )
             elif t.strip():
                 self.doc.add_paragraph(fill(t))
+
+    def add_image_block(self, data: bytes | None, width_cm=None, caption=None):
+        """图片块：按可用宽/高帽等比缩放居中插入；题注楷体 10.5 居中且**不写大纲级别**
+        （题注进大纲会把 Word 导航与 PDF 书签冲成一堆图注，issue #66）。
+
+        data 由调用方（assembly_service.resolve_image_nodes）从企业资料库或本地路径解析后内联传入。
+        """
+        import io as _io
+
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Cm
+
+        if not data:
+            raise ValueError(
+                "图片节点缺少可用来源：请给 file_id（企业资料库原件，可带 page）或 "
+                "path（/tmp、/data/hermes 下的本地图片）"
+            )
+        qn = self._qn
+        Pt = self._Pt
+        width = min(float(width_cm or 15.0), 16.0)
+        max_h = 23.2  # 图 + 图注同页的高度帽（A4、上下边距 2cm 场景）
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(_io.BytesIO(data)) as im:
+                w, h = im.size
+            if w and width * (h / float(w)) > max_h:
+                width = max_h / (h / float(w))
+        except Exception:  # noqa: BLE001 尺寸读不到就按请求宽度插
+            pass
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run().add_picture(_io.BytesIO(data), width=Cm(width))
+        if caption:
+            cap = self.doc.add_paragraph()
+            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r = cap.add_run(str(caption))
+            r.font.name = "Times New Roman"
+            r._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "楷体")
+            r.font.size = Pt(10.5)
+        return p
 
     def finish(self) -> bytes:
         self.editor.write_comments_part()
@@ -522,6 +569,61 @@ def _scan_remaining(root, limit: int = 30) -> list[dict]:
         if len(items) >= limit:
             break
     return items
+
+
+def draft_paragraph_texts(path: str) -> list[str]:
+    """读底稿 docx 的段落文本序列（骨架覆盖扫描用；只读，不做任何修改）。"""
+    from docx import Document
+
+    return [p.text for p in Document(str(path)).paragraphs]
+
+
+_CHAPTER_LINE_RE = re.compile(r"^\s*[（(]\s*[一二三四五六七八九十百]+\s*[）)]")
+_TOP_ITEM_RE = re.compile(r"^\s*(\d{1,2})\s*[.、]?\s*(\S.*)$")
+
+
+def draft_item_top_names(texts, item_key: str, limit: int = 30) -> list[str]:
+    """底稿某条目的**顶层**条目名清单（issue #67 骨架覆盖审计信号）。
+
+    只取编号连续递增的顶层条目（1、2、3……）：子项（1.1）因「编号后紧跟数字」被排除，
+    节内说明行因编号复位到 1、与递增序列冲突也被排除；遇到下一个（X）条目行结束。
+    名称截到第一个括号前，便于做「去标点包含」判定。
+    """
+    if not item_key:
+        return []
+    start = None
+    for i, t in enumerate(texts):
+        s = (t or "").strip()
+        if item_key in s and len(s) <= 60:
+            start = i
+            break
+    if start is None:
+        return []
+    out: list[str] = []
+    expect = 1
+    for raw in texts[start + 1 :]:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        if _CHAPTER_LINE_RE.match(s) and len(s) <= 60:
+            break
+        m = _TOP_ITEM_RE.match(s)
+        if not m:
+            continue
+        if m.group(2)[:1].isdigit():  # 1.1 / 1.2 … 子项
+            continue
+        if int(m.group(1)) != expect:
+            continue
+        name = m.group(2).strip()
+        head = re.split(r"[（(]", name, maxsplit=1)[0].strip()
+        name = head if len(head) >= 2 else name
+        if len(name) < 2:
+            continue
+        out.append(name[:40])
+        expect += 1
+        if len(out) >= limit:
+            break
+    return out
 
 
 def tables_inventory(root, header_limit: int = 20, row_limit: int = 6, cell_limit: int = 14) -> list[dict]:

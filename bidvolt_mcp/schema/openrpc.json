@@ -1491,7 +1491,7 @@
     },
     {
       "name": "append_template_slice",
-      "summary": "成文工具（机制）：把撰写内容直接追加为切片正文（无修订、无批注）。nodes 支持 {type:heading|paragraph|table,text/rows} 或裸字符串；heading 为总标题，按投标文体自定（方案类条目正文追加用），不传用中性默认「响应内容」。",
+      "summary": "成文工具（机制）：把撰写内容直接追加为切片正文（无修订、无批注）。nodes 支持 {type:heading|paragraph|table,text/rows}、**{type:image}** 或裸字符串；heading 为总标题，按投标文体自定（方案类条目正文追加用），不传用中性默认「响应内容」。**image 节点（大卷走底稿骨架通道插证据图用，issue #67）**：两种来源——{type:'image', file_id:<企业资料库原件 file_id>, page:<PDF 页码，可选>, width_cm:<默认15，上限16>, caption:'图：…'}，或 {type:'image', path:'/tmp 或 /data/hermes 下的本地图片', width_cm, caption}；服务端按宽 ≤16cm、高 ≤23.2cm 等比缩放居中插入，题注用楷体 10.5 居中且不写大纲级别。缺来源 / 路径越界 / 文件不存在 / 单张超 12MB 一律报错（证据图缺失=判不过）。page_break=false 时不强制分页（逐条目标题 append 时用）。",
       "params": [
         {
           "name": "args",
@@ -1513,6 +1513,10 @@
               "heading": {
                 "type": "string",
                 "description": "追加节标题（投标文体，如该条目章节名）"
+              },
+              "page_break": {
+                "type": "boolean",
+                "description": "追加前是否分页（默认 true；按条目标题逐段 append 时装 false）"
               }
             },
             "required": [

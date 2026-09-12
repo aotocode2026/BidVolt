@@ -3,6 +3,74 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-12-2200-feat-slice-image-node"></a>
+
+## 2026-09-12 22:00 · feat · 成文通道混合式：大卷走底稿骨架 + append 图片节点
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-12-2200-feat-slice-image-node |
+| datetime | 2026-09-12T22:00:00+08:00 |
+| type | feat |
+| status | released |
+| scope | assembly, agent-pipeline, hermes-skill, mcp |
+| related | issue #67, issue #66, issue #65 |
+
+### 为什么做这次更新
+
+两个"大卷"（商务补充文件、技术专项响应文件）此前走**整文件直写**通道：写作 agent 用
+`Document()` 从零重建，底稿只当素材。后果（项目 217 实测）：模板条目骨架被弱化——
+`（四）补充文件` 的二级子项「1.1 汇款凭证 / 1.2 响应保证金银行保函格式 / 1.3 响应保证金明细表 /
+1.4 银行基本账户证明」在交付件里一个独立标题都没有，被并成一句正文；同时不继承底稿的分节与
+页眉页脚（页码缺失的另一半成因，见 issue #65）。
+
+产品已确认成文通道走**混合式（方案①）**：大卷也必须从底稿骨架出发，用切片通道
+`slice_template_item → append_template_slice → verify → seal` 成文。阻塞点是
+`append_template_slice` 的节点只支持 heading / table / 段落，**没有图片节点**——
+而大卷的核心正是插证据扫描件，这也是当初绕开切片通道的直接原因。
+
+### 具体做了什么
+
+- `append_template_slice` 新增 **image 节点**（`app/services/export_service.py` +
+  `assembly_service.resolve_image_nodes`）：
+  - `{"type":"image","file_id":<企业资料库原件>,"page":<PDF 页码>,"width_cm":15,"caption":"图：…"}`
+    ——PDF 取指定页（150dpi 渲染 PNG）、图片直用；
+  - `{"type":"image","path":"/tmp/xxx.jpg", ...}`——服务器本地路径（白名单 `/tmp/`、
+    `/data/hermes/`、系统临时目录）；
+  - 服务端按宽 ≤16cm、高 ≤23.2cm 等比缩放居中插入；题注楷体 10.5 居中且**不写大纲级别**；
+    缺来源 / 路径越界 / 文件不存在 / 单张超 12MB 一律报错（证据图缺失=判不过）。
+- `append` 新增 `page_break` 参数（默认 true；逐条目标题 append 时传 false，不再每段强制分页），
+  回执新增 `appended_images` 与 `images_resolved`。
+- 规则落文：任务提示词（`agent_pipeline`）与 Hermes SKILL 明确"大卷先抽底稿骨架、正文/表格/证据图
+  一律 append 挂到对应条目标题之下；`upload_deliverable_file` 仅用于底稿中定位不到的条目或 xlsx/pdf"。
+- 打包新增**骨架覆盖审计信号** `skeleton_scan`：对照底稿该条目的顶层条目名，报出成品里未出现的条目。
+  **不做硬门禁**——实测交付件使用"章节号"体系（948 从 3.1 起），与底稿"条目标号"不同体系，
+  按名称硬判会误杀（948 名称命中 10/12，缺的 2 项内容其实都在、只是措辞不同），故只作信号，
+  由验收/评审子 agent 判断。
+
+### 影响范围
+
+- `POST /assembly/slices/{slice_id}/append` 支持 `image` 节点与 `page_break`，回执新增两个字段；
+- 成文工具链的推荐通道变为"大卷也走切片骨架"，整文件直写降级为兜底；
+- 打包回执/manifest 的 `audit` 新增 `skeleton_scan`。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；无破坏性变更（原有 heading/table/段落节点与裸字符串行为不变）。
+
+### 验证方式
+
+- 新增 `tests/module/test_slice_append_image.py`（4 例：path 插图 + 宽度帽 16cm + 题注楷体且
+  不进大纲 + 媒体部件入库 / 路径白名单拦截 / 缺来源报错 / file_id 来源与跨企业拦截）。
+- `tests/module` 全量 **234 passed**，4 项失败均为 HEAD 上既有失败
+  （pre_chat ×2 / alembic / market_knowledge）。
+- 服务器：`import` 冒烟 + healthz（部署后）。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker；image 节点是新增能力，回退后旧调用不受影响
+（大卷仍需用整文件直写通道）。
+
 <a id="2026-09-12-1900-fix-deliverable-pagenum-outline"></a>
 
 ## 2026-09-12 19:00 · fix · 交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定

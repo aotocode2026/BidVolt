@@ -39,6 +39,15 @@
 > 由服务端自动做交付归一化——按模板口径补/接回页码页脚（居中、9pt、单个 PAGE 域，每页都显示）、
 > 清除题注与超深大纲级别噪声（`outlineLvl ≥ 6`），回执带 `normalize` 计数；
 > `package_response_zip` 对**缺页码**或**含大纲级别噪声**的正式 docx 直接拒绝打包并列出文件名。
+>
+> **2026-09-12 起（issue #67）**：成文通道改**混合式**——两个大卷（补充文件 / 专项响应文件）
+> 也必须走底稿骨架通道：`slice_template_item` 抽骨架 → 逐条目标题
+> `append_template_slice(nodes=[…], heading=该节标题, page_break=false)` 写正文/表格 →
+> 证据扫描件用 **image 节点**（`{"type":"image","file_id":…,"page":…}` 取企业资料库原件，
+> 或 `{"type":"image","path":"/tmp/…"}` 取本地图片；服务端等比缩放居中、题注不进大纲）→
+> `verify_template_slice` → `seal_template_item`。`upload_deliverable_file` 降级为兜底
+> （仅底稿中定位不到的条目或 xlsx/pdf）。`package_response_zip` 回执的 `audit.skeleton_scan`
+> 给出「底稿顶层条目名 vs 成品」的缺失信号，供验收核对（只提示、不硬判）。
 
 > 进度展示说明：不设进度类 MCP 工具。Hermes 流式输出经后端**过滤为白名单事件**（phase/status/percent/当前工作/简短依据/操作提示）后 SSE 推送前端；**禁止透传思维链、工具参数、返回值、内部ID、凭据、错误栈**（产品决策 D-E）。
 

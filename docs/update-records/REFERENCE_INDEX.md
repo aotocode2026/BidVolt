@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-12 22:00 | #65 | issue | [成文通道混合式：大卷走底稿骨架 + append 图片节点](UPDATE_LOG.md#2026-09-12-2200-feat-slice-image-node) |
+| 2026-09-12 22:00 | #66 | issue | [成文通道混合式：大卷走底稿骨架 + append 图片节点](UPDATE_LOG.md#2026-09-12-2200-feat-slice-image-node) |
+| 2026-09-12 22:00 | #67 | issue | [成文通道混合式：大卷走底稿骨架 + append 图片节点](UPDATE_LOG.md#2026-09-12-2200-feat-slice-image-node) |
 | 2026-09-12 19:00 | #16 | discussion | [交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定](UPDATE_LOG.md#2026-09-12-1900-fix-deliverable-pagenum-outline) |
 | 2026-09-12 19:00 | #65 | issue | [交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定](UPDATE_LOG.md#2026-09-12-1900-fix-deliverable-pagenum-outline) |
 | 2026-09-12 19:00 | #66 | issue | [交付 docx 页码归一化 + 大纲噪声清除 + 悬空引用判定](UPDATE_LOG.md#2026-09-12-1900-fix-deliverable-pagenum-outline) |

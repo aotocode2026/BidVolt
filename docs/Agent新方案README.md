@@ -118,13 +118,22 @@ Worker ── run_agent_pipeline ──③ PTY 长驻启动──▶  Hermes 主
 | `get_template_outline` | 模板清单（价格/商务/技术分组，每项带 req_id） |
 | `slice_template_item(file_id, req_id)` | 底稿条目区间**字节级复制**为切片（保留格式）→ slice_id |
 | `fill_template_slice(slice_id, fields, fills)` | 修订模式填空+批注（标准字段+定向替换；未知空位原位【待补充】） |
-| `append_template_slice(slice_id, nodes, comment)` | 撰写内容修订插入+批注 |
+| `append_template_slice(slice_id, nodes, comment, heading, page_break)` | 撰写内容追加（heading/段落/**表格**/**图片**节点） |
 | `verify_template_slice(slice_id)` | **逐字校验原文⊂底稿**，返回 issues（先 verify 后 seal） |
 | `seal_template_item(slice_id, dir, filename)` | 生成条目 docx 落产物库 → artifact_id |
 | `build_quote_xlsx(sheets)` | 报价单 xlsx 落产物库 |
 | `package_response_zip(artifact_ids, draft_file_id)` | 打包（自动附会话记录+manifest）→ zip 产物 |
 
 机制保真红线：切片=复制原件；改动=修订+批注；校验=原文逐字⊂底稿。写什么、按什么顺序、封存哪些条目，全部由主会话决定。
+
+**成文通道混合式（2026-09-12 起，issue #67）**：两个"大卷"（商务补充文件、技术专项响应文件）
+也必须走**底稿骨架通道**——`slice_template_item` 抽骨架 → 逐条目标题
+`append_template_slice(nodes=[...], heading=该节标题, page_break=false)` 写正文/表格 →
+证据扫描件用 **image 节点**挂到对应条目之下（`{"type":"image","file_id":…,"page":…}` 取企业资料库
+原件，或 `{"type":"image","path":"/tmp/…"}` 取本地图片；服务端等比缩放居中、题注不进大纲）→
+`verify_template_slice` → `seal_template_item`。`upload_deliverable_file` 降级为兜底：
+仅用于底稿中确实定位不到的条目或 xlsx/pdf。打包回执带 `skeleton_scan` 信号（对照底稿顶层条目名
+报缺失）供验收核对——交付件常用"章节号"体系，与底稿条目标号体系不同，故该信号只提示、不硬判。
 
 **交付 docx 归一化（2026-09-12 起，issue #65/#66）**：所有写入 docx 的入口
 （`seal_template_item` / `upload_deliverable_file` / 覆盖上传 / 远端保存）由服务端自动做一遍归一化——
