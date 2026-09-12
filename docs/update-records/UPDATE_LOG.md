@@ -12,7 +12,7 @@
 | id | 2026-09-12-1400-feat-presentation-preview |
 | datetime | 2026-09-12T14:00:00+08:00 |
 | type | feat |
-| status | proposed |
+| status | released |
 | scope | files, preview, deploy |
 | related | issue #64, issue #63 |
 
@@ -43,6 +43,9 @@ writer/calc，缺 `libreoffice-impress`，因此 `.ppt` 上传在解析阶段即
 - `tests/module/test_preview_api.py` 新增演示文稿转 PDF 用例，扩展 `preview_kind` 映射断言；
 - 服务器实测：真实 `.pptx`（项目 217 供应商投标注意事项）Impress 转 PDF 成功；
   由该 pptx 转出真实 `.ppt`（OLE2 头 `d0cf11e0a1b11ae1`）后上传，解析成功且预览返回 PDF。
+- 生产实测明细：`.pptx` 预览 15 页 / 1.03MB；真实 `.ppt` 上传解析成功（`status=3`、无 error）、
+  `preview_kind=pdf`、预览 15 页 / 984KB、`%PDF-1.6` 头正确。
+- 服务器 HEAD `2d9bea3`，app/worker 重启后 `healthz ok`。
 
 ### 回滚方式
 
