@@ -591,19 +591,16 @@ def draft_item_top_names(texts, item_key: str, limit: int = 30) -> list[str]:
     """
     if not item_key:
         return []
-    # 优先锚定「（X）条目」行——底稿的目录/正文里也会出现条目名，锚错会把别的条目清单算进来
+    # 只认「（X）条目」行做锚点（长度放宽到 80 字，容纳带上传路径说明的条目行）。
+    # 底稿里条目名也会出现在正文列表行（如「1.技术偏差表」「1. 法定代表人（单位负责人）授权委托书」），
+    # 从那种行往下扫会把**后面条目的清单**当成自己的，得出"12 项全缺"这类假信号——
+    # 拿不到「（X）条目」锚点就**不产出信号**（宁缺勿假，信号由验收环节人工判断）。
     start = None
     for i, t in enumerate(texts):
         s = (t or "").strip()
-        if item_key in s and len(s) <= 60 and _CHAPTER_LINE_RE.match(s):
+        if len(s) <= 80 and _CHAPTER_LINE_RE.match(s) and item_key in s:
             start = i
             break
-    if start is None:
-        for i, t in enumerate(texts):
-            s = (t or "").strip()
-            if item_key in s and len(s) <= 60:
-                start = i
-                break
     if start is None:
         return []
     out: list[str] = []

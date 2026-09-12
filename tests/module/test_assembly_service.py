@@ -393,6 +393,8 @@ def test_draft_item_top_names_prefers_chapter_line():
     ]
     names = draft_item_top_names(texts, "专项响应文件")
     assert names == ["业绩文件", "项目团队情况"], names
+    # 没有「（X）条目」锚点的条目（只在正文列表行出现）不给信号，避免假缺失
+    assert draft_item_top_names(texts, "商务偏差表") == []
 
 
 def test_package_ignores_conflict_value_that_is_substring_of_longer_number(client, monkeypatch):
