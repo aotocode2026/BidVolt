@@ -202,6 +202,8 @@ hub 的 `bidvolt-agent-pipeline` 讲流程；本 skill 讲机制——流程依�
 - **编号冲突门禁**（「交付件含二次识别冲突的编号（资料库 numbers_conflict…）」）：门禁语义=收集**全库** `image_description.numbers_conflict`，对每个交付 docx 的 document.xml 全文做 `v in full` **子串匹配**，命中即拒。推论①子串匹配 ⇒ 垃圾碎片误伤（低质 OCR 把他人执照碎片 `'1815'` 记 conflict → 命中信用代码 9111011318157964Q 的子串 '1815' → 三卷全拦，detail 报的却是碎片）；推论②conflict 集合含**当日凌晨后台批量识别新行**，识别方向可能搞反（把正确形态 verified 标成 conflict，202 实测 4b3e9cf5）。处置：查 image_description（description 是 **json 非 jsonb**）逐条算 conflict 与交付编号的子串重叠；方向反的行改回（verified=正确形态、conflict=形近变体，依据=同图多数历史行+vision 原件复核），垃圾碎片移除；复验 overlap=[] 再 package。**权威判定=numbers_verified+vision 原件复核**（S↔5、0↔O 形近逐字符问），正文写 verified 形态，改库不改正文。
 - 一轮 409 清完暴露下一轮（202 实况：字体 → S 冲突 → '1815' 冲突三连），逐个清到全绿；全套排查/SQL/修复脚本要点与配套技巧（跨任务 DB 导出大 bytea 别用 psql 管道、draft_file_id 用采购文件、docx 段区删除安全断言）见 `references/package-gate-409-playbook.md`。
 
+- **编号冲突门禁（issue #68 起服务端自动做一半）**：打包时服务端先汇总**全库 `numbers_verified`**，硬门禁集合= `{conflict 值} − {verified 值}`——某值若在语料其它图里被反复 verified（如企业信用代码 `91110111318157964Q`：verified×236 / conflict×1、发票号 `11001117300052507773`：verified×132 / conflict×2），说明它是正确读法、只是某图第二轮给出了形近变体，**不再拦打包**，只进 `audit.numbers_conflict_confirmed` 信号；真·未确认候选（如 `C1601J0253904821`：conflict×4 / verified×0）继续拒绝，手工改库（逐条算子串重叠、方向反的行改回）只在**两侧都未确认**时才需要。
+
 ## 支持文件
 
 - `references/package-gate-409-playbook.md` — package 409 门禁冲突处置手册（字体门禁 cell.text 根因与 zip 补丁/编号冲突子串门禁/识别方向翻转/大 bytea 导出/段区删除安全），用法见第 16 节。

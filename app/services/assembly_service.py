@@ -1300,19 +1300,34 @@ async def package_zip(
             "交付件存在大纲级别噪声（题注/图注不得写入大纲级别，正文最多 6 级标题）："
             + "；".join(outline_noise_files[:8])
         )
-    # 编号冲突值硬门禁（R12 教训：二次识别冲突值如 C1601J0253904821 未经对照原件处理
-    # 就留在交付件里——服务端按资料库 numbers_conflict 扫描，命中即拒绝）
+    # 二次识别冲突值硬门禁（R12 教训 + issue #68 修正）：只拦「从未被任何图确认过」的候选——
+    # 二次识别冲突值如 C1601J0253904821 未经对照原件处理就留在交付件里，命中即拒绝；
+    # 同一值若在语料其它图里以 numbers_verified 出现（企业统一社会信用代码、发票号这类
+    # 被反复读到的规范值），说明它是已确认的正确读法，只是某张图的第二轮给出了形近变体，
+    # 于是把正确值也写进了该图的 conflict 列表。误判案例：91110111318157964Q（conflict×1 /
+    # verified×236）、11001117300052507773（conflict×2 / verified×132）曾把项目 217 的
+    # 重新打包整包拦死；而真·未处理候选（如 C1601J0253904821：conflict×4 / verified×0）继续拦。
     conflict_values: set[str] = set()
+    confirmed_values: set[str] = set()
     try:
         from app.models.file import ImageDescription as _ID  # noqa: PLC0415
 
         _id_rows = await session.scalars(sa_select(_ID).where(_ID.description.is_not(None)))
+        verified_all: set[str] = set()
+        conflicts_all: set[str] = set()
         for _id_row in _id_rows:
-            for _c in ((_id_row.description or {}).get("numbers_conflict") or []):
+            _desc = _id_row.description or {}
+            for _v in _desc.get("numbers_verified") or []:
+                if isinstance(_v, str) and _v.strip():
+                    verified_all.add(_v.strip())
+            for _c in _desc.get("numbers_conflict") or []:
                 if isinstance(_c, str) and _c.strip():
-                    conflict_values.add(_c.strip())
+                    conflicts_all.add(_c.strip())
+        conflict_values = conflicts_all - verified_all
+        confirmed_values = conflicts_all & verified_all
     except Exception:  # noqa: BLE001 冲突清单读取失败不拦截
         conflict_values = set()
+        confirmed_values = set()
     conflict_hits: list[str] = []
     if conflict_values:
         for a in item_arts:
@@ -1332,6 +1347,19 @@ async def package_zip(
             "请对照扫描件原件确认正确写法后回修改文件再打包："
             + "；".join(conflict_hits[:8])
         )
+    # 已确认值命中：只作信号（该值在语料里被反复 verified，属于已确认读法）
+    confirmed_hits: list[str] = []
+    if confirmed_values:
+        for a in item_arts:
+            try:
+                with _zip.ZipFile(_io.BytesIO(a.content)) as zf:
+                    full = _elem_text(_etree.fromstring(zf.read("word/document.xml")))
+            except Exception:  # noqa: BLE001
+                continue
+            for v in confirmed_values:
+                if v in full:
+                    confirmed_hits.append(f"{a.name}（编号 {v}）")
+                    break
     # 信用代码长度硬门禁（福建 R4 教训：91 开头 17 位误读变体 9111011318157964Q
     # 混入证书描述与说明文字——18 位校验只覆盖了 slice 链路，追加/叙述文字漏网）
     _cc17_re = _re.compile(r"(?<![0-9A-Z])91[0-9A-Z]{15}(?![0-9A-Z])")
@@ -1502,6 +1530,7 @@ async def package_zip(
         "bare_pending_count": sum(len(v) for v in bare_pending.values()),
         "docx_quality": docx_quality,
         "skeleton_scan": skeleton_scan,
+        "numbers_conflict_confirmed": confirmed_hits,
     }
 
     buf = _io.BytesIO()

@@ -369,6 +369,74 @@ def _pack(maker, pid, task_id):
     return asyncio.run(_run())
 
 
+def _seed_image_desc(maker, sha: str, desc: dict) -> None:
+    from app.models.file import ImageDescription
+
+    async def _run():
+        async with maker() as session:
+            session.add(ImageDescription(sha256=sha, description=desc, model="test"))
+            await session.commit()
+
+    asyncio.run(_run())
+
+
+def test_package_blocks_unconfirmed_conflict_number(client, monkeypatch):
+    """issue #68：真·未处理候选（conflict 且从未被任何图 verified 过）继续拒绝打包。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    tid = _seed_pkg(
+        maker,
+        pid,
+        [
+            (
+                "价格文件/（一）响应函及报价汇总表.docx",
+                _docx_bytes(["（一）响应函及报价汇总表", "发票编号 C1601J0253904821"]),
+            ),
+            ("价格文件/（二）报价明细表.docx", _docx_bytes(["（二）报价明细表", "明细报价如下……"])),
+        ],
+    )
+    _seed_image_desc(
+        maker,
+        "c" * 64,
+        {"numbers_conflict": ["C1601J0253904821"], "numbers_verified": ["C1601J02S3904821"]},
+    )
+    with pytest.raises(ValueError, match="二次识别冲突"):
+        _pack(maker, pid, tid)
+    asyncio.run(engine.dispose())
+
+
+def test_package_allows_conflict_number_confirmed_in_corpus(client, monkeypatch):
+    """issue #68：同一值在语料其它图里被 verified 确认过（如企业信用代码）→ 不拦打包，
+    只进 numbers_conflict_confirmed 审计信号。"""
+    monkeypatch.setattr(settings, "agent_pipeline_enabled", 1)
+    _h, pid = _setup(client)
+    engine = create_async_engine("sqlite+aiosqlite:///" + TEST_DB)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    code = "91110111318157964Q"
+    tid = _seed_pkg(
+        maker,
+        pid,
+        [
+            (
+                "价格文件/（一）响应函及报价汇总表.docx",
+                _docx_bytes(["（一）响应函及报价汇总表", f"统一社会信用代码 {code}"]),
+            ),
+            ("价格文件/（二）报价明细表.docx", _docx_bytes(["（二）报价明细表", "明细报价如下……"])),
+        ],
+    )
+    # 一张图的 conflict 里出现该值（第二轮形近误读把它写成了候选）
+    _seed_image_desc(maker, "d" * 64, {"numbers_conflict": [code]})
+    # 另一张图把它作为 verified 读出来（同一张营业执照在别的页被正确识别）
+    _seed_image_desc(maker, "e" * 64, {"numbers_verified": [code]})
+
+    result = _pack(maker, pid, tid)
+    assert result["artifact_id"] > 0
+    assert any(code in h for h in result["audit"]["numbers_conflict_confirmed"])
+    asyncio.run(engine.dispose())
+
+
 def test_package_zip_rejects_missing_item(client, monkeypatch):
     """打包硬门禁（R8 教训）：is_file_item 条目未 seal 进包 → 直接拒绝打包并列出缺失条目。
     旧行为是「只给信号、照常出包」，已废弃——服务端保证结构完整，不依赖主会话自觉。"""

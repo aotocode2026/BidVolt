@@ -3,6 +3,60 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-13-0100-fix-conflict-gate-false-positive"></a>
+
+## 2026-09-13 01:00 · fix · 打包号冲突门禁去掉语料级误判（项目 217 重新打包解阻）
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-13-0100-fix-conflict-gate-false-positive |
+| datetime | 2026-09-13T01:00:00+08:00 |
+| type | fix |
+| status | released |
+| scope | assembly, deliverable, hermes-skill |
+| related | issue #68, issue #65, issue #67 |
+
+### 为什么做这次更新
+
+项目 217 响应文件包**无法重新打包**，被「二次识别冲突编号」硬门禁拦下，报的编号是
+`91110111318157964Q`（企业统一社会信用代码）与 `11001117300052507773`（发票号）。
+生产库核查：这两个值**不是待核实候选，而是语料级已确认的正确读法**——
+`91110111318157964Q` 在 `numbers_verified` 里出现 **236** 次、在 `numbers_conflict` 里只出现 1 次；
+`11001117300052507773` 分别 132 次 / 2 次。误判来源是某几张图的第二轮识别给出形近变体
+（`…9640`、`…52607773`），把第一轮读出的**正确值**也写进了 conflict 列表。
+
+全库统计：267 个冲突候选值中，17 个属于这种"在语料里已被 verified 确认"的误判；
+250 个是真·待核实（原始事故值 `C1601J0253904821`：conflict×4、verified×0，必须继续拦）。
+
+### 具体做了什么
+
+- `package_zip`：先汇总全库 `numbers_verified` 值集合，硬门禁集合改为
+  `{conflict 值} - {verified 值}`——只拦**从未被任何图确认过**的候选；
+- 新增审计信号 `audit.numbers_conflict_confirmed`：列出交付件中命中的"已确认但仍有冲突记录"
+  的值（文件级明细，只提示不拦截），供验收/评审子 agent 核对；
+- SKILL.md 的「编号冲突门禁」条目补充说明：服务端已自动做语料级交叉确认，
+  手工改库只在**两侧都未确认**时才需要。
+
+### 影响范围
+
+- `POST /assembly/package`：原先会被误拦的交付件现在可以出包；真·未处理候选仍然拒绝；
+- 回执/manifest 的 `audit` 新增 `numbers_conflict_confirmed`。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；不修改任何图片描述数据（只改服务端判定口径）。
+
+### 验证方式
+
+- 新增两条回归：`test_package_blocks_unconfirmed_conflict_number`（未确认候选仍拒绝）、
+  `test_package_allows_conflict_number_confirmed_in_corpus`（语料已确认值放行并进信号）；
+  `tests/module/test_assembly_service.py` 16 passed。
+- 生产：项目 217 用同一批 artifact 重新打包成功（详见 issue #68 收尾评论）。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker；门禁回到"conflict 值一律拦"的旧口径（会再次拦死 217 出包）。
+
 <a id="2026-09-12-2200-feat-slice-image-node"></a>
 
 ## 2026-09-12 22:00 · feat · 成文通道混合式：大卷走底稿骨架 + append 图片节点
