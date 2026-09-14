@@ -143,6 +143,131 @@ def test_build_checklists_retries_missing_rules(monkeypatch):
     assert len(calls) == 3
 
 
+# --------------------------------------------------------------------------- #
+# 档位一致性自检（issue #71）
+# --------------------------------------------------------------------------- #
+
+
+def test_apply_tier_consistency_corrects_fixed_tier():
+    """实测回归：规则"未参加绩效评价得 4 分"，模型给了 5 → 校正为 4。"""
+    tiers = [
+        {"label": "A", "condition": "A≥90", "min": 5, "max": 5},
+        {"label": "未参加绩效评价", "condition": "未参加绩效评价得4分", "min": 4, "max": 4},
+    ]
+    # 模型选了 A 档，但证据明确写"未参加绩效评价" → 证据优先，校正为 4 分
+    check = ev.apply_tier_consistency(
+        {
+            "got": 5.0,
+            "selected_tier": "A",
+            "element_results": [
+                {
+                    "element": "评价等级",
+                    "result": "hit",
+                    "quote": "本企业未参加中国电力科学研究院有限公司最近一年度组织的供应商绩效评价，按4分口径申报",
+                }
+            ],
+        },
+        tiers,
+    )
+    assert check["applied"] is True
+    assert check["to"] == 4.0
+
+
+def test_apply_tier_consistency_clamps_range_tier():
+    tiers = [{"label": "优", "condition": "27-30分", "min": 27, "max": 30}]
+    check = ev.apply_tier_consistency({"got": 33.0, "selected_tier": "优"}, tiers)
+    assert check["applied"] is True and check["to"] == 30.0
+    ok = ev.apply_tier_consistency({"got": 28.0, "selected_tier": "优"}, tiers)
+    assert ok == {}
+
+
+def test_apply_tier_consistency_flags_unknown_tier_for_reask():
+    """实测回归：规则 <15 人得 1 分，模型给了 3 且档位对不上 → 要求重问一次。"""
+    tiers = [
+        {"label": "≥30人", "condition": "≥30人得3分", "min": 3, "max": 3},
+        {"label": "≥15人", "condition": "≥15人得2分", "min": 2, "max": 2},
+        {"label": "<15人", "condition": "<15人得1分", "min": 1, "max": 1},
+    ]
+    check = ev.apply_tier_consistency(
+        {
+            "got": 3.0,
+            "selected_tier": "≥30人",
+            "element_results": [
+                {"element": "高职称人员数量", "result": "miss", "quote": "人员不足15人"}
+            ],
+        },
+        tiers,
+    )
+    assert check.get("need_reask") is True
+    # 档位对上时正常放行
+    ok = ev.apply_tier_consistency(
+        {
+            "got": 3.0,
+            "selected_tier": "≥30人",
+            "element_results": [{"element": "高职称人员数量", "result": "hit", "quote": "具备30人"}],
+        },
+        tiers,
+    )
+    assert ok == {}
+
+
+def test_apply_tier_consistency_skips_without_tiers_or_score():
+    assert ev.apply_tier_consistency({"got": 5.0}, []) == {}
+    assert ev.apply_tier_consistency({"got": None}, [{"label": "优", "min": 1, "max": 2}]) == {}
+
+
+def test_build_plan_guarantees_full_coverage_with_synthetic_fallback(monkeypatch):
+    """清单生成彻底失败时，用规则原文造兜底要素——不允许出现"清单为空"。"""
+    import asyncio
+
+    from app.services.llm import LLMClient
+
+    async def fake_chat(self, system, user):  # noqa: ANN001
+        return "not-a-json"
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    rules = [
+        {"content": "服务方案、管理组织评价：优27-30分", "category": "技术", "weight": 30},
+        {"content": "取得绿电证书或凭证得3分", "category": "商务", "weight": 3},
+    ]
+    plan = asyncio.run(ev.build_plan(rules, batch_size=5))
+    assert set(plan["elements"]) == {0, 1}  # 覆盖率 100%
+    assert all(v and v[0].get("synthetic") for v in plan["elements"].values())
+    assert plan["coverage"]["synthetic"] == 2
+    # 兜底要素仍带检索线索，保证能取到正文
+    assert plan["elements"][1][0]["keys"]
+
+
+def test_build_plan_parses_tiers(monkeypatch):
+    import asyncio
+    import json as _json
+
+    from app.services.llm import LLMClient
+
+    async def fake_chat(self, system, user):  # noqa: ANN001
+        return _json.dumps(
+            {
+                "checklists": [
+                    {
+                        "rule_index": 0,
+                        "elements": [{"element": "证书", "keys": ["绿证"], "evidence": "扫描件"}],
+                        "tiers": [
+                            {"label": "绿电绿证", "condition": "取得证书得3分", "min": 3, "max": 3},
+                            {"label": "未取得", "condition": "无", "min": 0, "max": 0},
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    plan = asyncio.run(ev.build_plan([{"content": "绿电证书", "category": "商务", "weight": 3}]))
+    assert plan["tiers"][0][0]["label"] == "绿电绿证"
+    assert plan["tiers"][0][0]["min"] == 3.0
+    assert plan["coverage"]["tiers"] == 2
+
+
 def test_select_by_index_for_fallback():
     selected = ev.select_by_index(_chunks(), [3, 1], budget=600)
     assert [c.index for c in selected] == [1, 3]

@@ -910,10 +910,12 @@ async def _score_rule_with_llm(rule: dict, context: dict) -> dict:
     from app.services.llm import LLMClient, try_extract_json
 
     checklist = context.get("checklist") or []
+    tiers = context.get("tiers") or []
     scope = context.get("scope") or {}
     map_text = context.get("map") or "（无目录）"
     chunks_text = context.get("chunks_text") or ""
     editorial = context.get("editorial") or ""
+    tier_note = context.get("tier_note") or ""
     fallback_note = "（本次为兜底：按目录由模型选块）" if scope.get("fallback") else ""
 
     parts = [
@@ -926,6 +928,14 @@ async def _score_rule_with_llm(rule: dict, context: dict) -> dict:
         _json.dumps(checklist, ensure_ascii=False) if checklist else "（未生成要素清单，按规则原文整体评审）",
         "",
     ]
+    if tiers:
+        parts += [
+            "【本规则的档位表（定分必须落在所选档位：got 取该档分值/区间内，并在 selected_tier 写明档位名）】",
+            _json.dumps(tiers, ensure_ascii=False),
+            "",
+        ]
+    if tier_note:
+        parts += [f"【上次评审的档位问题（请据此重新定分）】{tier_note}", ""]
     if editorial:
         parts += [
             "【编制方自述：索引与风险提示（仅供定位与提示，**严禁作为得分依据**；"
@@ -945,6 +955,7 @@ async def _score_rule_with_llm(rule: dict, context: dict) -> dict:
         "请按系统要求只输出一个 JSON 对象作为评审结论，并额外包含：",
         '"element_results":[{"element":"要素名","result":"hit|partial|miss",'
         '"quote":"成果原文片段或 null","note":"简短说明"}]，',
+        '"selected_tier":"所选档位的 label（与档位表一致；无档位表则 null）"，',
         '"evidence_scope":{"chunks_provided":N,"chunks_total":M,"scope_limited":true|false}。',
         "注意：①只要本节提供的正文里有对应事实或证据，就按规则正常判档给分（hit/partial），"
         "不要因为“还有章节没提供”而整体降级；②确实找不到证据时才判 insufficient_evidence，"
@@ -1082,6 +1093,9 @@ def _item_from_llm_result(rule: dict, parsed: dict) -> dict:
                 ),
             },
             "chunks_provided": rule.get("_chunks_provided") or [],
+            # issue #71：档位表与一致性自检（校正/重问）结果
+            "tiers": rule.get("_tiers") or [],
+            "tier_check": rule.get("_tier_check") or {},
         },
     }
 
@@ -1161,6 +1175,8 @@ async def _persist_substantive_score(
             "reference_rules": (plan_meta or {}).get("reference_rules") or [],
             "category_scores": category_scores,
             "rules": rules_list,
+            # issue #71：核验要素清单覆盖率（合成兜底条数 / 无档位表条数）
+            "checklist_coverage": (plan_meta or {}).get("checklist_coverage") or {},
         },
     )
     session.add(score)
@@ -1366,13 +1382,17 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
             editorial_hints = _ev.build_editorial_hints(a["content"])
             break
     try:
-        checklists = await _ev.build_checklists(frozen_rules)
+        plan = await _ev.build_plan(frozen_rules)
     except Exception:  # noqa: BLE001 清单生成失败不阻塞评审（退化为按规则原文整体评审）
-        checklists = {}
+        plan = {"elements": {}, "tiers": {}, "coverage": {}}
+    checklists = plan.get("elements") or {}
+    tiers_by_rule = plan.get("tiers") or {}
+    checklist_coverage = plan.get("coverage") or {}
     await _progress(
         29,
         f"已按标题切分 {len(chunks)} 个内容块，生成 "
-        f"{sum(len(v) for v in checklists.values())} 个核验要素，开始逐条定向评审…",
+        f"{sum(len(v) for v in checklists.values())} 个核验要素 / "
+        f"{sum(len(v) for v in tiers_by_rule.values())} 条档位，开始逐条定向评审…",
     )
 
     for idx, rule in enumerate(frozen_rules, start=1):
@@ -1406,25 +1426,37 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
             **rule,
             "_file_blocks": readable,
             "_checklist": checklist,
+            "_tiers": tiers_by_rule.get(idx - 1, []),
             "_scope": scope,
             "_chunks_provided": [
                 {"index": c.index, "label": c.label, "chars": c.chars} for c in selected
             ],
         }
-        parsed = await _score_rule_with_llm(
-            rule,
-            {
-                "checklist": checklist,
-                "scope": scope,
-                "map": _ev.chunk_map(chunks),
-                "chunks_text": _ev.render_chunks(selected),
-                "editorial": (
-                    _ev.editorial_block(editorial_hints, rule.get("content") or "", keys)
-                    if editorial_hints
-                    else ""
-                ),
-            },
-        )
+        context = {
+            "checklist": checklist,
+            "tiers": tiers_by_rule.get(idx - 1, []),
+            "scope": scope,
+            "map": _ev.chunk_map(chunks),
+            "chunks_text": _ev.render_chunks(selected),
+            "editorial": (
+                _ev.editorial_block(editorial_hints, rule.get("content") or "", keys)
+                if editorial_hints
+                else ""
+            ),
+        }
+        parsed = await _score_rule_with_llm(rule, context)
+        # 档位一致性自检（issue #71）：证据到位但档位算错时校正；对不上档位表就重问一次
+        tier_check = _ev.apply_tier_consistency(parsed, context["tiers"])
+        if tier_check.get("need_reask"):
+            reasked = await _score_rule_with_llm(
+                rule, {**context, "tier_note": tier_check.get("reason") or ""}
+            )
+            recheck = _ev.apply_tier_consistency(reasked, context["tiers"])
+            if not recheck.get("need_reask"):
+                parsed, tier_check = reasked, recheck
+        if tier_check.get("applied"):
+            parsed = {**parsed, "got": tier_check["to"]}
+        rule["_tier_check"] = tier_check
         items_data.append(_item_from_llm_result(rule, parsed))
 
     # 权重/公式类规则不逐项打分，作为 not_applicable 条目进入评分计划，
@@ -1497,6 +1529,7 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
         plan_meta={
             "method": "按招标评分细则逐条实质评审（预评估，不代表采购方最终专家评分）",
             "weight_config": _parse_weight_config(reference_rules),
+            "checklist_coverage": checklist_coverage,
             "reference_rules": [
                 {
                     "rule_id": r["requirement_id"],

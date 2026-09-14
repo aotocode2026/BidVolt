@@ -343,9 +343,13 @@ _CHECKLIST_SYSTEM = (
     "keys（用于在标书里定位的检索线索词 2-6 个，用投标文件里可能出现的措辞）、"
     "criteria（该要素达标口径，按规则档位写）；\n"
     "3. 每条规则 2-8 个要素，覆盖该规则全部得分要点；扣分型条款写明\u201c不触发即不得分也不扣分\u201d；\n"
-    "4. 只输出严格 JSON，不要 Markdown 围栏、不要解释文字，格式：\n"
+    "4. 另外把该规则的**档位表**按原文抄成 tiers（没有明确档位就给空数组），每档给："
+    "label（档位名，如 优/良/一般、A/B/C/D/E、≥30人、<15人、未参加绩效评价、每项加分）、"
+    "condition（触发条件原文）、min/max（该档对应的分值区间，单个分值则 min=max；无法确定填 null）；\n"
+    "5. 只输出严格 JSON，不要 Markdown 围栏、不要解释文字，格式：\n"
     '{"checklists":[{"rule_index":0,"elements":[{"element":"…","evidence":"…",'
-    '"keys":["…"],"criteria":"…"}]}]}'
+    '"keys":["…"],"criteria":"…"}],"tiers":[{"label":"…","condition":"…",'
+    '"min":0,"max":0}]}]}'
 )
 
 
@@ -359,13 +363,24 @@ def _rule_prompt_lines(rules: list[dict], offset: int = 0) -> str:
     return "\n".join(lines)
 
 
-def _parse_checklists(reply: str) -> dict[int, list[dict]]:
+def _coerce_num(value) -> float | None:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_checklists(reply: str) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
+    """解析 LLM 回执 → (要素清单, 档位表)。"""
     from app.services.llm import LLMClient, try_extract_json
 
     parsed = try_extract_json(reply)
-    out: dict[int, list[dict]] = {}
+    elements_out: dict[int, list[dict]] = {}
+    tiers_out: dict[int, list[dict]] = {}
     if not isinstance(parsed, dict):
-        return out
+        return elements_out, tiers_out
     for item in parsed.get("checklists") or []:
         if not isinstance(item, dict):
             continue
@@ -386,21 +401,64 @@ def _parse_checklists(reply: str) -> dict[int, list[dict]]:
                 }
             )
         if elements:
-            out[idx] = elements[:8]
-    return out
+            elements_out[idx] = elements[:8]
+        tiers = []
+        for t in item.get("tiers") or []:
+            if not isinstance(t, dict):
+                continue
+            label = str(t.get("label") or "").strip()
+            lo, hi = _coerce_num(t.get("min")), _coerce_num(t.get("max"))
+            if lo is None and hi is not None:
+                lo = hi
+            if hi is None and lo is not None:
+                hi = lo
+            if not label and lo is None:
+                continue
+            tiers.append(
+                {
+                    "label": label[:30],
+                    "condition": str(t.get("condition") or "")[:60],
+                    "min": lo,
+                    "max": hi,
+                }
+            )
+        if tiers:
+            tiers_out[idx] = tiers[:8]
+    return elements_out, tiers_out
 
 
-async def build_checklists(rules: list[dict], batch_size: int = 5, retry_missing: int = 6) -> dict[int, list[dict]]:
-    """生成规则的"待核验要素清单"。
+def _synthetic_checklist(rule: dict) -> list[dict]:
+    """清单生成失败时的兜底：用规则原文与关键词造一条"整体核验"要素，保证不为空。"""
+    keys = keys_from_rule_text(rule.get("content") or "")
+    return [
+        {
+            "element": str(rule.get("content") or "")[:60],
+            "evidence": "按规则原文逐项核验投标文件中的对应事实与证明材料",
+            "keys": keys,
+            "criteria": f"按满分 {rule.get('weight')} 分与规则原文档位判定",
+            "synthetic": True,
+        }
+    ]
 
-    分批调用（默认每批 5 条）以提高 JSON 解析成功率；批内漏掉的规则**逐条补生成**
-    （上限 retry_missing 条，控制成本）。返回 {规则序号: 要素列表}。
+
+async def build_plan(
+    rules: list[dict],
+    batch_size: int = 5,
+    retry_missing: int = 99,
+) -> dict:
+    """生成规则的「待核验要素清单 + 档位表」（issue #70 / #71）。
+
+    分批调用（默认每批 5 条）以提高 JSON 解析成功率；批内漏掉的规则**逐条再试两轮**；
+    仍拿不到就用规则原文造一条兜底要素（`synthetic=True`）——保证**覆盖率 100%**，
+    不再出现"清单为空 → 检索零命中 → 大面积误判证据不足"的回归。
+    返回 {"elements": {i: [...]}, "tiers": {i: [...]}, "coverage": {...}}。
     """
     from app.services.llm import LLMClient
 
+    elements: dict[int, list[dict]] = {}
+    tiers: dict[int, list[dict]] = {}
     if not rules:
-        return {}
-    out: dict[int, list[dict]] = {}
+        return {"elements": elements, "tiers": tiers, "coverage": {"rules": 0}}
     for start in range(0, len(rules), batch_size):
         batch = rules[start : start + batch_size]
         try:
@@ -409,18 +467,47 @@ async def build_checklists(rules: list[dict], batch_size: int = 5, retry_missing
             )
         except Exception:  # noqa: BLE001 单批失败不阻塞，交由逐条补齐
             continue
-        out.update(_parse_checklists(reply))
+        els, tls = _parse_checklists(reply)
+        elements.update(els)
+        tiers.update(tls)
 
-    missing = [i for i in range(len(rules)) if i not in out][: max(retry_missing, 0)]
-    for i in missing:
-        try:
-            reply = await LLMClient().chat(
-                _CHECKLIST_SYSTEM, _rule_prompt_lines([rules[i]], offset=i)
-            )
-        except Exception:  # noqa: BLE001
-            continue
-        out.update(_parse_checklists(reply))
-    return out
+    # 逐条重试（两轮），仍失败则用规则原文兜底
+    for _round in range(2):
+        missing = [i for i in range(len(rules)) if i not in elements][
+            : max(retry_missing, 0)
+        ]
+        if not missing:
+            break
+        for i in missing:
+            try:
+                reply = await LLMClient().chat(
+                    _CHECKLIST_SYSTEM, _rule_prompt_lines([rules[i]], offset=i)
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            els, tls = _parse_checklists(reply)
+            elements.update(els)
+            tiers.update(tls)
+
+    synthetic = 0
+    for i, rule in enumerate(rules):
+        if i not in elements:
+            elements[i] = _synthetic_checklist(rule)
+            synthetic += 1
+    coverage = {
+        "rules": len(rules),
+        "elements": sum(len(v) for v in elements.values()),
+        "tiers": sum(len(v) for v in tiers.values()),
+        "synthetic": synthetic,
+        "rules_without_tiers": [i for i in range(len(rules)) if not tiers.get(i)],
+    }
+    return {"elements": elements, "tiers": tiers, "coverage": coverage}
+
+
+async def build_checklists(rules: list[dict], batch_size: int = 5) -> dict[int, list[dict]]:
+    """兼容旧调用：只返回要素清单。"""
+    plan = await build_plan(rules, batch_size=batch_size)
+    return plan["elements"]
 
 
 async def pick_chunks_by_llm(checklist: list[dict], chunks: list[Chunk], limit: int = 12) -> list[int]:
@@ -457,6 +544,134 @@ def select_by_index(chunks: list[Chunk], indexes: list[int], budget: int = RULE_
             selected.append(c)
             used += c.chars
     return selected
+
+
+# --------------------------------------------------------------------------- #
+# 档位一致性自检（issue #71）
+# --------------------------------------------------------------------------- #
+
+
+def _match_tier(label: str, tiers: list[dict]) -> dict | None:
+    if not label:
+        return None
+    key = label.strip()
+    for t in tiers:
+        if str(t.get("label") or "").strip() == key:
+            return t
+    for t in tiers:
+        tl = str(t.get("label") or "").strip()
+        if tl and (tl in key or key in tl):
+            return t
+    return None
+
+
+_THRESHOLD_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:人|项|份|个|年|次|%|万元|分)")
+_THRESHOLD_TIER_RE = re.compile(r"[≥≤<>＜＞]|不少于|不足|超过|达到|\d+\s*(?:人|项|份|个|年|次)")
+
+
+def _evidence_blob(elements: list | None) -> str:
+    if not elements:
+        return ""
+    parts = []
+    for e in elements:
+        if isinstance(e, dict):
+            parts.append(str(e.get("quote") or ""))
+            parts.append(str(e.get("note") or ""))
+    return " ".join(parts).replace(" ", "").replace("\n", "")
+
+
+def tier_by_evidence(tiers: list[dict], elements: list | None) -> dict | None:
+    """证据驱动定档：若要素引用里只指向**唯一**一个档位（按阈值词/档位名），以它为准。"""
+    blob = _evidence_blob(elements)
+    if not blob:
+        return None
+    cands: list[dict] = []
+    for t in tiers:
+        text = f"{t.get('label') or ''} {t.get('condition') or ''}".replace(" ", "")
+        toks = [x.replace(" ", "") for x in _THRESHOLD_TOKEN_RE.findall(text)]
+        hit = any(tok in blob for tok in toks)
+        if not hit and t.get("label") and len(str(t["label"])) >= 2 and str(t["label"]) in blob:
+            hit = True
+        if hit:
+            cands.append(t)
+    return cands[0] if len(cands) == 1 else None
+
+
+def _is_threshold_tier(tier: dict) -> bool:
+    text = f"{tier.get('label') or ''} {tier.get('condition') or ''}"
+    return bool(_THRESHOLD_TIER_RE.search(text))
+
+
+def apply_tier_consistency(parsed: dict, tiers: list[dict]) -> dict:
+    """按档位表校正得分（issue #71：实测出现"证据到了、档位算错"且方向是多给分）。
+
+    返回 `{applied, from, to, reason, need_reask}`：
+    - **证据优先**：要素引用只指向唯一档位时以该档为准（实测：证据写"未参加绩效评价"，
+      模型却给了 A 档 5 分）；
+    - 档位是固定分值而 got 不等 → 校正到该档分值；区间档位越界 → 夹到区间内；
+    - **门槛型档位**（含 ≥/≤/不少于/N人 等）但要素核验存在 miss → 判为档位可疑，
+      `need_reask=True`（实测：高职称人数档位 ≥30 人给 3 分，但要素引用写明"不足 15 人"）；
+    - 未给档位或档位对不上，且 got 不落在任何档位区间 → `need_reask=True`。
+    """
+    got = parsed.get("got")
+    if got is None or not tiers:
+        return {}
+    try:
+        got = float(got)
+    except (TypeError, ValueError):
+        return {}
+    elements = parsed.get("element_results") or []
+    selected = _match_tier(str(parsed.get("selected_tier") or ""), tiers)
+    evidence_tier = tier_by_evidence(tiers, elements)
+    tier = evidence_tier or selected
+    misses = [
+        e for e in elements if isinstance(e, dict) and e.get("result") == "miss"
+    ]
+    if tier is not None and _is_threshold_tier(tier) and misses:
+        return {
+            "need_reask": True,
+            "reason": (
+                f"所选档位「{tier.get('label')}」属数量/门槛型，但要素核验有 {len(misses)} 项未命中"
+                f"（如「{misses[0].get('element')}」{('- ' + str(misses[0].get('quote'))[:40]) if misses[0].get('quote') else ''}）"
+                "——请按档位表重新定档，不要越过未命中的门槛给高分。"
+            ),
+        }
+    if tier is None:
+        hits = [
+            t
+            for t in tiers
+            if t.get("min") is not None
+            and t.get("max") is not None
+            and float(t["min"]) <= got <= float(t["max"])
+        ]
+        if len(hits) == 1:
+            return {}
+        return {
+            "need_reask": True,
+            "reason": f"得分 {got} 与档位表不一致（所选档位：{parsed.get('selected_tier') or '未给出'}）",
+        }
+    lo, hi = tier.get("min"), tier.get("max")
+    if lo is None or hi is None:
+        return {}
+    lo, hi = float(lo), float(hi)
+    if lo == hi:
+        if abs(got - lo) < 1e-6:
+            return {}
+        return {
+            "applied": True,
+            "from": got,
+            "to": lo,
+            "reason": f"所选档位「{tier.get('label')}」固定为 {lo} 分",
+        }
+    if lo <= got <= hi:
+        return {}
+    to = min(max(got, lo), hi)
+    return {
+        "applied": True,
+        "from": got,
+        "to": to,
+        "reason": f"所选档位「{tier.get('label')}」分值区间为 {lo}-{hi}",
+    }
 
 
 # --------------------------------------------------------------------------- #
