@@ -946,9 +946,10 @@ async def _score_rule_with_llm(rule: dict, context: dict) -> dict:
         '"element_results":[{"element":"要素名","result":"hit|partial|miss",'
         '"quote":"成果原文片段或 null","note":"简短说明"}]，',
         '"evidence_scope":{"chunks_provided":N,"chunks_total":M,"scope_limited":true|false}。',
-        "注意：只有在本节提供的文本里找到证据才能判 hit；若认为证据可能在未提供的章节里，"
-        "请在 note 里写明“疑似未提供”并在 evidence_scope.scope_limited 标 true，"
-        "不要因此直接判 unsatisfied。",
+        "注意：①只要本节提供的正文里有对应事实或证据，就按规则正常判档给分（hit/partial），"
+        "不要因为“还有章节没提供”而整体降级；②确实找不到证据时才判 insufficient_evidence，"
+        "并在 note 写明“疑似未提供”、此时才把 evidence_scope.scope_limited 标 true；"
+        "③严禁把推测或编造当证据。",
     ]
     user = "\n".join(parts)
     last_reply: str | None = None
@@ -1072,7 +1073,14 @@ def _item_from_llm_result(rule: dict, parsed: dict) -> dict:
             # issue #70：评审输入的可核验轨迹（要素清单 / 逐要素结论 / 覆盖情况 / 实际读取的块）
             "checklist": rule.get("_checklist") or [],
             "element_results": parsed.get("element_results") or [],
-            "evidence_scope": parsed.get("evidence_scope") or rule.get("_scope") or {},
+            # 覆盖数据以服务端计算为准（模型的 evidence_scope 只作"是否受限"的补充信号）
+            "evidence_scope": {
+                **(rule.get("_scope") or {}),
+                "model_scope_limited": bool(
+                    isinstance(parsed.get("evidence_scope"), dict)
+                    and (parsed.get("evidence_scope") or {}).get("scope_limited")
+                ),
+            },
             "chunks_provided": rule.get("_chunks_provided") or [],
         },
     }
@@ -1374,18 +1382,26 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
         )
         checklist = checklists.get(idx - 1, [])
         keys = [k for e in checklist for k in (e.get("keys") or [])]
-        selected, scope = _ev.select_chunks(checklist, chunks)
-        if checklist and not scope.get("chunks_matched"):
-            # 兜底：关键词零命中才让模型按目录选块（只对少数规则触发）
+        # 规则原文词也作为检索线索（要素清单缺失时同样能取到正文）
+        rule_keys = _ev.keys_from_rule_text(rule.get("content") or "")
+        selected, scope = _ev.select_chunks(
+            checklist, chunks, extra_keys=rule_keys
+        )
+        if not selected:
+            # 兜底一：让模型按目录选块（只对检索零命中的规则触发）
             picked = await _ev.pick_chunks_by_llm(checklist, chunks)
             if picked:
                 selected = _ev.select_by_index(chunks, picked)
-                scope = {
-                    **scope,
-                    "fallback": True,
-                    "chunks_provided": len(selected),
-                    "chars_provided": sum(c.chars for c in selected),
-                }
+        if not selected:
+            # 兜底二：按评分类别取对应文件正文，保证模型至少有相关材料可读（不空手判"没写"）
+            selected = _ev.fallback_chunks_by_category(rule.get("category") or "", chunks)
+        if selected:
+            scope = {
+                **scope,
+                "fallback": bool(scope.get("fallback")) or not scope.get("chunks_matched"),
+                "chunks_provided": len(selected),
+                "chars_provided": sum(c.chars for c in selected),
+            }
         rule = {
             **rule,
             "_file_blocks": readable,

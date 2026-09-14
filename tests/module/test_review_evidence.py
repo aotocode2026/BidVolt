@@ -90,6 +90,59 @@ def test_select_chunks_zero_hit_triggers_fallback_signal():
     assert scope["chunks_matched"] == 0  # 调用方据此启用兜底选块
 
 
+def test_select_chunks_extra_keys_work_without_checklist():
+    """要素清单缺失时，规则原文词仍能取到正文（issue #70 首次上线回归的修复）。"""
+    selected, scope = ev.select_chunks([], _chunks(), extra_keys=["里程碑"])
+    assert [c.index for c in selected] == [3]
+    assert scope["chunks_matched"] == 1
+
+
+def test_keys_from_rule_text_extracts_terms():
+    keys = ev.keys_from_rule_text("服务方案、管理组织、设备设施配置的先进性、创新性……优27-30分")
+    assert "服务方案" in keys
+    assert "管理组织" in keys
+    assert len(keys) <= 12
+
+
+def test_fallback_chunks_by_category_prefers_matching_files():
+    chunks = [
+        ev.Chunk(1, 1, "技术文件/（二）专项响应文件.docx", "四、工作规划描述", "方案" * 100),
+        ev.Chunk(2, 2, "商务文件/（四）补充文件.docx", "八、科研创新", "激励" * 100),
+        ev.Chunk(3, 3, "内部管理文件/编制逻辑与评分响应记录.docx", "三、装订矩阵", "索引" * 100),
+    ]
+    tech = ev.fallback_chunks_by_category("技术", chunks, budget=1000)
+    assert [c.index for c in tech] == [1, 3]
+    biz = ev.fallback_chunks_by_category("商务", chunks, budget=1000)
+    assert [c.index for c in biz] == [2, 3]
+
+
+def test_build_checklists_retries_missing_rules(monkeypatch):
+    """批内漏掉的规则必须逐条补生成（第一次上线：批量调用解析失败 → 全部清单为空）。"""
+    import asyncio
+    import json as _json
+
+    from app.services.llm import LLMClient
+
+    calls: list[str] = []
+
+    async def fake_chat(self, system, user):  # noqa: ANN001
+        calls.append(user)
+        if "[rule_index=0]" in user and "[rule_index=1]" in user:
+            return "not-a-json"  # 整批解析失败
+        return _json.dumps(
+            {"checklists": [{"rule_index": int(user.split("rule_index=")[1][:1]),
+                             "elements": [{"element": "要素", "keys": ["关键词"]}]}]},
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    rules = [{"content": "规则A", "category": "技术", "weight": 10},
+             {"content": "规则B", "category": "商务", "weight": 5}]
+    out = asyncio.run(ev.build_checklists(rules, batch_size=5))
+    assert set(out) == {0, 1}  # 批量失败后逐条补齐
+    assert len(calls) == 3
+
+
 def test_select_by_index_for_fallback():
     selected = ev.select_by_index(_chunks(), [3, 1], budget=600)
     assert [c.index for c in selected] == [1, 3]

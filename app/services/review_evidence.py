@@ -235,9 +235,16 @@ def select_chunks(
     checklist: list[dict],
     chunks: list[Chunk],
     budget: int = RULE_BUDGET_CHARS,
+    extra_keys: list[str] | None = None,
 ) -> tuple[list[Chunk], dict]:
-    """按要素检索线索给块打分取文；返回 (选中块, 覆盖情况)。"""
-    keys = _normalize_keys([k for e in checklist for k in (e.get("keys") or [])])
+    """按检索线索给块打分取文；返回 (选中块, 覆盖情况)。
+
+    `extra_keys` 用于补充线索（如规则原文里的词）——要素清单缺失时也能检索，
+    避免"清单没生成 → 一个块都取不到 → 全部判证据不足"。
+    """
+    keys = _normalize_keys(
+        [k for e in checklist for k in (e.get("keys") or [])] + list(extra_keys or [])
+    )
     scored: list[tuple[int, int, Chunk]] = []
     for c in chunks:
         score = 0
@@ -278,6 +285,42 @@ def select_chunks(
     return selected, scope
 
 
+def keys_from_rule_text(text: str, limit: int = 12) -> list[str]:
+    """从规则原文抽检索线索（兜底用）：取 2-8 字的中文/英文片段。"""
+    out: list[str] = []
+    for term in re.split(r"[、，,。；;：:（）()【】\[\]\s/]+", str(text or "")):
+        term = term.strip()
+        term = re.sub(r"^(优|良|一般|得|加|扣|分|每|项|最高|\d+)+", "", term)
+        term = re.sub(r"(分|元|人|项|个)$", "", term)
+        if 2 <= len(term) <= 12 and term not in out:
+            out.append(term)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fallback_chunks_by_category(
+    category: str, chunks: list[Chunk], budget: int = RULE_BUDGET_CHARS
+) -> list[Chunk]:
+    """最后兜底：按评分类别取"该类别对应文件"的前若干块，保证模型至少有相关正文可读。"""
+    prefer = {
+        "技术": ("技术文件/", "内部管理文件/"),
+        "商务": ("商务文件/", "内部管理文件/"),
+        "价格": ("价格文件/", "内部管理文件/"),
+    }.get(str(category or "").strip(), ("技术文件/", "商务文件/", "内部管理文件/"))
+    picked: list[Chunk] = []
+    used = 0
+    for prefix in prefer:
+        for c in chunks:
+            if not c.file_name.startswith(prefix):
+                continue
+            if used + c.chars > budget:
+                break
+            picked.append(c)
+            used += c.chars
+    return picked
+
+
 def render_chunks(selected: list[Chunk]) -> str:
     return "\n\n".join(f"【块{c.index}｜{c.label}】\n{c.text}" for c in selected)
 
@@ -306,23 +349,19 @@ _CHECKLIST_SYSTEM = (
 )
 
 
-def _rule_prompt_lines(rules: list[dict]) -> str:
+def _rule_prompt_lines(rules: list[dict], offset: int = 0) -> str:
     lines = []
     for i, r in enumerate(rules):
         lines.append(
-            f"[rule_index={i}] 分类：{r.get('category')}｜满分：{r.get('weight')} 分｜"
+            f"[rule_index={offset + i}] 分类：{r.get('category')}｜满分：{r.get('weight')} 分｜"
             f"规则：{r.get('content')}"
         )
     return "\n".join(lines)
 
 
-async def build_checklists(rules: list[dict]) -> dict[int, list[dict]]:
-    """一次 LLM 调用生成全部规则的要素清单；解析失败返回空（调用方走原逻辑兜底）。"""
+def _parse_checklists(reply: str) -> dict[int, list[dict]]:
     from app.services.llm import LLMClient, try_extract_json
 
-    if not rules:
-        return {}
-    reply = await LLMClient().chat(_CHECKLIST_SYSTEM, _rule_prompt_lines(rules))
     parsed = try_extract_json(reply)
     out: dict[int, list[dict]] = {}
     if not isinstance(parsed, dict):
@@ -348,6 +387,39 @@ async def build_checklists(rules: list[dict]) -> dict[int, list[dict]]:
             )
         if elements:
             out[idx] = elements[:8]
+    return out
+
+
+async def build_checklists(rules: list[dict], batch_size: int = 5, retry_missing: int = 6) -> dict[int, list[dict]]:
+    """生成规则的"待核验要素清单"。
+
+    分批调用（默认每批 5 条）以提高 JSON 解析成功率；批内漏掉的规则**逐条补生成**
+    （上限 retry_missing 条，控制成本）。返回 {规则序号: 要素列表}。
+    """
+    from app.services.llm import LLMClient
+
+    if not rules:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for start in range(0, len(rules), batch_size):
+        batch = rules[start : start + batch_size]
+        try:
+            reply = await LLMClient().chat(
+                _CHECKLIST_SYSTEM, _rule_prompt_lines(batch, offset=start)
+            )
+        except Exception:  # noqa: BLE001 单批失败不阻塞，交由逐条补齐
+            continue
+        out.update(_parse_checklists(reply))
+
+    missing = [i for i in range(len(rules)) if i not in out][: max(retry_missing, 0)]
+    for i in missing:
+        try:
+            reply = await LLMClient().chat(
+                _CHECKLIST_SYSTEM, _rule_prompt_lines([rules[i]], offset=i)
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        out.update(_parse_checklists(reply))
     return out
 
 
