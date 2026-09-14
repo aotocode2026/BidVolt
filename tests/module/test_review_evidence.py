@@ -228,6 +228,18 @@ def test_apply_tier_consistency_never_raises_score():
     assert "不抬高" in check["reason"]
 
 
+def test_apply_tier_consistency_skips_deduction_tiers():
+    """扣分型条款的"档位"是扣分值（-10/-20），不是得分档——不得据此改分。"""
+    tiers = [
+        {"label": "不扣分", "condition": "无失信不扣分", "min": 0, "max": 0},
+        {"label": "质量诚信失信", "condition": "罚款≥30万扣10分", "min": -10, "max": -10},
+    ]
+    check = ev.apply_tier_consistency(
+        {"got": 0.0, "selected_tier": "质量诚信失信"}, tiers
+    )
+    assert check == {}
+
+
 def test_tier_by_evidence_handles_negated_thresholds():
     """run 256 实测：档位 ≥30人/≥15人/<15人，证据写"不足15人" → 应落到 <15人 档。"""
     tiers = [

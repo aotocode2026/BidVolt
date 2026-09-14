@@ -717,6 +717,10 @@ def apply_tier_consistency(parsed: dict, tiers: list[dict]) -> dict:
     if lo is None or hi is None:
         return {}
     lo, hi = float(lo), float(hi)
+    # 扣分型条款（"扣5分/扣10分/扣20分"）的"档位"是**扣分值**，不是得分档；
+    # 这类规则满分本就是 0，不参与得分校正（run 257 实测：曾把 0 写成 -10/-20）。
+    if hi <= 0:
+        return {}
     # **自检只做保守方向：绝不抬高得分**（run 256 实测：模型选了"获奖"档但实际未获奖，
     # 若按档位把 0 分改成 2 分就是虚增）。档位分值高于当前得分时，要求重问而不是直接改分。
     if got < lo - 1e-9:
