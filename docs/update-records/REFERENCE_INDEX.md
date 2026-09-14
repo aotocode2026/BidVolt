@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-14 18:00 | #62 | discussion | [评分输入改为「块索引 + 核验要素清单 + 定向取文」](UPDATE_LOG.md#2026-09-14-1800-feat-review-evidence-scope) |
+| 2026-09-14 18:00 | #70 | issue | [评分输入改为「块索引 + 核验要素清单 + 定向取文」](UPDATE_LOG.md#2026-09-14-1800-feat-review-evidence-scope) |
 | 2026-09-14 12:00 | #45 | issue | [交付 docx Word 报「文件损坏」：清理内容类型表悬空 Override](UPDATE_LOG.md#2026-09-14-1200-fix-content-types-stale-override) |
 | 2026-09-14 12:00 | #69 | issue | [交付 docx Word 报「文件损坏」：清理内容类型表悬空 Override](UPDATE_LOG.md#2026-09-14-1200-fix-content-types-stale-override) |
 | 2026-09-13 01:00 | #68 | issue | [打包号冲突门禁去掉语料级误判](UPDATE_LOG.md#2026-09-13-0100-fix-conflict-gate-false-positive) |

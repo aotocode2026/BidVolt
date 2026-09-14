@@ -537,8 +537,9 @@ async def re_evaluate(
 
 SUBSTANTIVE_RULES_VERSION = "substantive-llm-1.0"
 SUBSTANTIVE_PROVIDER_CODE = "substantive_llm"
-_LLM_MAX_FILE_CHARS = 12000
-_LLM_MAX_TOTAL_CHARS = 30000
+# 旧实现的输入上限（每文件 12,000 字 / 合计 30,000 字）已废弃：它让 156,695 字的技术件只被
+# 读到 7.7%、价格件 0 字（issue #70）。现改为"块索引 + 要素清单 + 定向取文"，
+# 预算见 review_evidence.RULE_BUDGET_CHARS / MAP_BUDGET_CHARS。
 
 # 评分引擎可识别的评分相关 req_type 集合（discussion #59）。
 # 上游解析/Agent 写入的 req_type 是自由字符串，历史数据存在大量等价别名；
@@ -572,7 +573,10 @@ _SUBSTANTIVE_SYSTEM = (
     '"risk_level":0|1|2|3,"suggestion":"可执行的提分建议，可为 null",'
     '"missing_materials":[{"type":"资料类型","description":"补什么、为什么"}],'
     '"rule_quote":"评审所依据的标准原文片段，可为 null",'
-    '"response_quote":"成果中对应的原文片段，可为 null"}'
+    '"response_quote":"成果中对应的原文片段，可为 null",'
+    '"element_results":[{"element":"要素","result":"hit|partial|miss",'
+    '"quote":"成果原文片段或 null","note":"说明"}],'
+    '"evidence_scope":{"chunks_provided":N,"chunks_total":M,"scope_limited":true|false}}'
 )
 
 
@@ -883,6 +887,9 @@ async def _artifact_texts(
                 "kind": a.kind,
                 "version_no": int(a.version_no),
                 "text": text,
+                # 供"分块索引 + 定向取文"使用（issue #70）：原实现只留扁平文本，
+                # 按文件截前 12,000 字导致大件只被读到零头
+                "content": a.content or b"",
                 "chars": len(text),
                 "error": error,
             }
@@ -890,33 +897,60 @@ async def _artifact_texts(
     return summaries, versions
 
 
-async def _score_rule_with_llm(rule: dict, file_blocks: list[dict]) -> dict:
-    """单条评分细则的 LLM 评审；解析失败两轮后按“证据不足”处理，绝不编分。"""
+async def _score_rule_with_llm(rule: dict, context: dict) -> dict:
+    """单条评分细则的 LLM 实质评审（issue #70：输入改为"要素清单 + 目录 + 定向取文"）。
+
+    与旧实现的区别：不再把每份文件截前 12,000 字、总量 30,000 字按顺序拼接，而是
+    ①先把规则拆成待核验要素；②按要素检索线索取相关块全文（预算 4 万字）；③附交付件目录
+    供全局定位；④附编制方自述作索引与风险提示（明确不得作为得分依据）。
+    解析失败两轮后按“证据不足”处理，绝不编分。
+    """
+    import json as _json
+
     from app.services.llm import LLMClient, try_extract_json
 
-    parts: list[str] = []
-    budget = _LLM_MAX_TOTAL_CHARS
-    for idx, block in enumerate(file_blocks, start=1):
-        text = block.get("text") or ""
-        truncated = len(text) > _LLM_MAX_FILE_CHARS
-        text = text[:_LLM_MAX_FILE_CHARS]
-        if len(text) > budget:
-            text = text[:budget]
-            truncated = True
-        if budget <= 0:
-            break
-        budget -= len(text)
-        head = f"【文件 {idx}：{block.get('name') or '未命名'}（版本 {block.get('version_no')}）】\n"
-        parts.append(head + text + ("\n…（内容过长已截断）" if truncated else ""))
+    checklist = context.get("checklist") or []
+    scope = context.get("scope") or {}
+    map_text = context.get("map") or "（无目录）"
+    chunks_text = context.get("chunks_text") or ""
+    editorial = context.get("editorial") or ""
+    fallback_note = "（本次为兜底：按目录由模型选块）" if scope.get("fallback") else ""
 
-    user = (
-        f"评分标准：{rule.get('content') or ''}\n"
-        f"评审要点：{rule.get('criterion') or rule.get('content') or ''}\n"
-        f"满分：{rule.get('weight') or 0} 分\n"
-        f"分类：{rule.get('category') or '评分细则'}\n\n"
-        f"受评正式成果文本：\n{''.join(parts) or '（无可读文本）'}\n\n"
-        "请按系统要求只输出一个 JSON 对象作为评审结论。"
-    )
+    parts = [
+        f"评分标准：{rule.get('content') or ''}",
+        f"评审要点：{rule.get('criterion') or rule.get('content') or ''}",
+        f"满分：{rule.get('weight') or 0} 分",
+        f"分类：{rule.get('category') or '评分细则'}",
+        "",
+        "【核验要素清单（由评分标准拆解而来，请逐项核验并在 element_results 里逐条回答）】",
+        _json.dumps(checklist, ensure_ascii=False) if checklist else "（未生成要素清单，按规则原文整体评审）",
+        "",
+    ]
+    if editorial:
+        parts += [
+            "【编制方自述：索引与风险提示（仅供定位与提示，**严禁作为得分依据**；"
+            "其“预计得分”栏不参与打分）】",
+            editorial,
+            "",
+        ]
+    parts += [
+        f"【交付件分块目录（全文共 {scope.get('chunks_total', 0)} 块 / "
+        f"{scope.get('chars_total', 0)} 字；可据此判断证据可能在哪一节）】 {fallback_note}",
+        map_text,
+        "",
+        f"【相关章节全文（按要素检索得到 {scope.get('chunks_provided', 0)} 块 / "
+        f"{scope.get('chars_provided', 0)} 字）】",
+        chunks_text or "（未检索到相关章节）",
+        "",
+        "请按系统要求只输出一个 JSON 对象作为评审结论，并额外包含：",
+        '"element_results":[{"element":"要素名","result":"hit|partial|miss",'
+        '"quote":"成果原文片段或 null","note":"简短说明"}]，',
+        '"evidence_scope":{"chunks_provided":N,"chunks_total":M,"scope_limited":true|false}。',
+        "注意：只有在本节提供的文本里找到证据才能判 hit；若认为证据可能在未提供的章节里，"
+        "请在 note 里写明“疑似未提供”并在 evidence_scope.scope_limited 标 true，"
+        "不要因此直接判 unsatisfied。",
+    ]
+    user = "\n".join(parts)
     last_reply: str | None = None
     for attempt in range(2):
         try:
@@ -1035,6 +1069,11 @@ def _item_from_llm_result(rule: dict, parsed: dict) -> dict:
             "response_quote": response_quote,
             "parse_error": bool(parsed.get("parse_error")),
             "llm_error": parsed.get("llm_error"),
+            # issue #70：评审输入的可核验轨迹（要素清单 / 逐要素结论 / 覆盖情况 / 实际读取的块）
+            "checklist": rule.get("_checklist") or [],
+            "element_results": parsed.get("element_results") or [],
+            "evidence_scope": parsed.get("evidence_scope") or rule.get("_scope") or {},
+            "chunks_provided": rule.get("_chunks_provided") or [],
         },
     }
 
@@ -1306,13 +1345,70 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
 
     items_data: list[dict] = []
     total = len(frozen_rules)
+
+    # 评分输入构造（issue #70）：分块索引 → 待核验要素清单 → 定向取文。
+    # 旧实现把每份文件截前 12,000 字、全局合计 30,000 字按顺序拼接，导致 156,695 字的
+    # 技术专项响应文件只被读到 7.7%、价格件 0 字，11 条"证据不足"里多数是"没读到"。
+    from app.services import review_evidence as _ev
+
+    chunks = _ev.build_chunks(readable)
+    editorial_hints = None
+    for a in readable:
+        if _ev.is_editorial(a.get("name") or "") and a.get("content"):
+            editorial_hints = _ev.build_editorial_hints(a["content"])
+            break
+    try:
+        checklists = await _ev.build_checklists(frozen_rules)
+    except Exception:  # noqa: BLE001 清单生成失败不阻塞评审（退化为按规则原文整体评审）
+        checklists = {}
+    await _progress(
+        29,
+        f"已按标题切分 {len(chunks)} 个内容块，生成 "
+        f"{sum(len(v) for v in checklists.values())} 个核验要素，开始逐条定向评审…",
+    )
+
     for idx, rule in enumerate(frozen_rules, start=1):
         await _progress(
             int(30 + 60 * idx / total),
             f"逐条实质评审 {idx}/{total}：{str(rule['content'])[:40]}",
         )
-        rule = {**rule, "_file_blocks": readable}
-        parsed = await _score_rule_with_llm(rule, readable)
+        checklist = checklists.get(idx - 1, [])
+        keys = [k for e in checklist for k in (e.get("keys") or [])]
+        selected, scope = _ev.select_chunks(checklist, chunks)
+        if checklist and not scope.get("chunks_matched"):
+            # 兜底：关键词零命中才让模型按目录选块（只对少数规则触发）
+            picked = await _ev.pick_chunks_by_llm(checklist, chunks)
+            if picked:
+                selected = _ev.select_by_index(chunks, picked)
+                scope = {
+                    **scope,
+                    "fallback": True,
+                    "chunks_provided": len(selected),
+                    "chars_provided": sum(c.chars for c in selected),
+                }
+        rule = {
+            **rule,
+            "_file_blocks": readable,
+            "_checklist": checklist,
+            "_scope": scope,
+            "_chunks_provided": [
+                {"index": c.index, "label": c.label, "chars": c.chars} for c in selected
+            ],
+        }
+        parsed = await _score_rule_with_llm(
+            rule,
+            {
+                "checklist": checklist,
+                "scope": scope,
+                "map": _ev.chunk_map(chunks),
+                "chunks_text": _ev.render_chunks(selected),
+                "editorial": (
+                    _ev.editorial_block(editorial_hints, rule.get("content") or "", keys)
+                    if editorial_hints
+                    else ""
+                ),
+            },
+        )
         items_data.append(_item_from_llm_result(rule, parsed))
 
     # 权重/公式类规则不逐项打分，作为 not_applicable 条目进入评分计划，

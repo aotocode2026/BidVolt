@@ -221,6 +221,27 @@ def test_substantive_evaluate_with_mocked_llm(client, monkeypatch):
     monkeypatch.setattr("app.services.llm.llm_enabled", lambda: True)
 
     async def fake_chat(self, system, user):
+        # issue #70：评审前会先做一次"核验要素清单"调用，这里按 system 分派
+        # 要素清单任务的 system 提示含"要素清单"；评分任务的 system 只含 element_results
+        if "要素清单" in system:
+            return json.dumps(
+                {
+                    "checklists": [
+                        {
+                            "rule_index": 0,
+                            "elements": [
+                                {
+                                    "element": "售后响应时限承诺",
+                                    "evidence": "响应时限条款",
+                                    "keys": ["7×24", "响应"],
+                                    "criteria": "有明确响应时限承诺",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(replies.pop(0), ensure_ascii=False)
 
     monkeypatch.setattr("app.services.llm.LLMClient.chat", fake_chat)
