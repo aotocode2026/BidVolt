@@ -7,6 +7,9 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-14 23:00 | #62 | discussion | [评分档位一致性自检 + 核验要素清单覆盖率硬检查](UPDATE_LOG.md#2026-09-14-2300-feat-tier-consistency-and-checklist-coverage) |
+| 2026-09-14 23:00 | #70 | issue | [评分档位一致性自检 + 核验要素清单覆盖率硬检查](UPDATE_LOG.md#2026-09-14-2300-feat-tier-consistency-and-checklist-coverage) |
+| 2026-09-14 23:00 | #71 | issue | [评分档位一致性自检 + 核验要素清单覆盖率硬检查](UPDATE_LOG.md#2026-09-14-2300-feat-tier-consistency-and-checklist-coverage) |
 | 2026-09-14 18:00 | #62 | discussion | [评分输入改为「块索引 + 核验要素清单 + 定向取文」](UPDATE_LOG.md#2026-09-14-1800-feat-review-evidence-scope) |
 | 2026-09-14 18:00 | #70 | issue | [评分输入改为「块索引 + 核验要素清单 + 定向取文」](UPDATE_LOG.md#2026-09-14-1800-feat-review-evidence-scope) |
 | 2026-09-14 12:00 | #45 | issue | [交付 docx Word 报「文件损坏」：清理内容类型表悬空 Override](UPDATE_LOG.md#2026-09-14-1200-fix-content-types-stale-override) |
