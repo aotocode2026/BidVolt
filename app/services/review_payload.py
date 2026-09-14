@@ -121,12 +121,23 @@ def _evidence_payload(evidence: dict | None, include_chunks: bool) -> dict:
     return ev
 
 
-def item_payload(item, include_chunks: bool = False) -> dict:
-    """条目统一序列化（/scores/{id}/items 与 /reviews/{run_id} 共用，避免字段漂移）。"""
+def item_payload(item, include: frozenset[str] | set[str] | None = None, include_chunks: bool = False) -> dict:
+    """条目统一序列化（/scores/{id}/items 与 /reviews/{run_id} 共用，避免字段漂移）。
+
+    默认收敛（issue #72）：`evidence.chunks_provided` → `chunks_summary`；
+    `response_source.files`（每条的产物清单，与 /scores 的 `scored_artifacts` 重复，实测占 19% 体积）
+    仅在 `include=sources` 时返回，默认只给 `quote`。
+    """
+    inc = set(include or ())
+    if include_chunks:
+        inc.add("chunks")
     state = score_state(item.verdict, item.full, item.got)
     full = _num(item.full)
     got = _num(item.got)
     improvable = _num(item.improvable)
+    response_source = item.response_source or {}
+    if "sources" not in inc and isinstance(response_source, dict):
+        response_source = {"quote": response_source.get("quote")}
     return {
         "item_id": item.id,
         "requirement_id": item.requirement_id,
@@ -152,11 +163,11 @@ def item_payload(item, include_chunks: bool = False) -> dict:
         "action_type_label": ACTION_LABELS[
             effective_action_type(item.action_type, item.verdict, item.full, item.got)
         ],
-        "evidence": _evidence_payload(item.evidence, include_chunks),
+        "evidence": _evidence_payload(item.evidence, "chunks" in inc),
         "verdict": item.verdict,
         "deduction_reason": item.deduction_reason,
         "rule_source": item.rule_source,
-        "response_source": item.response_source,
+        "response_source": response_source,
         "missing_materials": item.missing_materials,
         "status": item.status,
     }

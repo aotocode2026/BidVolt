@@ -88,6 +88,10 @@ def test_item_payload_has_state_percent_and_chunk_summary():
             "tiers": [{"label": "一般", "min": 25, "max": 26}],
         },
     )
+    item.response_source = {
+        "quote": "总体设计思路……",
+        "files": [{"artifact_id": 948, "name": "技术文件/（二）专项响应文件.docx", "version_no": 9}],
+    }
     payload = rp.item_payload(item)
     assert payload["score_state"] == rp.STATE_IMPROVABLE
     assert payload["is_scored"] is True
@@ -102,9 +106,15 @@ def test_item_payload_has_state_percent_and_chunk_summary():
         "head": ["技术文件 › 四、工作规划描述", "技术文件 › 六、实施组织与进度计划"],
     }
     assert payload["evidence"]["tiers"]
+    # response_source 默认只给 quote（files 与 /scores.scored_artifacts 重复）
+    assert payload["response_source"] == {"quote": "总体设计思路……"}
     # include_chunks 时给全量
     full = rp.item_payload(item, include_chunks=True)
     assert len(full["evidence"]["chunks_provided"]) == 2
+    # sources 需显式声明（与 chunks 分开）
+    assert "files" not in full["response_source"]
+    with_sources = rp.item_payload(item, include={"sources"})
+    assert with_sources["response_source"]["files"]
 
 
 def test_summarize_items_three_lists_and_improvable_total():

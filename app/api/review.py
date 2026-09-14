@@ -363,7 +363,10 @@ async def review_run_detail(
 async def review_items(
     project_id: int,
     score_id: int,
-    include: str | None = Query(default=None, description="include=chunks 时附带逐条读取的块清单"),
+    include: str | None = Query(
+        default=None,
+        description="逗号分隔：chunks=逐条读取的块清单，sources=逐条的产物清单",
+    ),
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_review_items")),
 ) -> list[dict]:
@@ -385,8 +388,8 @@ async def review_items(
     )
     from app.services import review_payload as _rp
 
-    with_chunks = str(include or "").strip() == "chunks"
-    return [_rp.item_payload(i, include_chunks=with_chunks) for i in rows]
+    inc = {x.strip() for x in str(include or "").split(",") if x.strip()}
+    return [_rp.item_payload(i, include=inc) for i in rows]
 
 
 @router.put("/{project_id}/scores/{score_id}/items/{item_id}/suggestion")
