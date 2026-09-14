@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,6 +136,7 @@ async def substantive_items(
 @router.get("/{project_id}/scores")
 async def latest_score(
     project_id: int,
+    include: str | None = Query(default=None, description="include=plan 时附带评分计划（rules/reference_rules）"),
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_latest_score")),
 ) -> dict:
@@ -203,6 +204,23 @@ async def latest_score(
         for aid, scored in frozen_artifacts.items()
         if current_artifact_versions.get(aid) != scored
     ]
+    # 展示层契约（issue #72）：条目四态 / 语义化动作 / 分项汇总 / 价格说明
+    from app.services import review_payload as _rp
+
+    items = (
+        await session.scalars(
+            select(ReviewItem).where(
+                ReviewItem.enterprise_id == user.enterprise_id,
+                ReviewItem.project_id == project_id,
+                ReviewItem.score_id == score.id,
+            )
+        )
+    ).all()
+    detail = dict(score.detail or {})
+    if str(include or "").strip() != "plan":
+        # 主接口瘦身：rules/reference_rules 体积大且多数场景不用，改由 ?include=plan 取
+        detail.pop("rules", None)
+        detail.pop("reference_rules", None)
     return {
         "has_score": True,
         "evaluation_type": score.evaluation_type,
@@ -212,7 +230,13 @@ async def latest_score(
         "total_score": float(score.total_score) if score.total_score is not None else None,
         "missing_count": score.missing_count,
         "improvable": float(score.improvable) if score.improvable is not None else None,
-        "detail": score.detail,
+        # 综合分口径（产品决定：暂不对外展示，只给分项）
+        "total_score_displayable": False,
+        "total_score_note": _rp.TOTAL_SCORE_NOTE_PUBLIC,
+        "score_breakdown": _rp.score_breakdown(score.detail, items),
+        "price_scoring": _rp.price_scoring(score.detail, items),
+        **_rp.summarize_items(items),
+        "detail": detail,
         "deliverable_versions": frozen_versions,
         "artifact_versions": frozen_artifacts,
         "scored_artifacts": [
@@ -273,6 +297,8 @@ async def review_run_detail(
     user: UserContext = Depends(require_permission(Permission.SCORE_VIEW)),
 ) -> dict:
     """按 run_id 恢复完整评审上下文：provider + score + 逐条 items + snapshot_id。"""
+    from app.services import review_payload as _rp
+
     run = await session.scalar(
         select(ReviewRun).where(
             ReviewRun.id == run_id,
@@ -328,32 +354,8 @@ async def review_run_detail(
             if score
             else None
         ),
-        "items": [
-            {
-                "item_id": i.id,
-                "requirement_id": i.requirement_id,
-                "criterion_id": i.criterion_id,
-                "ruleset_version": i.ruleset_version,
-                "category": i.category,
-                "problem_description": i.problem_description,
-                "got": float(i.got) if i.got is not None else None,
-                "full": float(i.full) if i.full is not None else None,
-                "improvable": float(i.improvable) if i.improvable is not None else None,
-                "risk_level": i.risk_level,
-                "suggestion": i.suggestion,
-                "suggestion_override": i.suggestion_override,
-                "effective_suggestion": i.suggestion_override or i.suggestion,
-                "action_type": i.action_type,
-                "evidence": i.evidence,
-                "verdict": i.verdict,
-                "deduction_reason": i.deduction_reason,
-                "rule_source": i.rule_source,
-                "response_source": i.response_source,
-                "missing_materials": i.missing_materials,
-                "status": i.status,
-            }
-            for i in items
-        ],
+        # 与 /scores/{score_id}/items 共用同一序列化（issue #72：避免两处字段漂移）
+        "items": [_rp.item_payload(i) for i in items],
     }
 
 
@@ -361,6 +363,7 @@ async def review_run_detail(
 async def review_items(
     project_id: int,
     score_id: int,
+    include: str | None = Query(default=None, description="include=chunks 时附带逐条读取的块清单"),
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_capability("get_review_items")),
 ) -> list[dict]:
@@ -380,32 +383,10 @@ async def review_items(
             ReviewItem.score_id == score_id,
         )
     )
-    return [
-        {
-            "item_id": i.id,
-            "requirement_id": i.requirement_id,
-            "criterion_id": i.criterion_id,
-            "ruleset_version": i.ruleset_version,
-            "category": i.category,
-            "problem_description": i.problem_description,
-            "got": float(i.got) if i.got is not None else None,
-            "full": float(i.full) if i.full is not None else None,
-            "improvable": float(i.improvable) if i.improvable is not None else None,
-            "risk_level": i.risk_level,
-            "suggestion": i.suggestion,
-            "suggestion_override": i.suggestion_override,
-            "effective_suggestion": i.suggestion_override or i.suggestion,
-            "action_type": i.action_type,
-            "evidence": i.evidence,
-            "verdict": i.verdict,
-            "deduction_reason": i.deduction_reason,
-            "rule_source": i.rule_source,
-            "response_source": i.response_source,
-            "missing_materials": i.missing_materials,
-            "status": i.status,
-        }
-        for i in rows
-    ]
+    from app.services import review_payload as _rp
+
+    with_chunks = str(include or "").strip() == "chunks"
+    return [_rp.item_payload(i, include_chunks=with_chunks) for i in rows]
 
 
 @router.put("/{project_id}/scores/{score_id}/items/{item_id}/suggestion")

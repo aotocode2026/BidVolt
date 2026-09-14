@@ -3,6 +3,69 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-15-0100-feat-score-api-contract"></a>
+
+## 2026-09-15 01:00 · feat · 评分接口展示层契约（四态/动作/分项汇总/价格说明 + 返回体收敛）
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-15-0100-feat-score-api-contract |
+| datetime | 2026-09-15T01:00:00+08:00 |
+| type | feat |
+| status | released |
+| scope | review, scoring, api |
+| related | issue #72, discussion #62 |
+
+### 为什么做这次更新
+
+前端要回答三件事：①每个条目是否已到最好；②哪些还能提分、提多少；③哪些要补材料。
+核对现有接口（`/scores`、`/scores/{id}/items`、`/reviews/{run_id}`）发现 7 处口径问题：
+条目状态要前端用 `verdict+got/full` 猜（已知坑：`satisfied` 且 `full=0`、`not_applicable`、`full=null`）；
+`improvable` 是原始分而 `total_score` 是百分比且未评项为 null；综合分分母只含已评条目、
+价格 30% 权重不参与；价格项在 `category_scores` 里显示成 `got:0/full:0`；
+`action_type` 的 `manual_review` 是兜底值；新证据字段没有展示契约；
+两条 items 入口字段重复且 `chunks_provided` 全量返回会膨胀（实测均值 4.5KB/条）。
+
+产品确认：①综合分暂不展示、只给分项；②认可四态划分；③新枚举立刻切换；④chunks 收敛。
+
+### 具体做了什么
+
+- 新增 `app/services/review_payload.py`：`score_state`（四态）、`effective_action_type`（历史值映射）、
+  `derive_action_type`（落库语义化）、`item_payload`（统一序列化 + chunks 收敛）、
+  `summarize_items`（三张清单）、`score_breakdown`（分项汇总 + 综合分口径）、
+  `price_scoring`（价格说明块）；
+- `/scores` 新增 `total_score_displayable=false` + `total_score_note`、`score_breakdown`、
+  `price_scoring`、`items_by_state`/`items_by_action`/`improvable_total`/`unrated_count` 等；
+  `detail` 默认瘦身，`rules`/`reference_rules` 改由 `?include=plan` 获取；
+- `/scores/{score_id}/items` 支持 `?include=chunks`，默认给 `evidence.chunks_summary`；
+  与 `/reviews/{run_id}` 共用 `item_payload`；
+- 评分落库侧改用 `derive_action_type`（含参考项分支与 Agent 提交路径）。
+
+### 影响范围
+
+- **前端契约变化**：新增字段（四态/动作/汇总/价格/分项）；`action_type` 语义化（旧值不再出现）；
+  `detail.rules`/`reference_rules` 默认不下发；`evidence.chunks_provided` 默认换为 `chunks_summary`；
+- 综合分口径：`total_score` 仍返回但标注 `total_score_displayable=false`，前端不展示；
+- 不改变评分结果本身（`verdict`/`got`/`full`/`improvable` 语义不变）。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；无破坏性变更，但**前端需按新字段调整渲染**（旧字段保留：
+  `action_type_raw` 可回看历史值；需要评分计划时加 `?include=plan`）。
+
+### 验证方式
+
+- 新增 `tests/module/test_review_payload.py` 6 例（四态 / 历史动作映射 / 新动作派生 /
+  payload 与 chunks 收敛 / 三张清单与提分合计 / 分项汇总与价格说明）；
+  既有 `test_substantive_scoring.py` / `test_review_api.py` 同步断言新契约；
+  模块全量 **265 passed**（4 项为 HEAD 既有失败）；
+- 生产：项目 217 实测 `/scores` 与 `/scores/{id}/items` 新返回体，确认四态、三张清单、
+  价格说明块、chunks 收敛生效（见 issue #72 收尾评论）。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker（读接口回到旧字段口径；评分数据不受影响）。
+
 <a id="2026-09-14-2300-feat-tier-consistency-and-checklist-coverage"></a>
 
 ## 2026-09-14 23:00 · feat · 评分档位一致性自检 + 核验要素清单覆盖率硬检查

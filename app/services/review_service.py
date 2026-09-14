@@ -1030,14 +1030,11 @@ def _item_from_llm_result(rule: dict, parsed: dict) -> dict:
         if str(m.get("type") or "").strip()
     ) or None
 
-    if verdict == "insufficient_evidence" and missing_materials:
-        action_type = "upload_material"
-    elif missing_materials:
-        action_type = "upload_material"
-    elif verdict in ("unsatisfied", "partial"):
-        action_type = "edit_deliverable"
-    else:
-        action_type = "manual_review"
+    # 语义化动作（issue #72）：not_applicable→reference、satisfied→none、缺材料→upload_material、
+    # 不满足/部分→edit_deliverable、其余→manual_review（读接口再做一次历史值映射）
+    from app.services.review_payload import derive_action_type as _derive_action
+
+    action_type = _derive_action(verdict, full, bool(missing_materials))
 
     rule_quote = parsed.get("rule_quote")
     response_quote = parsed.get("response_quote")
@@ -1473,7 +1470,7 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
                 "improvable": None,
                 "risk_level": 0,
                 "suggestion": None,
-                "action_type": "manual_review",
+                "action_type": "reference",  # 权重/公式类参考项（issue #72 语义化）
                 "missing_material_types": None,
                 "verdict": "not_applicable",
                 "deduction_reason": None,
@@ -1688,12 +1685,9 @@ async def submit_substantive_items(
         ) or None
         action_type = str(entry.get("action_type") or "").strip()
         if not action_type:
-            if missing_materials:
-                action_type = "upload_material"
-            elif verdict in ("unsatisfied", "partial"):
-                action_type = "edit_deliverable"
-            else:
-                action_type = "manual_review"
+            from app.services.review_payload import derive_action_type as _derive_action
+
+            action_type = _derive_action(verdict, full, bool(missing_materials))
         try:
             risk_level = int(entry["risk_level"]) if entry.get("risk_level") is not None else None
         except (TypeError, ValueError):

@@ -7,6 +7,8 @@
 
 | 更新时间 | 编号 | 类型 | 更新记录 |
 |---|---|---|---|
+| 2026-09-15 01:00 | #62 | discussion | [评分接口展示层契约（四态/动作/分项汇总/价格说明 + 返回体收敛）](UPDATE_LOG.md#2026-09-15-0100-feat-score-api-contract) |
+| 2026-09-15 01:00 | #72 | issue | [评分接口展示层契约（四态/动作/分项汇总/价格说明 + 返回体收敛）](UPDATE_LOG.md#2026-09-15-0100-feat-score-api-contract) |
 | 2026-09-14 23:00 | #62 | discussion | [评分档位一致性自检 + 核验要素清单覆盖率硬检查](UPDATE_LOG.md#2026-09-14-2300-feat-tier-consistency-and-checklist-coverage) |
 | 2026-09-14 23:00 | #70 | issue | [评分档位一致性自检 + 核验要素清单覆盖率硬检查](UPDATE_LOG.md#2026-09-14-2300-feat-tier-consistency-and-checklist-coverage) |
 | 2026-09-14 23:00 | #71 | issue | [评分档位一致性自检 + 核验要素清单覆盖率硬检查](UPDATE_LOG.md#2026-09-14-2300-feat-tier-consistency-and-checklist-coverage) |

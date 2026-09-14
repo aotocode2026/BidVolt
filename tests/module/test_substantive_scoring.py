@@ -124,7 +124,10 @@ def test_substantive_items_persist_and_builtin_hidden(client):
     assert score["evaluation_type"] == "substantive"
     assert score["score_id"] == body["score_id"]
     assert score["total_score"] == 75.0
-    assert score["detail"]["rules"][0]["rule_id"] == rid
+    # issue #72：主接口默认不下发 rules，需 ?include=plan
+    assert "rules" not in score["detail"]
+    planned = client.get(f"/api/v1/projects/{pid}/scores?include=plan", headers=h).json()
+    assert planned["detail"]["rules"][0]["rule_id"] == rid
 
     items = client.get(f"/api/v1/projects/{pid}/scores/{body['score_id']}/items", headers=h).json()
     assert len(items) == 1
@@ -134,6 +137,12 @@ def test_substantive_items_persist_and_builtin_hidden(client):
     assert "响应时限" in item["deduction_reason"]
     assert item["missing_materials"][0]["type"] == "售后承诺"
     assert item["rule_source"]["quote"] == "售后服务响应及时性"
+    # issue #72：条目四态与语义化动作（partial + 有缺材料 → 补材料）
+    assert item["score_state"] == "improvable"
+    assert item["is_scored"] is True
+    assert item["improvable_percent"] == 25.0
+    assert item["action_type"] == "upload_material"
+    assert "chunks_provided" not in item["evidence"]
 
 
 def test_substantive_items_ownership_cap_and_idempotency(client):
@@ -331,7 +340,12 @@ def test_substantive_evaluate_recognizes_scoring_type_aliases_and_decomposes_tex
     asyncio.run(_run())
     assert task.result["evaluation_type"] == "substantive"
 
-    latest = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
+    # issue #72：主接口默认瘦身（不下发 rules/reference_rules），需 ?include=plan 取计划
+    slim = client.get(f"/api/v1/projects/{pid}/scores", headers=h).json()
+    assert "reference_rules" not in slim["detail"]
+    assert slim["total_score_displayable"] is False
+    assert slim["score_breakdown"]["total_score_displayable"] is False
+    latest = client.get(f"/api/v1/projects/{pid}/scores?include=plan", headers=h).json()
     assert latest["detail"]["weight_config"] == {"商务": 10, "技术": 60, "价格": 30}
     assert any(r["reference_kind"] == "weight_price" for r in latest["detail"]["reference_rules"])
 
