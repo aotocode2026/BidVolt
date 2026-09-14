@@ -3,6 +3,71 @@
 本文件是 BidVolt 的更新记录主体，按时间倒序记录每次更新。
 新增更新时，请复制 `UPDATE_TEMPLATE.md` 中的模板，并插入到本文件“更新条目”的第一条位置。
 
+<a id="2026-09-14-1200-fix-content-types-stale-override"></a>
+
+## 2026-09-14 12:00 · fix · 交付 docx Word 报「文件损坏」：清理内容类型表悬空 Override
+
+| 字段 | 值 |
+|---|---|
+| id | 2026-09-14-1200-fix-content-types-stale-override |
+| datetime | 2026-09-14T12:00:00+08:00 |
+| type | fix |
+| status | released |
+| scope | assembly, deliverable, hermes-skill |
+| related | issue #69, issue #45 |
+
+### 为什么做这次更新
+
+下载项目 217 的交付包后，用 Word 打开 `技术文件/（二）专项响应文件.docx` 报「文件已损坏 /
+发现无法读取的内容」，而同包体积相近、图片更多的 `商务文件/（四）补充文件.docx` 可正常打开。
+
+核查定位：该 docx 的 `[Content_Types].xml` 里有 **402 条指向不存在部件的 `Override`**
+（`/word/media/image1.` …），而包里实际部件是 `word/media/image1.jpeg` …。
+根因是 2026-09-09 处理 issue #45（图片不显示）时，事故版压缩脚本把媒体部件 `imageN.`
+重命名成 `imageN.jpeg` 并同步了 rels，**却只补了 `Default Extension="jpeg"`、没删掉原来
+按部件名写的 402 条 `Override`**；LibreOffice / python-docx 只查"实际存在的部件"的类型，
+对幽灵条目视而不见，因此平台侧渲染质检与预览一直正常，问题只在 Word 侧暴露。
+
+三条佐证：①回修前的归档版本 v7 同样有这 402 条（与加页码无关）；②全库扫描 292 份
+item_docx（170 家企业）**仅此 1 份**中招；③删掉这 402 条（其余字节不动）后用户用 Word
+打开正常。
+
+### 具体做了什么
+
+- `app/services/docx_normalize.py` 新增 `prune_stale_content_types()`：删除指向不存在部件的
+  `Override`，并给「实际存在但既无 Override 也无 Default 覆盖」的部件按已知扩展名补 `Default`；
+  并入 `normalize_docx()`，四个产物入口（seal / upload / replace / save）自动生效，回执新增
+  `stale_overrides_removed` / `defaults_added` / `uncovered_parts`；
+- `audit_docx()` 新增 `stale_overrides`；`package_zip` 增加硬门禁：正式 docx 存在悬空内容类型
+  声明即拒绝打包并列出文件名；
+- 技能脚本 `repair_docx_media_types.py` 增加同一项清理（回执含 `type_fixed` /
+  `stale_overrides`）；SKILL.md 增补"压缩/重命名媒体后必须清掉旧 Override"与该事故的
+  一行排查命令；
+- 回归测试新增 2 例（悬空 Override 清理 + 幂等 + 不影响页码注入）。
+
+### 影响范围
+
+- 四个 docx 产物入口的归一化行为增强（回执新增计数，原有字段不变）；
+- `POST /assembly/package` 新增一条拒绝条件（悬空内容类型声明）；
+- 历史产物在下次覆盖上传或回修时自动被清理。
+
+### 迁移 / 破坏性变更
+
+- 无数据库迁移；无破坏性变更——只删除无效声明，实际部件的内容类型由 `Default` 覆盖
+  （归一化会先补齐缺失的 Default 才动 Override）。
+
+### 验证方式
+
+- 单测：`tests/module/test_docx_normalize.py` + `tests/module/test_assembly_service.py` 27 passed；
+- 生产：artifact 948 走归一化后回执 `stale_overrides_removed=402`，复查悬空数为 0；
+  项目 217 重新打包出新 zip，包内该文件结构检查通过；
+- 人工：修复版文件在 Word 中打开正常（用户确认）。
+
+### 回滚方式
+
+回退本次提交并重启 app/worker；已清理的产物可用 `PUT /assembly/artifacts/{id}` 覆盖回旧版本，
+或从 `agent_artifact_content_version` 历史版本读回。
+
 <a id="2026-09-13-0100-fix-conflict-gate-false-positive"></a>
 
 ## 2026-09-13 01:00 · fix · 打包号冲突门禁去掉语料级误判（项目 217 重新打包解阻）

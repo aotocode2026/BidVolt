@@ -1279,6 +1279,7 @@ async def package_zip(
 
     no_pagenum: list[str] = []
     outline_noise_files: list[str] = []
+    stale_ct_files: list[str] = []
     for a in item_arts:
         info = _docx_norm.audit_docx(a.content or b"")
         if not info.get("is_docx"):
@@ -1290,6 +1291,9 @@ async def package_zip(
             )
         if info.get("outline_noise"):
             outline_noise_files.append(f"{a.name}（{info['outline_noise']} 处）")
+        if info.get("stale_overrides"):
+            # 内容类型表里有指向不存在部件的 Override → Word 报"文件已损坏"（issue #69）
+            stale_ct_files.append(f"{a.name}（{info['stale_overrides']} 条悬空内容类型声明）")
     if no_pagenum:
         raise ValueError(
             "交付件缺少页码（正式 docx 每个节都必须有含 PAGE 域的页脚："
@@ -1299,6 +1303,11 @@ async def package_zip(
         raise ValueError(
             "交付件存在大纲级别噪声（题注/图注不得写入大纲级别，正文最多 6 级标题）："
             + "；".join(outline_noise_files[:8])
+        )
+    if stale_ct_files:
+        raise ValueError(
+            "交付件的内容类型表存在悬空声明（[Content_Types].xml 里的 Override 指向不存在的部件，"
+            "Word 会报「文件已损坏」）：" + "；".join(stale_ct_files[:8])
         )
     # 二次识别冲突值硬门禁（R12 教训 + issue #68 修正）：只拦「从未被任何图确认过」的候选——
     # 二次识别冲突值如 C1601J0253904821 未经对照原件处理就留在交付件里，命中即拒绝；

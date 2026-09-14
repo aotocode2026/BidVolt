@@ -251,6 +251,87 @@ def _count_outline_noise(root) -> int:
     return n
 
 
+# 已知扩展名 → 标准内容类型（仅用于给"已被 Override/Default 遗漏"的实际部件补 Default，
+# 不发明新类型；未知扩展名只计数上报，交给人工判断）
+_KNOWN_CONTENT_TYPES = {
+    "rels": "application/vnd.openxmlformats-package.relationships+xml",
+    "xml": "application/xml",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "emf": "image/x-emf",
+    "wmf": "image/x-wmf",
+    "bin": "application/vnd.openxmlformats-officedocument.oleObject",
+}
+
+
+def prune_stale_content_types(content: bytes) -> tuple[bytes, dict]:
+    """清理 `[Content_Types].xml`：删掉指向**不存在部件**的 Override（issue #69）。
+
+    事故来源：压缩脚本把媒体部件 `imageN.` 重命名成 `imageN.jpeg` 并同步了 rels，却只补了
+    `Default Extension="jpeg"`、没删掉原先按部件名写的 Override —— 结果内容类型表里留下
+    402 条"幽灵条目"。Word 会据此判定包结构不一致而报"文件已损坏"，LibreOffice/python-docx
+    只查实际存在的部件，所以平台侧渲染一路绿灯。
+
+    同时给"实际存在但既无 Override 也无 Default 覆盖"的部件补 Default（仅限已知扩展名）。
+    返回 (内容, 回执)；无改动时原样返回。
+    """
+    stats = {"stale_overrides_removed": 0, "defaults_added": 0, "uncovered_parts": 0}
+    try:
+        order, parts = _load(content)
+    except Exception:  # noqa: BLE001
+        return content, stats
+    if _CT not in parts:
+        return content, stats
+    names = set(parts)
+    ct = parts[_CT].decode("utf-8")
+
+    def _drop(m):
+        tag = m.group(0)
+        pm = re.search(r'PartName="([^"]+)"', tag)
+        if pm and pm.group(1).lstrip("/") in names:
+            return tag
+        stats["stale_overrides_removed"] += 1
+        return ""
+
+    new_ct = re.sub(r"<Override\b[^>]*/>", _drop, ct)
+
+    overrides = set(re.findall(r'<Override\b[^>]*PartName="([^"]+)"', new_ct))
+    defaults = set(re.findall(r'<Default\b[^>]*Extension="([^"]+)"', new_ct))
+    to_add: dict[str, str] = {}
+    for name in sorted(names):
+        if name == _CT:
+            continue
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if "/" + name in overrides or ext in defaults:
+            continue
+        ctype = _KNOWN_CONTENT_TYPES.get(ext)
+        if ctype:
+            to_add[ext] = ctype
+        else:
+            stats["uncovered_parts"] += 1
+    if to_add:
+        # OOXML 要求 Default* 排在 Override* 之前
+        xml = "".join(
+            f'<Default Extension="{ext}" ContentType="{ctype}"/>'
+            for ext, ctype in sorted(to_add.items())
+        )
+        if "<Override" in new_ct:
+            new_ct = new_ct.replace("<Override", xml + "<Override", 1)
+        else:
+            new_ct = new_ct.replace("</Types>", xml + "</Types>", 1)
+        stats["defaults_added"] = len(to_add)
+
+    if not stats["stale_overrides_removed"] and not stats["defaults_added"]:
+        return content, stats
+    parts[_CT] = new_ct.encode("utf-8")
+    return _save(order, parts), stats
+
+
 # --------------------------------------------------------------------------- #
 # 页码页脚
 # --------------------------------------------------------------------------- #
@@ -392,12 +473,13 @@ def ensure_page_footer(content: bytes) -> tuple[bytes, dict]:
 
 
 def normalize_docx(content: bytes) -> tuple[bytes, dict]:
-    """交付 docx 归一化：先清大纲噪声，再保证页码页脚。返回 (内容, 回执)。"""
+    """交付 docx 归一化：清内容类型表悬空项 → 清大纲噪声 → 保证页码页脚。返回 (内容, 回执)。"""
     if not is_docx(content):
         return content, {"is_docx": False}
-    out, noise = strip_outline_noise(content)
+    out, ct = prune_stale_content_types(content)
+    out, noise = strip_outline_noise(out)
     out, foot = ensure_page_footer(out)
-    return out, {"is_docx": True, "outline_noise_removed": noise, **foot}
+    return out, {"is_docx": True, **ct, "outline_noise_removed": noise, **foot}
 
 
 def audit_docx(content: bytes) -> dict:
@@ -411,6 +493,7 @@ def audit_docx(content: bytes) -> dict:
         "footer_refs": 0,
         "has_page_footer": False,
         "outline_noise": 0,
+        "stale_overrides": 0,
     }
     if not is_docx(content):
         return info
@@ -420,6 +503,14 @@ def audit_docx(content: bytes) -> dict:
         root = etree.fromstring(parts[_DOC])
     except Exception:  # noqa: BLE001 解析失败按无页码处理（门禁会拦）
         return info
+    if _CT in parts:
+        ct = parts[_CT].decode("utf-8", "replace")
+        names = set(parts)
+        info["stale_overrides"] = sum(
+            1
+            for part in re.findall(r'<Override\b[^>]*PartName="([^"]+)"', ct)
+            if part.lstrip("/") not in names
+        )
     sectprs = list(root.iter(f"{_WQ}sectPr"))
     info["sections"] = len(sectprs)
     footer_parts = [n for n in parts if _FOOTER_PART_RE.match(n)]

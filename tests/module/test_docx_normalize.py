@@ -186,3 +186,51 @@ def test_normalize_docx_end_to_end():
     same, none_stats = docx_normalize.normalize_docx(b"not-a-zip")
     assert same == b"not-a-zip"
     assert none_stats == {"is_docx": False}
+
+
+# --------------------------------------------------------------------------- #
+# 内容类型表悬空 Override（issue #69：Word 报「文件已损坏」的根因）
+# --------------------------------------------------------------------------- #
+
+
+def _docx_with_stale_override() -> bytes:
+    """构造一个内容类型表里含"指向不存在部件"的 Override 的 docx（模拟 217 事故遗留）。"""
+    raw = _docx_bytes(["正文"])
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        parts = {i.filename: zf.read(i.filename) for i in zf.infolist()}
+    ct = parts["[Content_Types].xml"].decode("utf-8")
+    ct = ct.replace(
+        "</Types>",
+        '<Override PartName="/word/media/image1." ContentType="image/jpeg"/></Types>',
+        1,
+    )
+    parts["[Content_Types].xml"] = ct.encode("utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zo:
+        for name, blob in parts.items():
+            zo.writestr(name, blob)
+    return buf.getvalue()
+
+
+def test_prune_stale_content_types_removes_ghost_overrides():
+    raw = _docx_with_stale_override()
+    assert docx_normalize.audit_docx(raw)["stale_overrides"] == 1
+
+    out, stats = docx_normalize.prune_stale_content_types(raw)
+    assert stats["stale_overrides_removed"] == 1
+    assert b"/word/media/image1." not in _read(out, "[Content_Types].xml")
+    assert docx_normalize.audit_docx(out)["stale_overrides"] == 0
+
+    # 幂等
+    twice, stats2 = docx_normalize.prune_stale_content_types(out)
+    assert stats2["stale_overrides_removed"] == 0
+    assert twice == out
+
+
+def test_normalize_docx_prunes_stale_overrides_and_keeps_footer():
+    raw = _docx_with_stale_override()
+    out, stats = docx_normalize.normalize_docx(raw)
+    assert stats["stale_overrides_removed"] == 1
+    info = docx_normalize.audit_docx(out)
+    assert info["stale_overrides"] == 0
+    assert info["has_page_footer"] is True  # 清理内容类型表不影响页码注入
