@@ -216,6 +216,34 @@ def test_apply_tier_consistency_skips_without_tiers_or_score():
     assert ev.apply_tier_consistency({"got": None}, [{"label": "优", "min": 1, "max": 2}]) == {}
 
 
+def test_apply_tier_consistency_never_raises_score():
+    """run 256 实测：模型选了"获奖"档（2 分）但实际未获奖（got=0）→ 自检不得把分改成 2。
+
+    档位分值高于当前得分时改为要求重问（保守方向）。
+    """
+    tiers = [{"label": "获奖", "condition": "获任一奖项加2分", "min": 2, "max": 2}]
+    check = ev.apply_tier_consistency({"got": 0.0, "selected_tier": "获奖"}, tiers)
+    assert check.get("applied") is None
+    assert check.get("need_reask") is True
+    assert "不抬高" in check["reason"]
+
+
+def test_tier_by_evidence_handles_negated_thresholds():
+    """run 256 实测：档位 ≥30人/≥15人/<15人，证据写"不足15人" → 应落到 <15人 档。"""
+    tiers = [
+        {"label": "≥30人", "condition": "≥30人得3分", "min": 3, "max": 3},
+        {"label": "≥15人", "condition": "≥15人得2分", "min": 2, "max": 2},
+        {"label": "<15人", "condition": "<15人得1分", "min": 1, "max": 1},
+    ]
+    elements = [{"element": "高职称人员数量", "result": "partial", "quote": "人员不足15人"}]
+    picked = ev.tier_by_evidence(tiers, elements)
+    assert picked is not None and picked["label"] == "<15人"
+    forced = ev.resolve_tier_conflict(tiers, elements, current=3.0)
+    assert forced["applied"] is True and forced["to"] == 1.0
+    # 绝不抬高：当前得分已经低于证据档位时不做改动
+    assert ev.resolve_tier_conflict(tiers, elements, current=0.5) == {}
+
+
 def test_build_plan_guarantees_full_coverage_with_synthetic_fallback(monkeypatch):
     """清单生成彻底失败时，用规则原文造兜底要素——不允许出现"清单为空"。"""
     import asyncio

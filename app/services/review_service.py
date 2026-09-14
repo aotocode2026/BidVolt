@@ -1449,8 +1449,18 @@ async def run_substantive_evaluation(session: AsyncSession, task) -> None:
                 rule, {**context, "tier_note": tier_check.get("reason") or ""}
             )
             recheck = _ev.apply_tier_consistency(reasked, context["tiers"])
-            if not recheck.get("need_reask"):
-                parsed, tier_check = reasked, recheck
+            parsed, tier_check = reasked, recheck
+            if recheck.get("need_reask"):
+                # 重问仍未收敛 → 按证据支持的档位保守裁决（绝不抬高得分）
+                forced = _ev.resolve_tier_conflict(
+                    context["tiers"],
+                    reasked.get("element_results") or parsed.get("element_results") or [],
+                    _ev._num_local(reasked.get("got")),
+                )
+                if forced.get("applied"):
+                    tier_check = forced
+                    if str(reasked.get("verdict") or "") in ("satisfied", "partial"):
+                        parsed = {**reasked, "verdict": "partial"}
         if tier_check.get("applied"):
             parsed = {**parsed, "got": tier_check["to"]}
         rule["_tier_check"] = tier_check

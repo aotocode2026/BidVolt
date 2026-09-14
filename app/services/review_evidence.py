@@ -587,14 +587,77 @@ def tier_by_evidence(tiers: list[dict], elements: list | None) -> dict | None:
         return None
     cands: list[dict] = []
     for t in tiers:
-        text = f"{t.get('label') or ''} {t.get('condition') or ''}".replace(" ", "")
-        toks = [x.replace(" ", "") for x in _THRESHOLD_TOKEN_RE.findall(text)]
-        hit = any(tok in blob for tok in toks)
-        if not hit and t.get("label") and len(str(t["label"])) >= 2 and str(t["label"]) in blob:
-            hit = True
-        if hit:
+        if _tier_supported_by_evidence(t, blob):
             cands.append(t)
     return cands[0] if len(cands) == 1 else None
+
+
+_NEG_THRESHOLD_RE = re.compile(r"(不足|少于|低于|未达|未达到|未满|<|＜)\s*(\d+)")
+_POS_THRESHOLD_RE = re.compile(r"(不少于|达到|超过|≥|不低于|大于)\s*(\d+)")
+_TIER_DIRECTION_RE = re.compile(r"([≥≤<>＜＞]|不少于|不足|超过|达到|低于)\s*(\d+)")
+
+
+def _tier_supported_by_evidence(tier: dict, blob: str) -> bool:
+    """证据是否支持该档位：支持"条件文本命中"与**阈值极性**匹配。
+
+    实测坑（run 256）：规则档位是 ≥30人/≥15人/<15人，证据写"不足 15 人"——
+    单纯按"15人"做子串匹配会同时命中 ≥15人 与 <15人 两档而判为歧义，
+    必须识别"不足/少于/未达"的否定极性，把它归到 <15人 档。
+    """
+    text = f"{tier.get('label') or ''} {tier.get('condition') or ''}".replace(" ", "")
+    if not text:
+        return False
+    dirs = _TIER_DIRECTION_RE.findall(text)
+    if dirs:
+        # 有方向词（≥/≤/< /不少于/不足…）时**只认极性**，否则"15人"这类 token 会同时命中两档
+        for sign, num in dirs:
+            if sign in ("≥", "不少于", "超过", "达到", "不低于"):
+                if re.search(rf"(≥|不少于|达到|超过|不低于)\s*{num}", blob):
+                    return True
+            elif sign in ("<", "＜", "不足", "低于"):
+                if re.search(rf"(不足|少于|低于|未达|未达到|未满|<|＜)\s*{num}", blob):
+                    return True
+            elif sign == "≤":
+                if re.search(rf"(≤|不足|少于|不超过)\s*{num}", blob):
+                    return True
+        return False
+    # 无方向词（如"未参加绩效评价得4分"）：按档位名 / 条件文本 / 带单位的数值 token 命中
+    if tier.get("label") and len(str(tier["label"])) >= 2 and str(tier["label"]).replace(" ", "") in blob:
+        return True
+    if text in blob:
+        return True
+    toks = [x.replace(" ", "") for x in _THRESHOLD_TOKEN_RE.findall(text)]
+    return bool(toks) and any(tok in blob for tok in toks)
+
+
+def resolve_tier_conflict(tiers: list[dict], elements: list | None, current) -> dict:
+    """重问仍未收敛时的**保守裁决**（issue #71 补丁）：
+
+    按证据支持的档位取值（极性匹配；多个候选取最低档），且**绝不抬高当前得分**。
+    """
+    blob = _evidence_blob(elements)
+    if not blob:
+        return {}
+    cands = [t for t in tiers if _tier_supported_by_evidence(t, blob) and t.get("min") is not None]
+    if not cands:
+        return {}
+    tier = min(cands, key=lambda t: float(t["min"]))
+    target = float(tier["min"])
+    cur = _num_local(current)
+    if cur is not None and target > cur:
+        return {}
+    return {
+        "applied": True,
+        "to": target,
+        "reason": f"档位与证据矛盾且重问未收敛：按证据支持的档位「{tier.get('label')}」保守定分",
+    }
+
+
+def _num_local(value):
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_threshold_tier(tier: dict) -> bool:
@@ -654,6 +717,16 @@ def apply_tier_consistency(parsed: dict, tiers: list[dict]) -> dict:
     if lo is None or hi is None:
         return {}
     lo, hi = float(lo), float(hi)
+    # **自检只做保守方向：绝不抬高得分**（run 256 实测：模型选了"获奖"档但实际未获奖，
+    # 若按档位把 0 分改成 2 分就是虚增）。档位分值高于当前得分时，要求重问而不是直接改分。
+    if got < lo - 1e-9:
+        return {
+            "need_reask": True,
+            "reason": (
+                f"所选档位「{tier.get('label')}」分值为 {lo}-{hi}，高于当前得分 {got}；"
+                "档位自检不抬高得分，请核对档位与证据后重新定分。"
+            ),
+        }
     if lo == hi:
         if abs(got - lo) < 1e-6:
             return {}
